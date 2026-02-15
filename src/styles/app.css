@@ -1,6 +1,35 @@
 @import "tailwindcss";
-@import "@mariozechner/mini-lit/styles/themes/default.css";
 @import "@xterm/xterm/css/xterm.css";
+
+@theme inline {
+	--color-background: var(--bg);
+	--color-foreground: var(--text);
+	--color-card: var(--bg-elev);
+	--color-card-foreground: var(--text);
+	--color-popover: var(--bg-elev);
+	--color-popover-foreground: var(--text);
+	--color-primary: var(--accent);
+	--color-primary-foreground: #ffffff;
+	--color-secondary: var(--bg-soft);
+	--color-secondary-foreground: var(--text);
+	--color-muted: var(--bg-muted);
+	--color-muted-foreground: var(--muted);
+	--color-accent: var(--accent-soft);
+	--color-accent-foreground: var(--accent);
+	--color-destructive: var(--danger);
+	--color-destructive-foreground: #ffffff;
+	--color-border: var(--border);
+	--color-input: var(--border);
+	--color-ring: color-mix(in srgb, var(--accent) 45%, #ffffff);
+	--color-sidebar: var(--sidebar);
+	--color-sidebar-foreground: var(--text);
+	--color-sidebar-primary: var(--accent);
+	--color-sidebar-primary-foreground: #ffffff;
+	--color-sidebar-accent: var(--bg-soft);
+	--color-sidebar-accent-foreground: var(--text);
+	--color-sidebar-border: var(--border);
+	--color-sidebar-ring: var(--accent);
+}
 
 :root {
 	--bg: #0d0d0f;
@@ -1436,32 +1465,68 @@ body {
 /* Markdown and streaming */
 /* -------------------------------------------------------------------------- */
 
-markdown-block {
+.markdown-content {
 	line-height: 1.6;
 }
 
-markdown-block p {
+.markdown-content p {
 	margin-bottom: 0.5em;
 }
 
-markdown-block p:last-child {
+.markdown-content p:last-child {
 	margin-bottom: 0;
 }
 
-markdown-block code:not(pre code) {
+.markdown-content a {
+	color: var(--accent);
+	text-decoration: underline;
+}
+
+.markdown-content ul,
+.markdown-content ol {
+	padding-left: 1.25rem;
+	margin: 0.4em 0 0.6em;
+}
+
+.markdown-content li {
+	margin: 0.15em 0;
+}
+
+.markdown-content code:not(pre code) {
 	background: color-mix(in srgb, var(--bg-soft) 74%, transparent);
 	padding: 0.14em 0.36em;
 	border-radius: 4px;
 	font-size: 0.9em;
 }
 
-markdown-block pre {
+.markdown-content pre {
 	background: color-mix(in srgb, var(--bg-muted) 88%, black 12%);
 	padding: 11px;
 	border-radius: 8px;
 	overflow-x: auto;
 	margin: 8px 0;
 	border: 1px solid var(--border);
+}
+
+.markdown-content blockquote {
+	margin: 0.6em 0;
+	padding-left: 10px;
+	border-left: 2px solid var(--border);
+	color: var(--muted);
+}
+
+.markdown-content table {
+	width: 100%;
+	border-collapse: collapse;
+	margin: 0.6em 0;
+}
+
+.markdown-content th,
+.markdown-content td {
+	border: 1px solid var(--border);
+	padding: 6px 8px;
+	text-align: left;
+	vertical-align: top;
 }
 
 .streaming-cursor::after {

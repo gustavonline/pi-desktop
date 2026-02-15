@@ -4,7 +4,8 @@
 
 import React, { type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import "@mariozechner/mini-lit/dist/MarkdownBlock.js";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
 	type RpcImageInput,
 	type RpcSessionState,
@@ -1114,12 +1115,9 @@ export class ChatView {
 						{this.renderThinking(msg)}
 						{msg.text ? (
 							<div className="assistant-content">
-								{React.createElement("markdown-block", {
-									className: msg.isStreaming ? "streaming-cursor" : "",
-									ref: (el: HTMLElement | null) => {
-										if (el) (el as any).content = msg.text;
-									},
-								})}
+								<div className={`markdown-content ${msg.isStreaming ? "streaming-cursor" : ""}`}>
+									<ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.text}</ReactMarkdown>
+								</div>
 							</div>
 						) : null}
 						{msg.toolCalls.map((tc) => this.renderToolCall(tc))}
