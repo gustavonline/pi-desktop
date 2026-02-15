@@ -2,7 +2,8 @@
  * Settings Panel - runtime controls for RPC session + app preferences
  */
 
-import { html, render, type TemplateResult } from "lit";
+import { type ReactElement } from "react";
+import { createRoot, type Root } from "react-dom/client";
 import {
 	type CliUpdateStatus,
 	type PiAuthStatus,
@@ -21,6 +22,7 @@ interface SettingsState {
 
 export class SettingsPanel {
 	private container: HTMLElement;
+	private root: Root;
 	private isOpen = false;
 	private state: SettingsState = {
 		theme: "dark",
@@ -43,6 +45,7 @@ export class SettingsPanel {
 
 	constructor(container: HTMLElement) {
 		this.container = container;
+		this.root = createRoot(container);
 		this.loadTheme();
 	}
 
@@ -102,11 +105,7 @@ export class SettingsPanel {
 			// ignore missing persisted settings
 		}
 
-		await Promise.all([
-			this.refreshAuthStatus(),
-			this.refreshCliStatus(),
-			this.refreshCompatibilityStatus(),
-		]);
+		await Promise.all([this.refreshAuthStatus(), this.refreshCliStatus(), this.refreshCompatibilityStatus()]);
 	}
 
 	private async refreshAuthStatus(): Promise<void> {
@@ -274,188 +273,233 @@ export class SettingsPanel {
 		description: string,
 		checked: boolean,
 		onChange: (checked: boolean) => void,
-	): TemplateResult {
-		return html`
-			<div class="settings-row">
+	): ReactElement {
+		return (
+			<div className="settings-row">
 				<div>
-					<div class="settings-label">${label}</div>
-					<div class="settings-desc">${description}</div>
+					<div className="settings-label">{label}</div>
+					<div className="settings-desc">{description}</div>
 				</div>
-				<button class="toggle ${checked ? "on" : "off"}" @click=${() => onChange(!checked)}>
+				<button className={`toggle ${checked ? "on" : "off"}`} onClick={() => onChange(!checked)} type="button">
 					<span></span>
 				</button>
 			</div>
-		`;
+		);
 	}
 
 	render(): void {
 		if (!this.isOpen) {
-			this.container.innerHTML = "";
+			this.root.render(<></>);
 			return;
 		}
 
-		const template = html`
-			<div class="overlay" @click=${(e: Event) => e.target === e.currentTarget && this.close()}>
-				<div class="settings-card">
-					<div class="settings-header">
+		this.root.render(
+			<div
+				className="overlay"
+				onClick={(e) => {
+					if (e.target === e.currentTarget) this.close();
+				}}
+			>
+				<div className="settings-card">
+					<div className="settings-header">
 						<h2>Settings</h2>
-						<button @click=${() => this.close()}>✕</button>
+						<button onClick={() => this.close()} type="button">
+							✕
+						</button>
 					</div>
 
-					<div class="settings-section">
-						<div class="settings-section-title">Appearance</div>
-						<div class="theme-grid">
-							<button class="theme-btn ${this.state.theme === "dark" ? "active" : ""}" @click=${() => this.setTheme("dark")}>Dark</button>
-							<button class="theme-btn ${this.state.theme === "light" ? "active" : ""}" @click=${() => this.setTheme("light")}>Light</button>
+					<div className="settings-section">
+						<div className="settings-section-title">Appearance</div>
+						<div className="theme-grid">
+							<button
+								className={`theme-btn ${this.state.theme === "dark" ? "active" : ""}`}
+								onClick={() => void this.setTheme("dark")}
+								type="button"
+							>
+								Dark
+							</button>
+							<button
+								className={`theme-btn ${this.state.theme === "light" ? "active" : ""}`}
+								onClick={() => void this.setTheme("light")}
+								type="button"
+							>
+								Light
+							</button>
 						</div>
 					</div>
 
-					<div class="settings-section">
-						<div class="settings-section-title">Agent Behavior</div>
-						${this.renderToggle(
+					<div className="settings-section">
+						<div className="settings-section-title">Agent Behavior</div>
+						{this.renderToggle(
 							"Auto-compaction",
 							"Automatically summarize older context before hitting context limits.",
 							this.state.autoCompactionEnabled,
-							(v) => this.setAutoCompaction(v),
+							(v) => void this.setAutoCompaction(v),
 						)}
-						${this.renderToggle(
+						{this.renderToggle(
 							"Auto-retry",
 							"Retry transient provider errors with exponential backoff.",
 							this.state.autoRetryEnabled,
-							(v) => this.setAutoRetry(v),
+							(v) => void this.setAutoRetry(v),
 						)}
 					</div>
 
-					<div class="settings-section">
-						<div class="settings-section-title">Queue Modes</div>
-						<div class="settings-row">
+					<div className="settings-section">
+						<div className="settings-section-title">Queue Modes</div>
+						<div className="settings-row">
 							<div>
-								<div class="settings-label">Steering messages</div>
-								<div class="settings-desc">How queued steer messages are delivered while streaming.</div>
+								<div className="settings-label">Steering messages</div>
+								<div className="settings-desc">How queued steer messages are delivered while streaming.</div>
 							</div>
-							<select class="settings-select" .value=${this.state.steeringMode} @change=${(e: Event) => this.setSteeringMode((e.target as HTMLSelectElement).value as QueueMode)}>
+							<select
+								className="settings-select"
+								value={this.state.steeringMode}
+								onChange={(e) => void this.setSteeringMode(e.target.value as QueueMode)}
+							>
 								<option value="one-at-a-time">one-at-a-time</option>
 								<option value="all">all</option>
 							</select>
 						</div>
-						<div class="settings-row">
+						<div className="settings-row">
 							<div>
-								<div class="settings-label">Follow-up messages</div>
-								<div class="settings-desc">How queued follow-up messages are delivered after runs.</div>
+								<div className="settings-label">Follow-up messages</div>
+								<div className="settings-desc">How queued follow-up messages are delivered after runs.</div>
 							</div>
-							<select class="settings-select" .value=${this.state.followUpMode} @change=${(e: Event) => this.setFollowUpMode((e.target as HTMLSelectElement).value as QueueMode)}>
+							<select
+								className="settings-select"
+								value={this.state.followUpMode}
+								onChange={(e) => void this.setFollowUpMode(e.target.value as QueueMode)}
+							>
 								<option value="one-at-a-time">one-at-a-time</option>
 								<option value="all">all</option>
 							</select>
 						</div>
 					</div>
 
-					<div class="settings-section">
-						<div class="settings-section-title">Account & Resources</div>
-						${this.authLoading
-							? html`<div class="settings-desc">Checking auth status…</div>`
-							: html`
-								<div class="settings-desc">
-									${this.authStatus && this.authStatus.configured_providers.length > 0
+					<div className="settings-section">
+						<div className="settings-section-title">Account &amp; Resources</div>
+						{this.authLoading ? <div className="settings-desc">Checking auth status…</div> : null}
+						{!this.authLoading ? (
+							<>
+								<div className="settings-desc">
+									{this.authStatus && this.authStatus.configured_providers.length > 0
 										? `Configured providers: ${this.authStatus.configured_providers.length}`
 										: "No providers configured yet."}
 								</div>
-								<div class="settings-actions">
-									<button class="ghost-btn" @click=${() => this.refreshAuthStatus()}>Refresh auth status</button>
+								<div className="settings-actions">
+									<button className="ghost-btn" onClick={() => void this.refreshAuthStatus()} type="button">
+										Refresh auth status
+									</button>
 								</div>
-								${this.authStatus && this.authStatus.configured_providers.length > 0
-									? html`
-										<div class="account-chips">
-											${this.authStatus.configured_providers.map(
-												(p) => html`<span class="account-chip">${p.provider} · ${p.source === "environment" ? "env" : p.kind}</span>`,
-											)}
-										</div>
-									`
-									: null}
-								<div class="settings-desc">
-									OAuth <code>/login</code> is interactive-only in TUI mode. Configure auth once in terminal
-									(or set API keys) then restart desktop.
+								{this.authStatus && this.authStatus.configured_providers.length > 0 ? (
+									<div className="account-chips">
+										{this.authStatus.configured_providers.map((p) => (
+											<span className="account-chip" key={`${p.provider}-${p.source}-${p.kind}`}>
+												{p.provider} · {p.source === "environment" ? "env" : p.kind}
+											</span>
+										))}
+									</div>
+								) : null}
+								<div className="settings-desc">
+									OAuth <code>/login</code> is interactive-only in TUI mode. Configure auth once in terminal (or set API keys)
+									then restart desktop.
 								</div>
-								${this.authStatus?.auth_file
-									? html`<div class="settings-desc">Auth file: <code>${this.authStatus.auth_file}</code></div>`
-									: null}
-							`}
+								{this.authStatus?.auth_file ? (
+									<div className="settings-desc">
+										Auth file: <code>{this.authStatus.auth_file}</code>
+									</div>
+								) : null}
+							</>
+						) : null}
 					</div>
 
-					<div class="settings-section">
-						<div class="settings-section-title">CLI Runtime</div>
-						${this.cliLoading
-							? html`<div class="settings-desc">Checking CLI versions…</div>`
-							: html`
-								<div class="settings-desc">
-									Discovery: <code>${this.cliStatus?.discovery || rpcBridge.discoveryInfo || "unknown"}</code>
+					<div className="settings-section">
+						<div className="settings-section-title">CLI Runtime</div>
+						{this.cliLoading ? <div className="settings-desc">Checking CLI versions…</div> : null}
+						{!this.cliLoading ? (
+							<>
+								<div className="settings-desc">
+									Discovery: <code>{this.cliStatus?.discovery || rpcBridge.discoveryInfo || "unknown"}</code>
 								</div>
-								<div class="settings-desc">
-									Current: <code>${this.cliStatus?.current_version || "unknown"}</code>
-									 · Latest: <code>${this.cliStatus?.latest_version || "unknown"}</code>
+								<div className="settings-desc">
+									Current: <code>{this.cliStatus?.current_version || "unknown"}</code> · Latest: <code>{this.cliStatus?.latest_version || "unknown"}</code>
 								</div>
-								${this.cliStatus?.update_available
-									? html`<div class="settings-desc">A newer CLI version is available.</div>`
-									: html`<div class="settings-desc">CLI is up to date or latest version could not be determined.</div>`}
-								${this.cliStatus?.note ? html`<div class="settings-desc">${this.cliStatus.note}</div>` : null}
-							`}
-						<div class="settings-actions">
-							<button class="ghost-btn" ?disabled=${this.cliLoading} @click=${() => this.refreshCliStatus()}>Refresh CLI status</button>
+								{this.cliStatus?.update_available ? (
+									<div className="settings-desc">A newer CLI version is available.</div>
+								) : (
+									<div className="settings-desc">CLI is up to date or latest version could not be determined.</div>
+								)}
+								{this.cliStatus?.note ? <div className="settings-desc">{this.cliStatus.note}</div> : null}
+							</>
+						) : null}
+
+						<div className="settings-actions">
+							<button className="ghost-btn" disabled={this.cliLoading} onClick={() => void this.refreshCliStatus()} type="button">
+								Refresh CLI status
+							</button>
 							<button
-								class="ghost-btn"
-								?disabled=${
+								className="ghost-btn"
+								disabled={
 									this.cliUpdating ||
 									!this.cliStatus?.can_update_in_app ||
 									!this.cliStatus?.npm_available ||
 									!this.cliStatus?.update_available
 								}
-								@click=${() => this.updateCliNow()}
+								onClick={() => void this.updateCliNow()}
+								type="button"
 							>
-								${this.cliUpdating ? "Updating…" : "Update CLI"}
+								{this.cliUpdating ? "Updating…" : "Update CLI"}
 							</button>
 						</div>
-						${this.cliActionMessage ? html`<div class="settings-desc">${this.cliActionMessage}</div>` : null}
-						${this.cliStatus?.update_command
-							? html`<div class="settings-desc">Manual update: <code>${this.cliStatus.update_command}</code></div>`
-							: null}
-						<div class="settings-actions">
-							<button class="ghost-btn" ?disabled=${this.compatibilityLoading} @click=${() => this.refreshCompatibilityStatus()}>
-								${this.compatibilityLoading ? "Checking RPC…" : "Run RPC compatibility check"}
+						{this.cliActionMessage ? <div className="settings-desc">{this.cliActionMessage}</div> : null}
+						{this.cliStatus?.update_command ? (
+							<div className="settings-desc">
+								Manual update: <code>{this.cliStatus.update_command}</code>
+							</div>
+						) : null}
+
+						<div className="settings-actions">
+							<button
+								className="ghost-btn"
+								disabled={this.compatibilityLoading}
+								onClick={() => void this.refreshCompatibilityStatus()}
+								type="button"
+							>
+								{this.compatibilityLoading ? "Checking RPC…" : "Run RPC compatibility check"}
 							</button>
 						</div>
-						${this.compatibilityReport
-							? html`
-								<div class="settings-desc">RPC compatibility: ${this.compatibilityReport.ok ? "OK" : "Failed"}</div>
-								${this.compatibilityReport.checks.length > 0
-									? html`<div class="settings-desc">Required checks passed: ${this.compatibilityReport.checks.join(", ")}</div>`
-									: null}
-								${this.compatibilityReport.failedChecks.length > 0
-									? html`<div class="settings-desc">Required checks failed: ${this.compatibilityReport.failedChecks.join(", ")}</div>`
-									: null}
-								${this.compatibilityReport.optionalWarnings.length > 0
-									? html`
-										<div class="settings-desc">Optional capability warnings:</div>
-										<div class="settings-desc">
-											${this.compatibilityReport.optionalWarnings.map((w) => html`<div>• ${w}</div>`)}
+
+						{this.compatibilityReport ? (
+							<>
+								<div className="settings-desc">RPC compatibility: {this.compatibilityReport.ok ? "OK" : "Failed"}</div>
+								{this.compatibilityReport.checks.length > 0 ? (
+									<div className="settings-desc">Required checks passed: {this.compatibilityReport.checks.join(", ")}</div>
+								) : null}
+								{this.compatibilityReport.failedChecks.length > 0 ? (
+									<div className="settings-desc">Required checks failed: {this.compatibilityReport.failedChecks.join(", ")}</div>
+								) : null}
+								{this.compatibilityReport.optionalWarnings.length > 0 ? (
+									<>
+										<div className="settings-desc">Optional capability warnings:</div>
+										<div className="settings-desc">
+											{this.compatibilityReport.optionalWarnings.map((w) => (
+												<div key={w}>• {w}</div>
+											))}
 										</div>
-									`
-									: null}
-								${this.compatibilityReport.error
-									? html`<div class="settings-desc">${this.compatibilityReport.error}</div>`
-									: null}
-							`
-							: null}
+									</>
+								) : null}
+								{this.compatibilityReport.error ? <div className="settings-desc">{this.compatibilityReport.error}</div> : null}
+							</>
+						) : null}
 					</div>
 
-					${this.statusMessage ? html`<div class="settings-desc">${this.statusMessage}</div>` : null}
+					{this.statusMessage ? <div className="settings-desc">{this.statusMessage}</div> : null}
 				</div>
-			</div>
-		`;
-
-		render(template, this.container);
+			</div>,
+		);
 	}
 
 	destroy(): void {
-		this.container.innerHTML = "";
+		this.root.unmount();
 	}
 }

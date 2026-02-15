@@ -1,18 +1,18 @@
 # TODO (Issue Mirror)
 
 ## Active issue
-- Issue: #7 — [P0] React-first frontend migration foundation (Lit -> React)
-- Branch: feat/7-react-foundation
-- Scope summary: Prioritized execution of React-first frontend foundation before deeper feature work.
+- Issue: #9 — [P0] Migrate core UI surfaces from Lit to React (chat/sidebar/settings/titlebar)
+- Branch: feat/9-react-core-surfaces
+- Scope summary: Migrate high-change core surfaces to React while preserving parity.
 
 ## Acceptance criteria (from issue)
-- [x] Frontend boots through React entrypoint
-- [x] Existing functionality still works in tauri dev smoke flow
-- [x] Docs clearly describe transition status and next migration steps
-- [x] Follow-up migration tasks tracked in issues/PRs
+- [ ] Core migrated surfaces are React-based
+- [ ] Feature parity with existing behavior is preserved
+- [x] `npm run check`, `npm run build:frontend`, `cargo check` pass
+- [x] tauri dev startup smoke pass for migrated flows
 
 ## Session checklist
-- [x] Implementation done
+- [x] Implementation done (partial: titlebar/sidebar/settings migrated)
 - [x] `npm run check` passed
 - [x] `npm run build:frontend` passed
 - [x] `cargo check` passed
@@ -21,6 +21,6 @@
 - [ ] PR opened/updated
 
 ## Session notes
-- Added React + ReactDOM + Vite React plugin and switched entrypoint to `src/main.tsx`.
-- Moved previous Lit bootstrap to `src/legacy-bootstrap.ts` and mounted it from React host.
-- Updated roadmap/release/docs to reflect React-first transition and migration guardrails.
+- Migrated `titlebar`, `sidebar`, and `settings-panel` components from Lit rendering to React rendering while preserving class APIs.
+- Added `.tsx` React implementations and removed legacy `.ts` Lit versions for those surfaces.
+- `chat-view` remains Lit-based and is still pending under this issue scope.
