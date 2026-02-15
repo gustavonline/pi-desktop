@@ -1,7 +1,7 @@
 # TODO (Issue Mirror)
 
 ## Active issue
-- Issue: #7 — [RFC] Evaluate migration from Lit to React for frontend ecosystem leverage
+- Issue: #7 — [P0] React-first frontend migration foundation (Lit -> React)
 - Branch: feat/7-react-foundation
 - Scope summary: Prioritized execution of React-first frontend foundation before deeper feature work.
 
