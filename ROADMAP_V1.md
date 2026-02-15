@@ -8,6 +8,7 @@ Ship a stable desktop client that feels native, minimal, and polished (Apple/Cod
 2. **Reliability before novelty**: no regressions in project/session switching, streaming, and command execution.
 3. **Minimal UI, high clarity**: fast interactions, clean hierarchy, low visual noise.
 4. **Graceful compatibility**: when CLI/RPC features differ by version, show clear fallback messaging.
+5. **Community-scale frontend**: converge to a React-first UI architecture to improve contributor onboarding and ecosystem leverage.
 
 ## V1 scope (must-have)
 - Stable RPC lifecycle (start/stop/restart/reconnect)
@@ -18,6 +19,7 @@ Ship a stable desktop client that feels native, minimal, and polished (Apple/Cod
 - Settings runtime panel (auth state, CLI update checks/actions, compatibility checks)
 - Command palette + shortcuts
 - Basic extension UI protocol handling
+- React-first frontend foundation established (legacy Lit bridge allowed during transition)
 
 ## Out of scope for V1
 - Re-implementing interactive TUI-only flows that are not exposed by RPC
@@ -30,6 +32,7 @@ Ship a stable desktop client that feels native, minimal, and polished (Apple/Cod
 - Lock major regressions in process handling and project/session switching
 - Add startup and on-demand compatibility probes
 - Ensure no process/window spawn loops
+- Establish React-first app entrypoint and migration-safe hosting for existing UI surfaces
 
 ### M2 — UX polish baseline
 - Tighten spacing/typography and interaction rhythm
