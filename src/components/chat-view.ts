@@ -372,7 +372,7 @@ export class ChatView {
 			this.pushNotice(`Switched to ${provider}/${modelId}`, "success");
 		} catch (err) {
 			console.error("Failed to set model:", err);
-			this.pushNotice("Failed to switch model", "error");
+			this.pushFeatureError("Model switch", err);
 		} finally {
 			this.settingModel = false;
 			this.render();
@@ -389,7 +389,7 @@ export class ChatView {
 			if (this.state) this.onStateChange?.(this.state);
 		} catch (err) {
 			console.error("Failed to set thinking level:", err);
-			this.pushNotice("Failed to set thinking level", "error");
+			this.pushFeatureError("Thinking level update", err);
 		} finally {
 			this.settingThinking = false;
 			this.render();
@@ -609,6 +609,10 @@ export class ChatView {
 		}, 4200);
 	}
 
+	private pushFeatureError(feature: string, err: unknown): void {
+		this.pushNotice(rpcBridge.formatFeatureError(feature, err), "error");
+	}
+
 	private async prepareImages(files: FileList | File[]): Promise<void> {
 		const list = Array.from(files).filter((f) => f.type.startsWith("image/"));
 		if (list.length === 0) return;
@@ -720,7 +724,7 @@ export class ChatView {
 			}
 		} catch (err) {
 			console.error("Failed to send message:", err);
-			this.pushNotice(err instanceof Error ? err.message : "Failed to send message", "error");
+			this.pushFeatureError("Send message", err);
 		}
 	}
 
@@ -770,7 +774,7 @@ export class ChatView {
 			this.pushNotice("Message resent", "success");
 		} catch (err) {
 			console.error("Failed to resend message:", err);
-			this.pushNotice(err instanceof Error ? err.message : "Failed to resend message", "error");
+			this.pushFeatureError("Retry message", err);
 		}
 	}
 
@@ -785,7 +789,7 @@ export class ChatView {
 			this.pushNotice("Copied last assistant message", "success");
 		} catch (err) {
 			console.error("Failed to copy:", err);
-			this.pushNotice("Failed to copy message", "error");
+			this.pushFeatureError("Copy last assistant message", err);
 		}
 	}
 
@@ -797,7 +801,7 @@ export class ChatView {
 			await open(path);
 		} catch (err) {
 			console.error("Failed to export HTML:", err);
-			this.pushNotice("Failed to export session", "error");
+			this.pushFeatureError("Export session", err);
 		}
 	}
 
@@ -810,7 +814,7 @@ export class ChatView {
 			this.pushNotice("Copied exported HTML to clipboard", "success");
 		} catch (err) {
 			console.error("Failed to copy exported HTML:", err);
-			this.pushNotice("Failed to copy exported HTML", "error");
+			this.pushFeatureError("Copy exported HTML", err);
 		}
 	}
 
@@ -832,7 +836,7 @@ export class ChatView {
 			this.pushNotice("Started new session", "success");
 		} catch (err) {
 			console.error("Failed to create session:", err);
-			this.pushNotice("Failed to create session", "error");
+			this.pushFeatureError("Create session", err);
 		}
 	}
 
@@ -843,7 +847,7 @@ export class ChatView {
 			this.pushNotice("Compaction complete", "success");
 		} catch (err) {
 			console.error("Failed to compact:", err);
-			this.pushNotice("Compaction failed", "error");
+			this.pushFeatureError("Compaction", err);
 		}
 	}
 
@@ -856,7 +860,7 @@ export class ChatView {
 			await this.refreshFromBackend();
 			this.pushNotice("Session renamed", "success");
 		} catch (err) {
-			this.pushNotice("Failed to rename session", "error");
+			this.pushFeatureError("Rename session", err);
 		}
 	}
 
@@ -869,7 +873,7 @@ export class ChatView {
 			this.forkOptions = await rpcBridge.getForkMessages();
 		} catch (err) {
 			console.error("Failed to load fork points:", err);
-			this.pushNotice("Failed to load fork points", "error");
+			this.pushFeatureError("Fork message list", err);
 			this.forkOptions = [];
 		} finally {
 			this.openingForkPicker = false;
@@ -893,7 +897,7 @@ export class ChatView {
 			this.closeForkPicker();
 		} catch (err) {
 			console.error("Failed to fork:", err);
-			this.pushNotice("Failed to fork session", "error");
+			this.pushFeatureError("Fork session", err);
 		}
 	}
 

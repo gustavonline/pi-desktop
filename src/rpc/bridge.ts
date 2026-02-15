@@ -80,9 +80,19 @@ export interface NpmCommandResult {
 	exit_code: number;
 }
 
+export interface RpcCompatibilityCheck {
+	name: string;
+	optional: boolean;
+	supported: boolean;
+	message?: string;
+}
+
 export interface RpcCompatibilityReport {
 	ok: boolean;
 	checks: string[];
+	failedChecks: string[];
+	optionalWarnings: string[];
+	details: RpcCompatibilityCheck[];
 	error?: string;
 	checkedAt: number;
 }
@@ -342,28 +352,93 @@ export class RpcBridge {
 		return invoke<NpmCommandResult>("update_cli_via_npm");
 	}
 
+	isLikelyCompatibilityError(err: unknown): boolean {
+		const message = this.getErrorMessage(err).toLowerCase();
+		return (
+			message.includes("unknown command") ||
+			message.includes("unsupported") ||
+			message.includes("not implemented") ||
+			message.includes("invalid command") ||
+			message.includes("unrecognized") ||
+			message.includes("command not found") ||
+			message.includes("method not found")
+		);
+	}
+
+	formatFeatureError(feature: string, err: unknown): string {
+		const message = this.getErrorMessage(err);
+		if (this.isLikelyCompatibilityError(err)) {
+			return `${feature} is unavailable with the current CLI version. Update pi in Settings → CLI Runtime.`;
+		}
+		if (!this.isConnected) {
+			return `Disconnected from pi while running ${feature}. Reconnect by reselecting a project/session.`;
+		}
+		return `${feature} failed: ${message}`;
+	}
+
 	async checkRpcCompatibility(): Promise<RpcCompatibilityReport> {
 		const checks: string[] = [];
-		try {
-			await this.getState();
-			checks.push("get_state");
-			await this.getCommands();
-			checks.push("get_commands");
-			await this.getAvailableModels();
-			checks.push("get_available_models");
-			return {
-				ok: true,
-				checks,
-				checkedAt: Date.now(),
-			};
-		} catch (err) {
+		const failedChecks: string[] = [];
+		const optionalWarnings: string[] = [];
+		const details: RpcCompatibilityCheck[] = [];
+
+		const runCheck = async (
+			name: string,
+			optional: boolean,
+			runner: () => Promise<unknown>,
+		): Promise<void> => {
+			try {
+				await runner();
+				details.push({ name, optional, supported: true });
+				if (!optional) checks.push(name);
+			} catch (err) {
+				const message = this.getErrorMessage(err);
+				details.push({ name, optional, supported: false, message });
+				if (optional) {
+					optionalWarnings.push(this.formatFeatureError(name, err));
+				} else {
+					failedChecks.push(name);
+				}
+			}
+		};
+
+		if (!this.isConnected) {
 			return {
 				ok: false,
 				checks,
-				error: err instanceof Error ? err.message : String(err),
+				failedChecks: ["rpc_connection"],
+				optionalWarnings,
+				details: [{ name: "rpc_connection", optional: false, supported: false, message: "RPC is not connected" }],
+				error: "RPC is not connected.",
 				checkedAt: Date.now(),
 			};
 		}
+
+		await runCheck("get_state", false, () => this.getState());
+		await runCheck("get_commands", false, () => this.getCommands());
+		await runCheck("get_available_models", false, () => this.getAvailableModels());
+
+		// Optional capabilities in older/newer CLI versions can differ.
+		await runCheck("get_messages", true, () => this.getMessages());
+		await runCheck("get_session_stats", true, () => this.getSessionStats());
+		await runCheck("get_fork_messages", true, () => this.getForkMessages());
+		await runCheck("get_last_assistant_text", true, () => this.getLastAssistantText());
+
+		const ok = failedChecks.length === 0;
+		const error =
+			failedChecks.length > 0
+				? `Required RPC capabilities failed: ${failedChecks.join(", ")}. Update pi CLI and retry.`
+				: undefined;
+
+		return {
+			ok,
+			checks,
+			failedChecks,
+			optionalWarnings,
+			details,
+			error,
+			checkedAt: Date.now(),
+		};
 	}
 
 	// -------------------------------------------------------------------------
@@ -422,6 +497,12 @@ export class RpcBridge {
 			throw new Error((response.error as string) || "Unknown RPC error");
 		}
 		return (response.data ?? response) as T;
+	}
+
+	private getErrorMessage(err: unknown): string {
+		if (err instanceof Error && err.message) return err.message;
+		if (typeof err === "string") return err;
+		return String(err);
 	}
 
 	private rejectAllPending(reason: string): void {

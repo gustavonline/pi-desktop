@@ -1,25 +1,25 @@
 # TODO (Issue Mirror)
 
-This file tracks only the currently active GitHub issue for the current coding session.
-
 ## Active issue
-- Issue: _set before starting work_
-- Branch: _set before starting work_
-- Scope summary: _copy from issue description_
+- Issue: #3 — [P0] Add RPC capability fallback and compatibility messaging
+- Branch: feat/3-rpc-compat-fallback
+- Scope summary: Add compatibility probing + graceful feature fallback messaging when CLI/RPC capabilities differ.
 
 ## Acceptance criteria (from issue)
-- [ ] Criterion 1
-- [ ] Criterion 2
-- [ ] Criterion 3
+- [x] Missing/non-supported RPC calls are surfaced as actionable messages
+- [x] Feature areas degrade gracefully without crashing UI
+- [x] Settings panel reports compatibility state clearly
 
 ## Session checklist
-- [ ] Implementation done
-- [ ] `npm run check` passed
-- [ ] `npm run build:frontend` passed
-- [ ] `cargo check` passed
+- [x] Implementation done
+- [x] `npm run check` passed
+- [x] `npm run build:frontend` passed
+- [x] `cargo check` passed
 - [ ] Manual smoke checks done for changed flow
-- [ ] Changes committed and pushed
-- [ ] PR opened/updated
+- [x] Changes committed and pushed
+- [x] PR opened/updated
 
 ## Session notes
-- _Use this section for short notes and decisions linked to the active issue only._
+- Expanded `checkRpcCompatibility()` with required + optional capability checks and structured warnings.
+- Added `rpcBridge.formatFeatureError()` for actionable compatibility-aware error messages.
+- Wired compatibility status details into Settings → CLI Runtime and applied feature-error fallbacks in chat/settings actions.

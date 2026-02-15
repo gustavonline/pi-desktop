@@ -89,6 +89,11 @@ async function runStartupCompatibilityCheck(): Promise<void> {
 				`RPC compatibility check failed${report.error ? `: ${report.error}` : ""}. Open Settings → CLI Runtime for details.`,
 				"error",
 			);
+		} else if (report.optionalWarnings.length > 0) {
+			chatView?.notify(
+				`Some CLI features may be unavailable with this version. Open Settings → CLI Runtime for compatibility details.`,
+				"info",
+			);
 		}
 	} catch (err) {
 		chatView?.notify(
