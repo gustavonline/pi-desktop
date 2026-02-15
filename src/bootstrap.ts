@@ -1,8 +1,7 @@
 /**
- * Pi Desktop - app bootstrap
+ * Pi Desktop bootstrap (framework-neutral shell orchestration)
  */
 
-import { html, render } from "lit";
 import { ChatView } from "./components/chat-view.js";
 import { CommandPalette } from "./components/command-palette.js";
 import { ExtensionUiHandler } from "./components/extension-ui-handler.js";
@@ -13,7 +12,6 @@ import { ShortcutsPanel } from "./components/shortcuts-panel.js";
 import { Sidebar } from "./components/sidebar.js";
 import { TitleBar } from "./components/titlebar.js";
 import { type CliUpdateStatus, rpcBridge } from "./rpc/bridge.js";
-import "./styles/app.css";
 
 let titleBar: TitleBar | null = null;
 let sidebar: Sidebar | null = null;
@@ -162,19 +160,59 @@ async function updateCliFromTitlebar(): Promise<void> {
 	}
 }
 
+function escapeHtml(value: string): string {
+	return value
+		.replaceAll("&", "&amp;")
+		.replaceAll("<", "&lt;")
+		.replaceAll(">", "&gt;")
+		.replaceAll('"', "&quot;")
+		.replaceAll("'", "&#39;");
+}
+
+function mountLoadingView(app: HTMLElement): void {
+	app.innerHTML = `
+		<div class="app-shell loading">
+			<div id="titlebar"></div>
+			<div class="loading-view">Starting pi agent…</div>
+		</div>
+	`;
+}
+
+function mountConnectionError(app: HTMLElement): void {
+	const safeError = escapeHtml(connectionError ?? "Unknown error");
+	app.innerHTML = `
+		<div class="error-shell">
+			<div class="error-card">
+				<h1>Connection failed</h1>
+				<p>${safeError}</p>
+				<button id="retry-init-btn" type="button">Retry</button>
+			</div>
+		</div>
+	`;
+	const retryBtn = app.querySelector("#retry-init-btn") as HTMLButtonElement | null;
+	retryBtn?.addEventListener("click", () => {
+		connectionError = null;
+		void initialize();
+	});
+}
+
+function mountAppShell(app: HTMLElement): void {
+	app.innerHTML = `
+		<div class="app-shell">
+			<div id="titlebar"></div>
+			<div class="content-shell">
+				<div id="sidebar-container"></div>
+				<div id="chat-container"></div>
+			</div>
+		</div>
+	`;
+}
+
 async function initialize(): Promise<void> {
 	const app = appHost;
 	if (!app) throw new Error("App container not found");
 
-	render(
-		html`
-			<div class="app-shell loading">
-				<div id="titlebar"></div>
-				<div class="loading-view">Starting pi agent…</div>
-			</div>
-		`,
-		app,
-	);
+	mountLoadingView(app);
 
 	const titlebarEl = document.getElementById("titlebar");
 	if (titlebarEl) titleBar = new TitleBar(titlebarEl);
@@ -464,7 +502,7 @@ function setupKeyboardShortcuts(): void {
 		}
 
 		if (e.key === "Escape") {
-			chatView?.abortCurrentRun();
+			void chatView?.abortCurrentRun();
 			return;
 		}
 
@@ -480,36 +518,11 @@ function renderApp(): void {
 	if (!app) return;
 
 	if (connectionError) {
-		render(
-			html`
-				<div class="error-shell">
-					<div class="error-card">
-						<h1>Connection failed</h1>
-						<p>${connectionError}</p>
-						<button @click=${() => {
-							connectionError = null;
-							void initialize();
-						}}>Retry</button>
-					</div>
-				</div>
-			`,
-			app,
-		);
+		mountConnectionError(app);
 		return;
 	}
 
-	render(
-		html`
-			<div class="app-shell">
-				<div id="titlebar"></div>
-				<div class="content-shell">
-					<div id="sidebar-container"></div>
-					<div id="chat-container"></div>
-				</div>
-			</div>
-		`,
-		app,
-	);
+	mountAppShell(app);
 
 	const titlebarEl = document.getElementById("titlebar");
 	if (titlebarEl) {

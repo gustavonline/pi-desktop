@@ -2,7 +2,8 @@
  * Session Browser - resume, search, and fork sessions
  */
 
-import { html, nothing, render } from "lit";
+import { type ReactElement } from "react";
+import { createRoot, type Root } from "react-dom/client";
 import { rpcBridge } from "../rpc/bridge.js";
 
 interface SessionInfo {
@@ -34,6 +35,7 @@ function formatCost(cost: number): string {
 
 export class SessionBrowser {
 	private container: HTMLElement;
+	private root: Root;
 	private isOpen = false;
 	private sessions: SessionInfo[] = [];
 	private filteredSessions: SessionInfo[] = [];
@@ -49,6 +51,7 @@ export class SessionBrowser {
 
 	constructor(container: HTMLElement) {
 		this.container = container;
+		this.root = createRoot(container);
 		this.render();
 	}
 
@@ -203,98 +206,114 @@ export class SessionBrowser {
 		return date.toLocaleDateString();
 	}
 
-	render(): void {
-		if (!this.isOpen) {
-			this.container.innerHTML = "";
-			return;
-		}
-
+	private renderOpen(): ReactElement {
 		const list = this.filteredSessions;
 
-		const template = html`
-			<div class="overlay" @click=${(e: Event) => e.target === e.currentTarget && this.close()}>
-				<div class="session-browser-card">
-					<div class="session-browser-header">
+		return (
+			<div
+				className="overlay"
+				onClick={(e) => {
+					if (e.target === e.currentTarget) this.close();
+				}}
+			>
+				<div className="session-browser-card">
+					<div className="session-browser-header">
 						<div>
-							<h2>${this.forkMode ? "Fork from Message" : "Sessions"}</h2>
-							<p>${this.forkMode ? "Select a user message to fork from." : "Resume existing sessions across projects."}</p>
+							<h2>{this.forkMode ? "Fork from Message" : "Sessions"}</h2>
+							<p>{this.forkMode ? "Select a user message to fork from." : "Resume existing sessions across projects."}</p>
 						</div>
-						<div class="session-browser-actions">
-							${this.forkMode
-								? html`<button class="ghost-btn" @click=${() => this.closeForkMode()}>Back</button>`
-								: html`<button class="ghost-btn" @click=${() => this.newSession()}>New Session</button>`}
-							<button class="ghost-btn" @click=${() => this.close()}>Close</button>
+						<div className="session-browser-actions">
+							{this.forkMode ? (
+								<button className="ghost-btn" onClick={() => this.closeForkMode()} type="button">
+									Back
+								</button>
+							) : (
+								<button className="ghost-btn" onClick={() => void this.newSession()} type="button">
+									New Session
+								</button>
+							)}
+							<button className="ghost-btn" onClick={() => this.close()} type="button">
+								Close
+							</button>
 						</div>
 					</div>
 
-					${!this.forkMode
-						? html`
-							<div class="session-browser-search">
-								<input
-									id="session-search"
-									type="text"
-									placeholder="Search name, folder, or path..."
-									.value=${this.query}
-									@input=${(e: Event) => {
-										this.query = (e.target as HTMLInputElement).value;
-										this.applyFilter();
-										this.render();
-									}}
-								/>
-							</div>
-						`
-						: nothing}
+					{!this.forkMode ? (
+						<div className="session-browser-search">
+							<input
+								id="session-search"
+								type="text"
+								placeholder="Search name, folder, or path..."
+								value={this.query}
+								onInput={(e) => {
+									this.query = e.currentTarget.value;
+									this.applyFilter();
+									this.render();
+								}}
+							/>
+						</div>
+					) : null}
 
-					<div class="session-browser-list">
-						${this.forkMode
-							? this.loadingForks
-								? html`<div class="overlay-empty">Loading fork points...</div>`
-								: this.forkOptions.length === 0
-									? html`<div class="overlay-empty">No fork points found.</div>`
-									: this.forkOptions.map(
-											(option) => html`
-												<button class="session-row" @click=${() => this.forkFrom(option)}>
-													<div class="session-row-main">${option.text.slice(0, 180)}</div>
-													<div class="session-row-meta">fork here</div>
-												</button>
-											`,
-									  )
-							: this.loading
-								? html`<div class="overlay-empty">Loading sessions...</div>`
-								: list.length === 0
-									? html`<div class="overlay-empty">No sessions found.</div>`
-									: list.map(
-											(session) => html`
-												<button class="session-row" @click=${() => this.selectSession(session)} title=${session.path}>
-													<div class="session-row-main">
-														<div class="session-row-title">${session.name || "Untitled Session"}</div>
-														<div class="session-row-subtitle">${session.cwd || session.path}</div>
-													</div>
-													<div class="session-row-meta">
-														<div>${this.formatDate(session.modifiedAt)}</div>
-														<div>${formatTokens(session.tokens)} tok · ${formatCost(session.cost)}</div>
-													</div>
-												</button>
-											`,
-									  )}
+					<div className="session-browser-list">
+						{this.forkMode ? (
+							this.loadingForks ? (
+								<div className="overlay-empty">Loading fork points...</div>
+							) : this.forkOptions.length === 0 ? (
+								<div className="overlay-empty">No fork points found.</div>
+							) : (
+								this.forkOptions.map((option) => (
+									<button className="session-row" onClick={() => void this.forkFrom(option)} type="button" key={option.entryId}>
+										<div className="session-row-main">{option.text.slice(0, 180)}</div>
+										<div className="session-row-meta">fork here</div>
+									</button>
+								))
+							)
+						) : this.loading ? (
+							<div className="overlay-empty">Loading sessions...</div>
+						) : list.length === 0 ? (
+							<div className="overlay-empty">No sessions found.</div>
+						) : (
+							list.map((session) => (
+								<button className="session-row" onClick={() => void this.selectSession(session)} title={session.path} type="button" key={session.id}>
+									<div className="session-row-main">
+										<div className="session-row-title">{session.name || "Untitled Session"}</div>
+										<div className="session-row-subtitle">{session.cwd || session.path}</div>
+									</div>
+									<div className="session-row-meta">
+										<div>{this.formatDate(session.modifiedAt)}</div>
+										<div>
+											{formatTokens(session.tokens)} tok · {formatCost(session.cost)}
+										</div>
+									</div>
+								</button>
+							))
+						)}
 					</div>
 
-					${!this.forkMode
-						? html`
-							<div class="session-browser-footer">
-								<button class="ghost-btn" @click=${() => this.openForkMode()}>Fork current session</button>
-								<button class="ghost-btn" @click=${() => this.open()}>Refresh</button>
-							</div>
-						`
-						: nothing}
+					{!this.forkMode ? (
+						<div className="session-browser-footer">
+							<button className="ghost-btn" onClick={() => void this.openForkMode()} type="button">
+								Fork current session
+							</button>
+							<button className="ghost-btn" onClick={() => void this.open()} type="button">
+								Refresh
+							</button>
+						</div>
+					) : null}
 				</div>
 			</div>
-		`;
+		);
+	}
 
-		render(template, this.container);
+	render(): void {
+		if (!this.isOpen) {
+			this.root.render(<></>);
+			return;
+		}
+		this.root.render(this.renderOpen());
 	}
 
 	destroy(): void {
-		this.container.innerHTML = "";
+		this.root.unmount();
 	}
 }

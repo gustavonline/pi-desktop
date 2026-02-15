@@ -2,7 +2,8 @@
  * Command Palette - slash commands + desktop actions
  */
 
-import { html, nothing, render } from "lit";
+import { type ReactElement } from "react";
+import { createRoot, type Root } from "react-dom/client";
 import { rpcBridge } from "../rpc/bridge.js";
 
 interface RpcCommand {
@@ -30,6 +31,7 @@ interface BuiltinAction {
 
 export class CommandPalette {
 	private container: HTMLElement;
+	private root: Root;
 	private isOpen = false;
 	private commands: PaletteCommand[] = [];
 	private filteredCommands: PaletteCommand[] = [];
@@ -40,6 +42,7 @@ export class CommandPalette {
 
 	constructor(container: HTMLElement) {
 		this.container = container;
+		this.root = createRoot(container);
 		this.render();
 	}
 
@@ -171,66 +174,81 @@ export class CommandPalette {
 		}
 	}
 
-	render(): void {
-		if (!this.isOpen) {
-			this.container.innerHTML = "";
-			return;
-		}
-
-		const template = html`
-			<div class="overlay" @click=${(e: Event) => e.target === e.currentTarget && this.close()}>
-				<div class="command-palette-card">
-					<div class="command-palette-search">
+	private renderOpen(): ReactElement {
+		return (
+			<div
+				className="overlay"
+				onClick={(e) => {
+					if (e.target === e.currentTarget) this.close();
+				}}
+			>
+				<div className="command-palette-card">
+					<div className="command-palette-search">
 						<input
 							type="text"
 							placeholder="Search commands, skills, templates…"
-							.value=${this.searchQuery}
-							@input=${(e: Event) => {
-								this.searchQuery = (e.target as HTMLInputElement).value;
+							value={this.searchQuery}
+							onInput={(e) => {
+								this.searchQuery = e.currentTarget.value;
 								this.filterCommands();
 								this.render();
 							}}
-							@keydown=${(e: KeyboardEvent) => this.handleKeydown(e)}
+							onKeyDown={(e) => this.handleKeydown(e.nativeEvent)}
 						/>
 					</div>
 
-					<div class="command-palette-list">
-						${this.filteredCommands.length === 0
-							? html`<div class="overlay-empty">No command matches your query.</div>`
-							: this.filteredCommands.map(
-									(command, index) => html`
-										<button
-											class="command-row ${index === this.selectedIndex ? "selected" : ""}"
-											@click=${() => this.executeCommand(command)}
-											@mouseenter=${() => {
-												this.selectedIndex = index;
-												this.render();
-											}}
-										>
-											<div class="command-row-icon">${this.getSourceIcon(command.source)}</div>
-											<div class="command-row-main">
-												<div class="command-row-title">${command.source === "builtin" ? command.name : `/${command.name}`}</div>
-												<div class="command-row-subtitle">${command.description}</div>
-											</div>
-											<div class="command-row-source">${command.source}</div>
-										</button>
-									`,
-							  )}
+					<div className="command-palette-list">
+						{this.filteredCommands.length === 0 ? (
+							<div className="overlay-empty">No command matches your query.</div>
+						) : (
+							this.filteredCommands.map((command, index) => (
+								<button
+									className={`command-row ${index === this.selectedIndex ? "selected" : ""}`}
+									onClick={() => void this.executeCommand(command)}
+									onMouseEnter={() => {
+										this.selectedIndex = index;
+										this.render();
+									}}
+									type="button"
+									key={command.id}
+								>
+									<div className="command-row-icon">{this.getSourceIcon(command.source)}</div>
+									<div className="command-row-main">
+										<div className="command-row-title">{command.source === "builtin" ? command.name : `/${command.name}`}</div>
+										<div className="command-row-subtitle">{command.description}</div>
+									</div>
+									<div className="command-row-source">{command.source}</div>
+								</button>
+							))
+						)}
 					</div>
 
-					<div class="command-palette-footer">
-						<span><kbd>↑</kbd><kbd>↓</kbd> navigate</span>
-						<span><kbd>Enter</kbd> run</span>
-						<span><kbd>Esc</kbd> close</span>
+					<div className="command-palette-footer">
+						<span>
+							<kbd>↑</kbd>
+							<kbd>↓</kbd> navigate
+						</span>
+						<span>
+							<kbd>Enter</kbd> run
+						</span>
+						<span>
+							<kbd>Esc</kbd> close
+						</span>
 					</div>
 				</div>
 			</div>
-		`;
+		);
+	}
 
-		render(template, this.container);
+	render(): void {
+		if (!this.isOpen) {
+			this.root.render(<></>);
+			return;
+		}
+		this.root.render(this.renderOpen());
 	}
 
 	destroy(): void {
-		this.container.innerHTML = "";
+		this.root.unmount();
 	}
 }
