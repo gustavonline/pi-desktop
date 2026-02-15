@@ -3,7 +3,8 @@
  */
 
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { html, nothing, render } from "lit";
+import { type ReactElement } from "react";
+import { createRoot, type Root } from "react-dom/client";
 import { type CliUpdateStatus, type RpcSessionState, rpcBridge } from "../rpc/bridge.js";
 
 interface SessionStats {
@@ -11,8 +12,101 @@ interface SessionStats {
 	cost?: number;
 }
 
+interface TitleBarViewProps {
+	currentProject: string | null;
+	modelId: string;
+	thinkingLevel: string | undefined;
+	tokens: string;
+	cost: string;
+	pending: number;
+	updateAvailable: boolean;
+	canUpdateInApp: boolean;
+	cliUpdating: boolean;
+	updateTitle: string;
+	isMaximized: boolean;
+	onNewSession: () => void;
+	onOpenSessions: () => void;
+	onOpenCommandPalette: () => void;
+	onOpenSettings: () => void;
+	onUpdateCli: () => void;
+	onMinimize: () => void;
+	onToggleMaximize: () => void;
+	onClose: () => void;
+}
+
+function TitleBarView(props: TitleBarViewProps): ReactElement {
+	return (
+		<div className="titlebar" data-tauri-drag-region>
+			<div className="titlebar-left" data-tauri-drag-region>
+				<span className="titlebar-app">pi</span>
+				{props.currentProject ? (
+					<>
+						<span className="titlebar-sep">/</span>
+						<span className="titlebar-project">{props.currentProject}</span>
+					</>
+				) : null}
+			</div>
+
+			<div className="titlebar-center" data-tauri-drag-region>
+				<span className="titlebar-model" title={props.modelId}>
+					{props.modelId}
+				</span>
+				{props.thinkingLevel && props.thinkingLevel !== "off" ? (
+					<span className="titlebar-pill thinking">{props.thinkingLevel}</span>
+				) : null}
+				{props.pending > 0 ? <span className="titlebar-pill queue">{props.pending} queued</span> : null}
+				<span className="titlebar-meta">
+					{props.tokens} tok · {props.cost}
+				</span>
+			</div>
+
+			<div className="titlebar-right">
+				<button className="titlebar-action" onClick={props.onNewSession} title="New session" type="button">
+					New
+				</button>
+				<button className="titlebar-action" onClick={props.onOpenSessions} title="Sessions" type="button">
+					Sessions
+				</button>
+				<button className="titlebar-action" onClick={props.onOpenCommandPalette} title="Commands" type="button">
+					⌘K
+				</button>
+				{props.updateAvailable ? (
+					<button
+						className="titlebar-action update"
+						disabled={props.cliUpdating}
+						onClick={() => (props.canUpdateInApp ? props.onUpdateCli() : props.onOpenSettings())}
+						title={props.updateTitle}
+						type="button"
+					>
+						{props.cliUpdating ? "Updating…" : props.canUpdateInApp ? "Update CLI" : "CLI Update"}
+					</button>
+				) : null}
+				<button className="titlebar-action" onClick={props.onOpenSettings} title="Settings" type="button">
+					⚙
+				</button>
+
+				<button className="titlebar-window" onClick={props.onMinimize} title="Minimize" type="button">
+					—
+				</button>
+				<button
+					className="titlebar-window"
+					onClick={props.onToggleMaximize}
+					title={props.isMaximized ? "Restore" : "Maximize"}
+					type="button"
+				>
+					{props.isMaximized ? "❐" : "□"}
+				</button>
+				<button className="titlebar-window close" onClick={props.onClose} title="Close" type="button">
+					✕
+				</button>
+			</div>
+		</div>
+	);
+}
+
 export class TitleBar {
 	private container: HTMLElement;
+	private root: Root;
 	private state: RpcSessionState | null = null;
 	private currentProject: string | null = null;
 	private isMaximized = false;
@@ -29,6 +123,7 @@ export class TitleBar {
 
 	constructor(container: HTMLElement) {
 		this.container = container;
+		this.root = createRoot(container);
 		void this.checkMaximized();
 		void this.refreshStats();
 		this.startStatsRefresh();
@@ -154,6 +249,7 @@ export class TitleBar {
 
 	destroy(): void {
 		this.stopStatsRefresh();
+		this.root.unmount();
 	}
 
 	render(): void {
@@ -168,51 +264,28 @@ export class TitleBar {
 			? `CLI ${this.cliStatus.current_version || "unknown"} → ${this.cliStatus.latest_version || "latest"}`
 			: "CLI update status";
 
-		const template = html`
-			<div class="titlebar" data-tauri-drag-region>
-				<div class="titlebar-left" data-tauri-drag-region>
-					<span class="titlebar-app">pi</span>
-					${this.currentProject ? html`<span class="titlebar-sep">/</span><span class="titlebar-project">${this.currentProject}</span>` : nothing}
-				</div>
-
-				<div class="titlebar-center" data-tauri-drag-region>
-					<span class="titlebar-model" title=${modelId}>${modelId}</span>
-					${thinkingLevel && thinkingLevel !== "off"
-						? html`<span class="titlebar-pill thinking">${thinkingLevel}</span>`
-						: nothing}
-					${pending > 0 ? html`<span class="titlebar-pill queue">${pending} queued</span>` : nothing}
-					<span class="titlebar-meta">${tokens} tok · ${cost}</span>
-				</div>
-
-				<div class="titlebar-right">
-					<button class="titlebar-action" @click=${() => this.onNewSession?.()} title="New session">New</button>
-					<button class="titlebar-action" @click=${() => this.onOpenSessions?.()} title="Sessions">Sessions</button>
-					<button class="titlebar-action" @click=${() => this.onOpenCommandPalette?.()} title="Commands">⌘K</button>
-					${updateAvailable
-						? html`
-							<button
-								class="titlebar-action update"
-								?disabled=${this.cliUpdating}
-								@click=${() => {
-									if (canUpdateInApp) this.onUpdateCli?.();
-									else this.onOpenSettings?.();
-								}}
-								title=${updateTitle}
-							>
-								${this.cliUpdating ? "Updating…" : canUpdateInApp ? "Update CLI" : "CLI Update"}
-							</button>
-						`
-						: nothing}
-					<button class="titlebar-action" @click=${() => this.onOpenSettings?.()} title="Settings">⚙</button>
-
-					<button class="titlebar-window" @click=${() => this.minimize()} title="Minimize">—</button>
-					<button class="titlebar-window" @click=${() => this.toggleMaximize()} title=${this.isMaximized ? "Restore" : "Maximize"}>
-						${this.isMaximized ? "❐" : "□"}
-					</button>
-					<button class="titlebar-window close" @click=${() => this.close()} title="Close">✕</button>
-				</div>
-			</div>
-		`;
-		render(template, this.container);
+		this.root.render(
+			<TitleBarView
+				currentProject={this.currentProject}
+				modelId={modelId}
+				thinkingLevel={thinkingLevel}
+				tokens={tokens}
+				cost={cost}
+				pending={pending}
+				updateAvailable={updateAvailable}
+				canUpdateInApp={canUpdateInApp}
+				cliUpdating={this.cliUpdating}
+				updateTitle={updateTitle}
+				isMaximized={this.isMaximized}
+				onNewSession={() => this.onNewSession?.()}
+				onOpenSessions={() => this.onOpenSessions?.()}
+				onOpenCommandPalette={() => this.onOpenCommandPalette?.()}
+				onOpenSettings={() => this.onOpenSettings?.()}
+				onUpdateCli={() => this.onUpdateCli?.()}
+				onMinimize={() => void this.minimize()}
+				onToggleMaximize={() => void this.toggleMaximize()}
+				onClose={() => void this.close()}
+			/>,
+		);
 	}
 }

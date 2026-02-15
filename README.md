@@ -1,6 +1,6 @@
 # Pi Desktop
 
-A native-feeling, cross-platform desktop client for the **pi coding agent** CLI, built with **Tauri 2 + Rust + React** (with legacy Lit components during migration).
+A native-feeling, cross-platform desktop client for the **pi coding agent** CLI, built with **Tauri 2 + Rust + React** (with remaining Lit surfaces during migration).
 
 Pi Desktop uses `pi --mode rpc` under the hood and maps core CLI capabilities into a desktop UI.
 
@@ -69,7 +69,7 @@ App bundles land in:
 ## Architecture
 
 - **Frontend**: React (entrypoint/app shell) + Tailwind CSS utilities + custom CSS
-- **UI migration state**: legacy Lit component surfaces are currently hosted via a React bridge and being migrated incrementally
+- **UI migration state**: React-first entrypoint + incremental Lit-to-React surface migration (titlebar/sidebar/settings already React-rendered)
 - **Backend**: Rust (Tauri command bridge + package command runner)
 - **Protocol**: JSON-lines RPC over stdin/stdout to `pi --mode rpc`
 
@@ -91,8 +91,9 @@ The project is now **React-first at the entrypoint level** (`src/main.tsx`) to s
 
 Current status:
 - React hosts the desktop shell mount point
-- Existing Lit components are still active through `src/legacy-bootstrap.ts`
-- Active migration tracking issue: **#7**
+- `titlebar`, `sidebar`, and `settings-panel` are React-rendered surfaces
+- `chat-view` and legacy app orchestration are still Lit-based through `src/legacy-bootstrap.ts`
+- Active migration tracking issues: **#7**, **#9**, **#10**
 
 ---
 

@@ -2,7 +2,8 @@
  * Sidebar - Codex-inspired project navigator
  */
 
-import { html, nothing, render } from "lit";
+import { type ReactElement } from "react";
+import { createRoot, type Root } from "react-dom/client";
 
 interface SidebarSession {
 	id: string;
@@ -67,8 +68,142 @@ function formatCost(cost: number): string {
 	return `$${cost.toFixed(2)}`;
 }
 
+interface SidebarViewProps {
+	projects: Project[];
+	activeId: string | null;
+	onOpenExtensions: () => void;
+	onOpenSettings: () => void;
+	onOpenFolder: () => void;
+	onSelectProject: (projectId: string) => void;
+	onToggleProject: (projectId: string) => void;
+	onNewSessionInProject: (projectId: string) => void;
+	onRemoveProject: (projectId: string) => void;
+	onSelectSession: (projectId: string, sessionPath: string) => void;
+}
+
+function SidebarView(props: SidebarViewProps): ReactElement {
+	return (
+		<div className="h-full bg-[#171717] border-r border-[#262626] flex flex-col w-64">
+			<div className="p-2 border-b border-[#262626] space-y-1">
+				<button
+					className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-[#262626] transition-colors text-left"
+					onClick={props.onOpenExtensions}
+					type="button"
+				>
+					<span className="text-amber-400">⚡</span>
+					<span className="text-sm text-gray-200">Resources</span>
+				</button>
+			</div>
+
+			<div className="flex-1 overflow-y-auto p-2">
+				<div className="flex items-center justify-between px-2 mb-2">
+					<span className="text-[11px] uppercase tracking-wide text-gray-500">Projects</span>
+					<button className="text-gray-500 hover:text-gray-300 text-xs" onClick={props.onOpenFolder} title="Open project" type="button">
+						+
+					</button>
+				</div>
+
+				{props.projects.length === 0 ? (
+					<div className="px-2 py-2 text-xs text-gray-500">No projects</div>
+				) : (
+					props.projects.map((project) => (
+						<div className="mb-1" key={project.id}>
+							<div className="group flex items-center gap-1">
+								<button
+									className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg transition-colors ${
+										props.activeId === project.id ? "bg-[#262626]" : "hover:bg-[#222]"
+									}`}
+									onClick={() => {
+										props.onSelectProject(project.id);
+										props.onToggleProject(project.id);
+									}}
+									type="button"
+								>
+									<span className="w-2 h-2 rounded-full shrink-0" style={{ background: project.color }}></span>
+									<span className="text-sm text-gray-200 truncate flex-1 text-left">{project.name}</span>
+									<span className="text-gray-500 text-xs">{project.expanded ? "▾" : "▸"}</span>
+								</button>
+								<button
+									className="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-blue-400 text-xs px-1.5"
+									onClick={(e) => {
+										e.stopPropagation();
+										props.onNewSessionInProject(project.id);
+									}}
+									title="New session in project"
+									type="button"
+								>
+									+
+								</button>
+								<button
+									className="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-red-400 text-xs px-1.5"
+									onClick={(e) => {
+										e.stopPropagation();
+										props.onRemoveProject(project.id);
+									}}
+									title="Remove project"
+									type="button"
+								>
+									✕
+								</button>
+							</div>
+
+							{project.expanded ? (
+								<div className="ml-4 mt-1 space-y-0.5">
+									{project.loadingSessions ? (
+										<div className="px-2 py-1 text-[11px] text-gray-500">Loading sessions...</div>
+									) : project.sessions.length === 0 ? (
+										<div className="px-2 py-1 text-[11px] text-gray-500">No sessions</div>
+									) : (
+										project.sessions.map((session) => (
+											<button
+												className="w-full flex items-center justify-between px-2 py-1 rounded hover:bg-[#222] text-left"
+												onClick={() => props.onSelectSession(project.id, session.path)}
+												title={session.path}
+												type="button"
+												key={session.id}
+											>
+												<div className="min-w-0">
+													<div className="text-[11px] text-gray-400 truncate">{session.name}</div>
+													<div className="text-[10px] text-gray-600">
+														{formatTokens(session.tokens)} · {formatCost(session.cost)}
+													</div>
+												</div>
+												<span className="text-[10px] text-gray-600 ml-2">{formatRelativeDate(session.modifiedAt)}</span>
+											</button>
+										))
+									)}
+								</div>
+							) : null}
+						</div>
+					))
+				)}
+			</div>
+
+			<div className="p-2 border-t border-[#262626] space-y-1">
+				<button
+					className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-[#262626] transition-colors text-left"
+					onClick={props.onOpenFolder}
+					type="button"
+				>
+					<span className="text-gray-400">📁</span>
+					<span className="text-sm text-gray-300">Open Folder</span>
+				</button>
+				<button
+					className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-[#262626] transition-colors text-left"
+					onClick={props.onOpenSettings}
+					type="button"
+				>
+					<span className="text-gray-400">⚙️</span>
+					<span className="text-sm text-gray-300">Settings</span>
+				</button>
+			</div>
+		</div>
+	);
+}
+
 export class Sidebar {
 	private container: HTMLElement;
+	private root: Root;
 	private projects: Project[] = [];
 	private activeProjectId: string | null = null;
 
@@ -80,6 +215,7 @@ export class Sidebar {
 
 	constructor(container: HTMLElement) {
 		this.container = container;
+		this.root = createRoot(container);
 		this.loadPersistedProjects();
 		this.render();
 	}
@@ -167,7 +303,7 @@ export class Sidebar {
 		if (!project) return;
 		project.expanded = !project.expanded;
 		if (project.expanded && project.sessions.length === 0) {
-			this.loadSessionsForProject(projectId);
+			void this.loadSessionsForProject(projectId);
 		}
 		this.render();
 	}
@@ -180,15 +316,17 @@ export class Sidebar {
 
 		try {
 			const { invoke } = await import("@tauri-apps/api/core");
-			const sessions = await invoke<Array<{
-				id: string;
-				name: string | null;
-				path: string;
-				cwd: string | null;
-				modified_at: number;
-				tokens: number;
-				cost: number;
-			}>>("list_sessions");
+			const sessions = await invoke<
+				Array<{
+					id: string;
+					name: string | null;
+					path: string;
+					cwd: string | null;
+					modified_at: number;
+					tokens: number;
+					cost: number;
+				}>
+			>("list_sessions");
 
 			const projectPath = normalizePath(project.path);
 			const byProject = sessions.filter((s) => {
@@ -221,8 +359,7 @@ export class Sidebar {
 		this.onSessionSelect?.(projectId, sessionPath);
 	}
 
-	private newSessionInProject(projectId: string, e: Event): void {
-		e.stopPropagation();
+	private newSessionInProject(projectId: string): void {
 		const project = this.projects.find((p) => p.id === projectId);
 		if (!project) return;
 		this.activeProjectId = project.id;
@@ -234,8 +371,7 @@ export class Sidebar {
 		}, 900);
 	}
 
-	private removeProject(projectId: string, e: Event): void {
-		e.stopPropagation();
+	private removeProject(projectId: string): void {
 		this.projects = this.projects.filter((p) => p.id !== projectId);
 		if (this.activeProjectId === projectId) {
 			this.activeProjectId = this.projects[0]?.id ?? null;
@@ -277,122 +413,23 @@ export class Sidebar {
 	}
 
 	render(): void {
-		const activeId = this.activeProjectId;
+		this.root.render(
+			<SidebarView
+				projects={this.projects}
+				activeId={this.activeProjectId}
+				onOpenExtensions={() => this.onOpenExtensions?.()}
+				onOpenSettings={() => this.onOpenSettings?.()}
+				onOpenFolder={() => void this.openFolder()}
+				onSelectProject={(projectId) => this.selectProject(projectId)}
+				onToggleProject={(projectId) => this.toggleProject(projectId)}
+				onNewSessionInProject={(projectId) => this.newSessionInProject(projectId)}
+				onRemoveProject={(projectId) => this.removeProject(projectId)}
+				onSelectSession={(projectId, sessionPath) => this.selectSession(projectId, sessionPath)}
+			/>,
+		);
+	}
 
-		const template = html`
-			<div class="h-full bg-[#171717] border-r border-[#262626] flex flex-col w-64">
-				<!-- Top Actions -->
-				<div class="p-2 border-b border-[#262626] space-y-1">
-					<button
-						class="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-[#262626] transition-colors text-left"
-						@click=${() => this.onOpenExtensions?.()}
-					>
-						<span class="text-amber-400">⚡</span>
-						<span class="text-sm text-gray-200">Resources</span>
-					</button>
-				</div>
-
-				<!-- Projects -->
-				<div class="flex-1 overflow-y-auto p-2">
-					<div class="flex items-center justify-between px-2 mb-2">
-						<span class="text-[11px] uppercase tracking-wide text-gray-500">Projects</span>
-						<button
-							class="text-gray-500 hover:text-gray-300 text-xs"
-							@click=${() => this.openFolder()}
-							title="Open project"
-						>
-							+
-						</button>
-					</div>
-
-					${this.projects.length === 0
-						? html`<div class="px-2 py-2 text-xs text-gray-500">No projects</div>`
-						: this.projects.map(
-								(project) => html`
-									<div class="mb-1">
-										<div class="group flex items-center gap-1">
-											<button
-												class="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg transition-colors ${
-													activeId === project.id ? "bg-[#262626]" : "hover:bg-[#222]"
-												}"
-												@click=${() => {
-													this.selectProject(project.id);
-													this.toggleProject(project.id);
-												}}
-											>
-												<span class="w-2 h-2 rounded-full shrink-0" style="background:${project.color}"></span>
-												<span class="text-sm text-gray-200 truncate flex-1 text-left">${project.name}</span>
-												<span class="text-gray-500 text-xs">${project.expanded ? "▾" : "▸"}</span>
-											</button>
-											<button
-												class="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-blue-400 text-xs px-1.5"
-												@click=${(e: Event) => this.newSessionInProject(project.id, e)}
-												title="New session in project"
-											>
-												+
-											</button>
-											<button
-												class="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-red-400 text-xs px-1.5"
-												@click=${(e: Event) => this.removeProject(project.id, e)}
-												title="Remove project"
-											>
-												✕
-											</button>
-										</div>
-
-										${project.expanded
-											? html`
-												<div class="ml-4 mt-1 space-y-0.5">
-													${project.loadingSessions
-														? html`<div class="px-2 py-1 text-[11px] text-gray-500">Loading sessions...</div>`
-														: project.sessions.length === 0
-															? html`<div class="px-2 py-1 text-[11px] text-gray-500">No sessions</div>`
-															: project.sessions.map(
-																	(session) => html`
-																		<button
-																			class="w-full flex items-center justify-between px-2 py-1 rounded hover:bg-[#222] text-left"
-																			@click=${() => this.selectSession(project.id, session.path)}
-																			title=${session.path}
-																		>
-																			<div class="min-w-0">
-																				<div class="text-[11px] text-gray-400 truncate">${session.name}</div>
-																				<div class="text-[10px] text-gray-600">${formatTokens(session.tokens)} · ${formatCost(session.cost)}</div>
-																			</div>
-																			<span class="text-[10px] text-gray-600 ml-2">${formatRelativeDate(
-																				session.modifiedAt,
-																			)}</span>
-																		</button>
-																	`,
-																)
-													}
-												</div>
-											`
-											: nothing}
-									</div>
-								`,
-							)}
-				</div>
-
-				<!-- Bottom -->
-				<div class="p-2 border-t border-[#262626] space-y-1">
-					<button
-						class="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-[#262626] transition-colors text-left"
-						@click=${() => this.openFolder()}
-					>
-						<span class="text-gray-400">📁</span>
-						<span class="text-sm text-gray-300">Open Folder</span>
-					</button>
-					<button
-						class="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-[#262626] transition-colors text-left"
-						@click=${() => this.onOpenSettings?.()}
-					>
-						<span class="text-gray-400">⚙️</span>
-						<span class="text-sm text-gray-300">Settings</span>
-					</button>
-				</div>
-			</div>
-		`;
-
-		render(template, this.container);
+	destroy(): void {
+		this.root.unmount();
 	}
 }

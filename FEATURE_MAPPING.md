@@ -9,7 +9,7 @@ This document maps `pi-mono/packages/coding-agent` capabilities to this Tauri de
 | `pi --mode rpc` JSON protocol | ✅ Core transport used by app (`src/rpc/bridge.ts` + Rust process manager) |
 | Cross-platform binary/process execution | ✅ Tauri Rust backend discovers `pi` via dev path → bundled sidecar → PATH |
 | Native-like custom frame | ✅ Custom draggable titlebar + native window controls |
-| Frontend architecture for OSS scaling | ✅ React entrypoint (`src/main.tsx`) with legacy Lit host bridge during migration (`src/legacy-bootstrap.ts`) |
+| Frontend architecture for OSS scaling | ✅ React entrypoint (`src/main.tsx`) + React-rendered core surfaces (`titlebar`, `sidebar`, `settings-panel`) with remaining Lit bridge (`src/legacy-bootstrap.ts`) |
 | Session files in `~/.pi/agent/sessions` | ✅ Indexed via Rust backend (`list_sessions`) for sidebar/session browser |
 
 ## 2) Chat + Agent Loop
