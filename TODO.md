@@ -17,8 +17,8 @@
 - [x] `npm run build:frontend` passed
 - [x] `cargo check` passed
 - [x] Manual smoke checks done for changed flow
-- [ ] Changes committed and pushed
-- [ ] PR opened/updated
+- [x] Changes committed and pushed
+- [x] PR opened/updated
 
 ## Session notes
 - Issue #9 closed after PR #12 merged into `dev`.
