@@ -2,8 +2,9 @@
  * ChatView - rich RPC chat surface for Pi Desktop
  */
 
+import React, { type ReactElement } from "react";
+import { createRoot, type Root } from "react-dom/client";
 import "@mariozechner/mini-lit/dist/MarkdownBlock.js";
-import { html, nothing, render, type TemplateResult } from "lit";
 import {
 	type RpcImageInput,
 	type RpcSessionState,
@@ -78,6 +79,7 @@ function truncate(value: string, len: number): string {
 
 export class ChatView {
 	private container: HTMLElement;
+	private root: Root;
 	private messages: UiMessage[] = [];
 	private inputText = "";
 	private state: RpcSessionState | null = null;
@@ -105,6 +107,7 @@ export class ChatView {
 
 	constructor(container: HTMLElement) {
 		this.container = container;
+		this.root = createRoot(container);
 	}
 
 	setOnStateChange(cb: (state: RpcSessionState) => void): void {
@@ -938,179 +941,227 @@ export class ChatView {
 		});
 	}
 
-	private renderNotices(): TemplateResult | typeof nothing {
-		if (this.notices.length === 0) return nothing;
-		return html`
-			<div class="absolute top-4 right-4 z-30 flex flex-col gap-2 max-w-sm pointer-events-none">
-				${this.notices.map((notice) => {
+	private renderNotices(): ReactElement | null {
+		if (this.notices.length === 0) return null;
+		return (
+			<div className="absolute top-4 right-4 z-30 flex flex-col gap-2 max-w-sm pointer-events-none">
+				{this.notices.map((notice) => {
 					const cls =
 						notice.kind === "error"
 							? "bg-red-500/95"
 							: notice.kind === "success"
 								? "bg-emerald-500/95"
 								: "bg-zinc-800/95";
-					return html`<div class="rounded-xl px-3 py-2 text-xs text-white shadow-xl backdrop-blur ${cls}">${notice.text}</div>`;
+					return (
+						<div key={notice.id} className={`rounded-xl px-3 py-2 text-xs text-white shadow-xl backdrop-blur ${cls}`}>
+							{notice.text}
+						</div>
+					);
 				})}
 			</div>
-		`;
+		);
 	}
 
-	private renderToolbar(): TemplateResult {
+	private renderToolbar(): ReactElement {
 		const sessionName = this.state?.sessionName || "Untitled session";
 		const count = this.state?.messageCount ?? this.messages.length;
 		const pending = this.state?.pendingMessageCount ?? 0;
 		const streaming = this.currentIsStreaming();
 
-		return html`
-			<div class="chat-toolbar">
-				<div class="chat-toolbar-left">
-					<div class="chat-session-title" title=${sessionName}>${sessionName}</div>
-					<div class="chat-toolbar-meta">${count} msgs${pending > 0 ? html` · ${pending} queued` : nothing}</div>
-				</div>
-				<div class="chat-toolbar-actions">
-					<button class="ghost-btn" @click=${() => this.newSession()}>New</button>
-					<button class="ghost-btn" @click=${() => this.renameSession()}>Name</button>
-					<button class="ghost-btn" @click=${() => this.compactNow()}>Compact</button>
-					<button class="ghost-btn" @click=${() => this.openForkPicker()}>Fork</button>
-					<button class="ghost-btn" @click=${() => this.openHistoryViewer()}>History</button>
-					<button class="ghost-btn" @click=${() => this.copyLastMessage()}>Copy</button>
-					<button class="ghost-btn" @click=${() => this.exportToHtml()}>Export</button>
-					${streaming
-						? html`<button class="danger-btn" @click=${() => this.abortCurrentRun()}>Stop</button>`
-						: nothing}
-				</div>
-			</div>
-		`;
-	}
-
-	private renderUserMessage(msg: UiMessage): TemplateResult {
-		return html`
-			<div class="chat-row user-row" data-message-id=${msg.id}>
-				<div class="message-shell user-message-shell">
-					<div class="message-actions">
-						<button class="message-action-btn" @click=${() => this.editUserMessage(msg)}>Edit</button>
-						<button class="message-action-btn" @click=${() => this.retryUserMessage(msg)}>Retry</button>
-						<button class="message-action-btn" @click=${() => this.copyMessage(msg)}>Copy</button>
+		return (
+			<div className="chat-toolbar">
+				<div className="chat-toolbar-left">
+					<div className="chat-session-title" title={sessionName}>
+						{sessionName}
 					</div>
-					<div class="bubble user-bubble">
-						${msg.deliveryMode && msg.deliveryMode !== "prompt"
-							? html`<div class="bubble-chip">${msg.deliveryMode === "steer" ? "steer" : "follow-up"}</div>`
-							: nothing}
-						${msg.text ? html`<div class="bubble-text">${msg.text}</div>` : nothing}
-						${msg.attachments && msg.attachments.length > 0
-							? html`
-								<div class="attachment-grid">
-									${msg.attachments.map(
-										(img) => html`
-											<div class="attachment-item" title=${img.name}>
-												<img src=${img.previewUrl} alt=${img.name} />
-											</div>
-										`,
-									)}
-								</div>
-							`
-							: nothing}
+					<div className="chat-toolbar-meta">
+						{count} msgs{pending > 0 ? ` · ${pending} queued` : ""}
 					</div>
 				</div>
+				<div className="chat-toolbar-actions">
+					<button className="ghost-btn" onClick={() => void this.newSession()} type="button">
+						New
+					</button>
+					<button className="ghost-btn" onClick={() => void this.renameSession()} type="button">
+						Name
+					</button>
+					<button className="ghost-btn" onClick={() => void this.compactNow()} type="button">
+						Compact
+					</button>
+					<button className="ghost-btn" onClick={() => void this.openForkPicker()} type="button">
+						Fork
+					</button>
+					<button className="ghost-btn" onClick={() => this.openHistoryViewer()} type="button">
+						History
+					</button>
+					<button className="ghost-btn" onClick={() => void this.copyLastMessage()} type="button">
+						Copy
+					</button>
+					<button className="ghost-btn" onClick={() => void this.exportToHtml()} type="button">
+						Export
+					</button>
+					{streaming ? (
+						<button className="danger-btn" onClick={() => void this.abortCurrentRun()} type="button">
+							Stop
+						</button>
+					) : null}
+				</div>
 			</div>
-		`;
+		);
 	}
 
-	private renderThinking(msg: UiMessage): TemplateResult | typeof nothing {
-		if (!msg.thinking) return nothing;
+	private renderUserMessage(msg: UiMessage): ReactElement {
+		return (
+			<div className="chat-row user-row" data-message-id={msg.id} key={msg.id}>
+				<div className="message-shell user-message-shell">
+					<div className="message-actions">
+						<button className="message-action-btn" onClick={() => this.editUserMessage(msg)} type="button">
+							Edit
+						</button>
+						<button className="message-action-btn" onClick={() => void this.retryUserMessage(msg)} type="button">
+							Retry
+						</button>
+						<button className="message-action-btn" onClick={() => void this.copyMessage(msg)} type="button">
+							Copy
+						</button>
+					</div>
+					<div className="bubble user-bubble">
+						{msg.deliveryMode && msg.deliveryMode !== "prompt" ? (
+							<div className="bubble-chip">{msg.deliveryMode === "steer" ? "steer" : "follow-up"}</div>
+						) : null}
+						{msg.text ? <div className="bubble-text">{msg.text}</div> : null}
+						{msg.attachments && msg.attachments.length > 0 ? (
+							<div className="attachment-grid">
+								{msg.attachments.map((img) => (
+									<div className="attachment-item" title={img.name} key={img.id}>
+										<img src={img.previewUrl} alt={img.name} />
+									</div>
+								))}
+							</div>
+						) : null}
+					</div>
+				</div>
+			</div>
+		);
+	}
+
+	private renderThinking(msg: UiMessage): ReactElement | null {
+		if (!msg.thinking) return null;
 		const expanded = msg.thinkingExpanded ?? false;
 		const preview = truncate(msg.thinking.replace(/\s+/g, " "), 92);
-		return html`
-			<div class="thinking-block">
+		return (
+			<div className="thinking-block">
 				<button
-					class="thinking-toggle"
-					@click=${() => {
+					className="thinking-toggle"
+					onClick={() => {
 						msg.thinkingExpanded = !expanded;
 						this.render();
 					}}
+					type="button"
 				>
-					${expanded ? "▾" : "▸"} ${expanded ? "Thinking" : `Thinking: ${preview}`}
+					{expanded ? "▾" : "▸"} {expanded ? "Thinking" : `Thinking: ${preview}`}
 				</button>
-				${expanded ? html`<div class="thinking-content">${msg.thinking}</div>` : nothing}
+				{expanded ? <div className="thinking-content">{msg.thinking}</div> : null}
 			</div>
-		`;
+		);
 	}
 
-	private renderToolCall(tc: ToolCallBlock): TemplateResult {
+	private renderToolCall(tc: ToolCallBlock): ReactElement {
 		const statusClass = tc.isRunning ? "status-running" : tc.isError ? "status-error" : "status-ok";
 		const titleHint = tc.name === "bash" && typeof tc.args.command === "string" ? (tc.args.command as string) : "";
 		const output = tc.streamingOutput ?? tc.result;
 		const hasOutput = Boolean(output && output.length > 0);
 
-		return html`
-			<div class="tool-card">
+		return (
+			<div className="tool-card" key={tc.id}>
 				<button
-					class="tool-header"
-					@click=${() => {
+					className="tool-header"
+					onClick={() => {
 						tc.isExpanded = !tc.isExpanded;
 						this.render();
 					}}
+					type="button"
 				>
-					<span class="status-dot ${statusClass}"></span>
-					<span class="tool-name">${tc.name}</span>
-					${titleHint ? html`<span class="tool-hint" title=${titleHint}>${truncate(titleHint, 56)}</span>` : nothing}
-					<span class="tool-chevron">${tc.isExpanded ? "▾" : "▸"}</span>
+					<span className={`status-dot ${statusClass}`}></span>
+					<span className="tool-name">{tc.name}</span>
+					{titleHint ? (
+						<span className="tool-hint" title={titleHint}>
+							{truncate(titleHint, 56)}
+						</span>
+					) : null}
+					<span className="tool-chevron">{tc.isExpanded ? "▾" : "▸"}</span>
 				</button>
-				${tc.isExpanded && hasOutput
-					? html`<pre class="tool-output">${output}${tc.isRunning ? html`<span class="streaming-inline"></span>` : nothing}</pre>`
-					: nothing}
+				{tc.isExpanded && hasOutput ? (
+					<pre className="tool-output">
+						{output}
+						{tc.isRunning ? <span className="streaming-inline"></span> : null}
+					</pre>
+				) : null}
 			</div>
-		`;
+		);
 	}
 
-	private renderAssistantMessage(msg: UiMessage): TemplateResult {
-		return html`
-			<div class="chat-row assistant-row" data-message-id=${msg.id}>
-				<div class="message-shell assistant-message-shell">
-					<div class="message-actions">
-						<button class="message-action-btn" @click=${() => this.copyMessage(msg)}>Copy</button>
+	private renderAssistantMessage(msg: UiMessage): ReactElement {
+		return (
+			<div className="chat-row assistant-row" data-message-id={msg.id} key={msg.id}>
+				<div className="message-shell assistant-message-shell">
+					<div className="message-actions">
+						<button className="message-action-btn" onClick={() => void this.copyMessage(msg)} type="button">
+							Copy
+						</button>
 					</div>
-					<div class="assistant-block">
-						${this.renderThinking(msg)}
-						${msg.text
-							? html`
-								<div class="assistant-content">
-									<markdown-block .content=${msg.text} class=${msg.isStreaming ? "streaming-cursor" : ""}></markdown-block>
-								</div>
-							`
-							: nothing}
-						${msg.toolCalls.map((tc) => this.renderToolCall(tc))}
+					<div className="assistant-block">
+						{this.renderThinking(msg)}
+						{msg.text ? (
+							<div className="assistant-content">
+								{React.createElement("markdown-block", {
+									className: msg.isStreaming ? "streaming-cursor" : "",
+									ref: (el: HTMLElement | null) => {
+										if (el) (el as any).content = msg.text;
+									},
+								})}
+							</div>
+						) : null}
+						{msg.toolCalls.map((tc) => this.renderToolCall(tc))}
 					</div>
 				</div>
 			</div>
-		`;
+		);
 	}
 
-	private renderSystemMessage(msg: UiMessage): TemplateResult {
-		return html`
-			<div class="chat-row system-row" data-message-id=${msg.id}>
-				<div class="system-message">
-					${msg.label ? html`<div class="system-label">${msg.label}</div>` : nothing}
-					<div class="system-text">${msg.text}</div>
+	private renderSystemMessage(msg: UiMessage): ReactElement {
+		return (
+			<div className="chat-row system-row" data-message-id={msg.id} key={msg.id}>
+				<div className="system-message">
+					{msg.label ? <div className="system-label">{msg.label}</div> : null}
+					<div className="system-text">{msg.text}</div>
 				</div>
 			</div>
-		`;
+		);
 	}
 
-	private renderEmptyState(): TemplateResult {
-		return html`
-			<div class="empty-state">
-				<div class="empty-logo">pi</div>
-				<div class="empty-subtitle">Minimal desktop harness for the pi coding agent.</div>
-				<div class="empty-actions">
-					<button class="ghost-btn" @click=${() => this.setInputText("List all TypeScript files in this project")}>List files</button>
-					<button class="ghost-btn" @click=${() => this.setInputText("Review this codebase and suggest improvements")}>Review codebase</button>
+	private renderEmptyState(): ReactElement {
+		return (
+			<div className="empty-state">
+				<div className="empty-logo">pi</div>
+				<div className="empty-subtitle">Minimal desktop harness for the pi coding agent.</div>
+				<div className="empty-actions">
+					<button className="ghost-btn" onClick={() => this.setInputText("List all TypeScript files in this project")} type="button">
+						List files
+					</button>
+					<button
+						className="ghost-btn"
+						onClick={() => this.setInputText("Review this codebase and suggest improvements")}
+						type="button"
+					>
+						Review codebase
+					</button>
 				</div>
 			</div>
-		`;
+		);
 	}
 
-	private renderComposerControls(): TemplateResult {
+	private renderComposerControls(): ReactElement {
 		const currentProvider = this.state?.model?.provider ?? "";
 		const currentModelId = this.state?.model?.id ?? "";
 		const currentModelValue = currentProvider && currentModelId ? `${currentProvider}::${currentModelId}` : "";
@@ -1119,107 +1170,113 @@ export class ChatView {
 
 		const showAdvancedThinking = this.availableModels.some((m) => m.reasoning);
 
-		return html`
-			<div class="composer-controls">
-				<div class="control-group">
+		return (
+			<div className="composer-controls">
+				<div className="control-group">
 					<select
-						class="composer-select"
-						.value=${currentModelValue}
-						?disabled=${this.loadingModels || this.settingModel}
-						@change=${(e: Event) => {
-							const value = (e.target as HTMLSelectElement).value;
+						className="composer-select"
+						value={currentModelValue}
+						disabled={this.loadingModels || this.settingModel}
+						onChange={(e) => {
+							const value = e.target.value;
 							const [provider, ...rest] = value.split("::");
 							const modelId = rest.join("::");
 							if (!provider || !modelId || value === currentModelValue) return;
 							void this.setModel(provider, modelId);
 						}}
 					>
-						${this.loadingModels ? html`<option value="">Loading models…</option>` : nothing}
-						${!this.loadingModels && currentModelValue && !this.availableModels.some((m) => `${m.provider}::${m.id}` === currentModelValue)
-							? html`<option value=${currentModelValue}>${currentProvider}/${currentModelId}</option>`
-							: nothing}
-						${this.availableModels.map((m) => html`<option value=${`${m.provider}::${m.id}`}>${m.label}</option>`)}
+						{this.loadingModels ? <option value="">Loading models…</option> : null}
+						{!this.loadingModels && currentModelValue && !this.availableModels.some((m) => `${m.provider}::${m.id}` === currentModelValue) ? (
+							<option value={currentModelValue}>{`${currentProvider}/${currentModelId}`}</option>
+						) : null}
+						{this.availableModels.map((m) => (
+							<option value={`${m.provider}::${m.id}`} key={`${m.provider}-${m.id}`}>
+								{m.label}
+							</option>
+						))}
 					</select>
 
 					<select
-						class="composer-select thinking-select"
-						.value=${thinking}
-						?disabled=${this.settingThinking}
-						@change=${(e: Event) => void this.setThinkingLevel((e.target as HTMLSelectElement).value as ThinkingLevel)}
+						className="composer-select thinking-select"
+						value={thinking}
+						disabled={this.settingThinking}
+						onChange={(e) => void this.setThinkingLevel(e.target.value as ThinkingLevel)}
 					>
 						<option value="off">thinking: off</option>
 						<option value="minimal">thinking: minimal</option>
 						<option value="low">thinking: low</option>
 						<option value="medium">thinking: medium</option>
 						<option value="high">thinking: high</option>
-						${showAdvancedThinking ? html`<option value="xhigh">thinking: xhigh</option>` : nothing}
+						{showAdvancedThinking ? <option value="xhigh">thinking: xhigh</option> : null}
 					</select>
 				</div>
 
-				<div class="control-group right">
-					${this.compactionStatus ? html`<span class="status-pill compact">${this.compactionStatus}</span>` : nothing}
-					${this.retryStatus ? html`<span class="status-pill retry">${this.retryStatus}</span>` : nothing}
-					${isStreaming ? html`<span class="status-pill streaming">streaming</span>` : nothing}
+				<div className="control-group right">
+					{this.compactionStatus ? <span className="status-pill compact">{this.compactionStatus}</span> : null}
+					{this.retryStatus ? <span className="status-pill retry">{this.retryStatus}</span> : null}
+					{isStreaming ? <span className="status-pill streaming">streaming</span> : null}
 				</div>
 			</div>
-		`;
+		);
 	}
 
-	private renderPendingImages(): TemplateResult | typeof nothing {
-		if (this.pendingImages.length === 0) return nothing;
-		return html`
-			<div class="composer-attachments">
-				${this.pendingImages.map(
-					(img) => html`
-						<div class="composer-attachment">
-							<img src=${img.previewUrl} alt=${img.name} />
-							<div class="composer-attachment-meta">
-								<div>${truncate(img.name, 18)}</div>
-								<div>${Math.max(1, Math.round(img.size / 1024))} KB</div>
-							</div>
-							<button @click=${() => this.removePendingImage(img.id)}>✕</button>
+	private renderPendingImages(): ReactElement | null {
+		if (this.pendingImages.length === 0) return null;
+		return (
+			<div className="composer-attachments">
+				{this.pendingImages.map((img) => (
+					<div className="composer-attachment" key={img.id}>
+						<img src={img.previewUrl} alt={img.name} />
+						<div className="composer-attachment-meta">
+							<div>{truncate(img.name, 18)}</div>
+							<div>{Math.max(1, Math.round(img.size / 1024))} KB</div>
 						</div>
-					`,
-				)}
+						<button onClick={() => this.removePendingImage(img.id)} type="button">
+							✕
+						</button>
+					</div>
+				))}
 			</div>
-		`;
+		);
 	}
 
-	private renderComposer(): TemplateResult {
+	private renderComposer(): ReactElement {
 		const isStreaming = this.currentIsStreaming();
 		const canSend = this.inputText.trim().length > 0 || this.pendingImages.length > 0;
 
-		return html`
-			<div class="composer-shell">
-				<div class="composer-inner">
-					${this.renderComposerControls()}
-					${this.renderPendingImages()}
+		return (
+			<div className="composer-shell">
+				<div className="composer-inner">
+					{this.renderComposerControls()}
+					{this.renderPendingImages()}
 
-					<div class="composer-row">
+					<div className="composer-row">
 						<button
-							class="icon-btn"
+							className="icon-btn"
 							title="Attach image"
-							@click=${() => {
+							onClick={() => {
 								const input = this.container.querySelector("#file-picker") as HTMLInputElement | null;
 								input?.click();
 							}}
+							type="button"
 						>
 							📎
 						</button>
 
 						<textarea
 							id="chat-input"
-							class="chat-input"
+							className="chat-input"
 							placeholder="Message pi…  Enter send · Alt+Enter follow-up · Shift+Enter newline"
-							rows="1"
-							.value=${this.inputText}
-							@input=${(e: Event) => {
-								const ta = e.target as HTMLTextAreaElement;
+							rows={1}
+							value={this.inputText}
+							onInput={(e) => {
+								const ta = e.currentTarget;
 								this.inputText = ta.value;
 								ta.style.height = "auto";
 								ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
+								this.render();
 							}}
-							@paste=${(e: ClipboardEvent) => {
+							onPaste={(e) => {
 								const items = Array.from(e.clipboardData?.items || []);
 								const files = items
 									.filter((item) => item.type.startsWith("image/"))
@@ -1230,7 +1287,7 @@ export class ChatView {
 									void this.prepareImages(files);
 								}
 							}}
-							@keydown=${(e: KeyboardEvent) => {
+							onKeyDown={(e) => {
 								if (e.key === "Enter" && !e.shiftKey) {
 									e.preventDefault();
 									if (e.altKey) {
@@ -1243,62 +1300,75 @@ export class ChatView {
 							}}
 						></textarea>
 
-						${isStreaming
-							? html`
-								<div class="stream-send-group">
-									<button class="send-btn secondary" ?disabled=${!canSend} @click=${() => this.sendMessage("followUp")}>Follow-up</button>
-									<button class="send-btn" ?disabled=${!canSend} @click=${() => this.sendMessage("steer")}>Steer</button>
-								</div>
-							`
-							: html`<button class="send-btn" ?disabled=${!canSend} @click=${() => this.sendMessage("prompt")}>Send</button>`}
+						{isStreaming ? (
+							<div className="stream-send-group">
+								<button className="send-btn secondary" disabled={!canSend} onClick={() => void this.sendMessage("followUp")} type="button">
+									Follow-up
+								</button>
+								<button className="send-btn" disabled={!canSend} onClick={() => void this.sendMessage("steer")} type="button">
+									Steer
+								</button>
+							</div>
+						) : (
+							<button className="send-btn" disabled={!canSend} onClick={() => void this.sendMessage("prompt")} type="button">
+								Send
+							</button>
+						)}
 
 						<input
 							id="file-picker"
 							type="file"
 							accept="image/*"
 							multiple
-							style="display:none"
-							@change=${(e: Event) => {
-								const files = (e.target as HTMLInputElement).files;
+							style={{ display: "none" }}
+							onChange={(e) => {
+								const files = e.target.files;
 								if (files?.length) void this.prepareImages(files);
-								(e.target as HTMLInputElement).value = "";
+								e.target.value = "";
 							}}
 						/>
 					</div>
 				</div>
 			</div>
-		`;
+		);
 	}
 
-	private renderForkPicker(): TemplateResult | typeof nothing {
-		if (!this.forkPickerOpen) return nothing;
-		return html`
-			<div class="overlay" @click=${(e: Event) => e.target === e.currentTarget && this.closeForkPicker()}>
-				<div class="overlay-card">
-					<div class="overlay-header">
+	private renderForkPicker(): ReactElement | null {
+		if (!this.forkPickerOpen) return null;
+		return (
+			<div
+				className="overlay"
+				onClick={(e) => {
+					if (e.target === e.currentTarget) this.closeForkPicker();
+				}}
+			>
+				<div className="overlay-card">
+					<div className="overlay-header">
 						<div>Fork from earlier user message</div>
-						<button @click=${() => this.closeForkPicker()}>✕</button>
+						<button onClick={() => this.closeForkPicker()} type="button">
+							✕
+						</button>
 					</div>
-					<div class="overlay-body">
-						${this.openingForkPicker
-							? html`<div class="overlay-empty">Loading…</div>`
-							: this.forkOptions.length === 0
-								? html`<div class="overlay-empty">No fork points available.</div>`
-								: this.forkOptions.map(
-									(option) => html`
-										<button class="fork-option" @click=${() => this.forkFrom(option.entryId)}>
-											${truncate(option.text.replace(/\s+/g, " "), 140)}
-										</button>
-									`,
-								)}
+					<div className="overlay-body">
+						{this.openingForkPicker ? (
+							<div className="overlay-empty">Loading…</div>
+						) : this.forkOptions.length === 0 ? (
+							<div className="overlay-empty">No fork points available.</div>
+						) : (
+							this.forkOptions.map((option) => (
+								<button className="fork-option" onClick={() => void this.forkFrom(option.entryId)} type="button" key={option.entryId}>
+									{truncate(option.text.replace(/\s+/g, " "), 140)}
+								</button>
+							))
+						)}
 					</div>
 				</div>
 			</div>
-		`;
+		);
 	}
 
-	private renderHistoryViewer(): TemplateResult | typeof nothing {
-		if (!this.historyViewerOpen) return nothing;
+	private renderHistoryViewer(): ReactElement | null {
+		if (!this.historyViewerOpen) return null;
 
 		const query = this.historyQuery.trim().toLowerCase();
 		const filtered = this.messages.filter((msg) => {
@@ -1308,28 +1378,35 @@ export class ChatView {
 			return haystack.includes(query);
 		});
 
-		return html`
-			<div class="overlay" @click=${(e: Event) => e.target === e.currentTarget && this.closeHistoryViewer()}>
-				<div class="overlay-card history-card">
-					<div class="overlay-header">
+		return (
+			<div
+				className="overlay"
+				onClick={(e) => {
+					if (e.target === e.currentTarget) this.closeHistoryViewer();
+				}}
+			>
+				<div className="overlay-card history-card">
+					<div className="overlay-header">
 						<div>Session history</div>
-						<button @click=${() => this.closeHistoryViewer()}>✕</button>
+						<button onClick={() => this.closeHistoryViewer()} type="button">
+							✕
+						</button>
 					</div>
-					<div class="history-controls">
+					<div className="history-controls">
 						<input
 							type="text"
 							placeholder="Search messages"
-							.value=${this.historyQuery}
-							@input=${(e: Event) => {
-								this.historyQuery = (e.target as HTMLInputElement).value;
+							value={this.historyQuery}
+							onInput={(e) => {
+								this.historyQuery = e.currentTarget.value;
 								this.render();
 							}}
 						/>
 						<select
-							class="settings-select"
-							.value=${this.historyRoleFilter}
-							@change=${(e: Event) => {
-								this.historyRoleFilter = (e.target as HTMLSelectElement).value as UiRole | "all";
+							className="settings-select"
+							value={this.historyRoleFilter}
+							onChange={(e) => {
+								this.historyRoleFilter = e.target.value as UiRole | "all";
 								this.render();
 							}}
 						>
@@ -1340,71 +1417,78 @@ export class ChatView {
 							<option value="custom">custom</option>
 						</select>
 					</div>
-					<div class="overlay-body history-list">
-						${filtered.length === 0
-							? html`<div class="overlay-empty">No messages match your filters.</div>`
-							: filtered.map(
-									(msg, idx) => html`
-										<div class="history-item">
-											<button class="history-jump" @click=${() => this.revealMessage(msg.id)}>
-												<div class="history-meta">
-													<span class="history-role role-${msg.role}">${msg.role}</span>
-													<span>#${idx + 1}</span>
-												</div>
-												<div class="history-preview">${truncate(this.messagePreview(msg).replace(/\s+/g, " "), 180)}</div>
-											</button>
-											<div class="history-item-actions">
-												${msg.role === "user"
-													? html`<button class="message-action-btn" @click=${() => {
-														this.editUserMessage(msg);
-														this.closeHistoryViewer();
-													}}>Edit</button>`
-													: nothing}
-												<button class="message-action-btn" @click=${() => this.copyMessage(msg)}>Copy</button>
-											</div>
+					<div className="overlay-body history-list">
+						{filtered.length === 0 ? (
+							<div className="overlay-empty">No messages match your filters.</div>
+						) : (
+							filtered.map((msg, idx) => (
+								<div className="history-item" key={msg.id}>
+									<button className="history-jump" onClick={() => this.revealMessage(msg.id)} type="button">
+										<div className="history-meta">
+											<span className={`history-role role-${msg.role}`}>{msg.role}</span>
+											<span>#{idx + 1}</span>
 										</div>
-									`,
-								)}
+										<div className="history-preview">{truncate(this.messagePreview(msg).replace(/\s+/g, " "), 180)}</div>
+									</button>
+									<div className="history-item-actions">
+										{msg.role === "user" ? (
+											<button
+												className="message-action-btn"
+												onClick={() => {
+													this.editUserMessage(msg);
+													this.closeHistoryViewer();
+												}}
+												type="button"
+											>
+												Edit
+											</button>
+										) : null}
+										<button className="message-action-btn" onClick={() => void this.copyMessage(msg)} type="button">
+											Copy
+										</button>
+									</div>
+								</div>
+							))
+						)}
 					</div>
 				</div>
 			</div>
-		`;
+		);
 	}
 
 	private doRender(): void {
 		const hasMessages = this.messages.length > 0;
 
-		const template = html`
+		this.root.render(
 			<div
-				class="chat-root"
-				@dragover=${(e: DragEvent) => {
+				className="chat-root"
+				onDragOver={(e) => {
 					e.preventDefault();
 				}}
-				@drop=${(e: DragEvent) => {
+				onDrop={(e) => {
 					e.preventDefault();
 					if (e.dataTransfer?.files?.length) {
 						void this.prepareImages(e.dataTransfer.files);
 					}
 				}}
 			>
-				${this.renderToolbar()}
-				<div class="chat-scroll" id="chat-scroll">
-					${hasMessages
-						? html`${this.messages.map((m) => {
+				{this.renderToolbar()}
+				<div className="chat-scroll" id="chat-scroll">
+					{hasMessages
+						? this.messages.map((m) => {
 								if (m.role === "user") return this.renderUserMessage(m);
 								if (m.role === "assistant") return this.renderAssistantMessage(m);
 								return this.renderSystemMessage(m);
-							})}`
+							})
 						: this.renderEmptyState()}
 				</div>
-				${this.renderComposer()}
-				${this.renderForkPicker()}
-				${this.renderHistoryViewer()}
-				${this.renderNotices()}
-			</div>
-		`;
+				{this.renderComposer()}
+				{this.renderForkPicker()}
+				{this.renderHistoryViewer()}
+				{this.renderNotices()}
+			</div>,
+		);
 
-		render(template, this.container);
 		this.scrollContainer = this.container.querySelector("#chat-scroll");
 	}
 
