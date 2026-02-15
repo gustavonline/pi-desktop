@@ -17,8 +17,8 @@
 - [x] `npm run build:frontend` passed
 - [x] `cargo check` passed
 - [x] Manual smoke checks done for changed flow
-- [ ] Changes committed and pushed
-- [ ] PR opened/updated
+- [x] Changes committed and pushed
+- [x] PR opened/updated
 
 ## Session notes
 - Previous slice merged in PR #11: titlebar/sidebar/settings are now React-rendered.
