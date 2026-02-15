@@ -1,6 +1,6 @@
 # Pi Desktop
 
-A native-feeling, cross-platform desktop client for the **pi coding agent** CLI, built with **Tauri 2 + Lit**.
+A native-feeling, cross-platform desktop client for the **pi coding agent** CLI, built with **Tauri 2 + Rust + React** (with legacy Lit components during migration).
 
 Pi Desktop uses `pi --mode rpc` under the hood and maps core CLI capabilities into a desktop UI.
 
@@ -68,17 +68,31 @@ App bundles land in:
 
 ## Architecture
 
-- **Frontend**: Lit + Tailwind CSS utilities + custom CSS
+- **Frontend**: React (entrypoint/app shell) + Tailwind CSS utilities + custom CSS
+- **UI migration state**: legacy Lit component surfaces are currently hosted via a React bridge and being migrated incrementally
 - **Backend**: Rust (Tauri command bridge + package command runner)
 - **Protocol**: JSON-lines RPC over stdin/stdout to `pi --mode rpc`
 
 Key files:
 
+- `src/main.tsx` — React entrypoint and app host
+- `src/legacy-bootstrap.ts` — legacy Lit bootstrap hosted by React during migration
 - `src/rpc/bridge.ts` — typed RPC client
 - `src/components/chat-view.ts` — chat, streaming, tools, queueing, attachments
 - `src/components/sidebar.ts` — projects + sessions
 - `src/components/settings-panel.ts` — runtime config
 - `src-tauri/src/lib.rs` — process manager + session indexing
+
+---
+
+## Frontend migration status
+
+The project is now **React-first at the entrypoint level** (`src/main.tsx`) to support ecosystem/contributor scaling.
+
+Current status:
+- React hosts the desktop shell mount point
+- Existing Lit components are still active through `src/legacy-bootstrap.ts`
+- Active migration tracking issue: **#7**
 
 ---
 

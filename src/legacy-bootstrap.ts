@@ -34,6 +34,8 @@ let cliUpdating = false;
 
 let currentRpcProjectPath: string | null = null;
 let projectSwitchTask: Promise<void> = Promise.resolve();
+let appHost: HTMLElement | null = null;
+let bootstrapped = false;
 
 function findCliPath(): string | null {
 	if (import.meta.env.DEV) {
@@ -161,7 +163,7 @@ async function updateCliFromTitlebar(): Promise<void> {
 }
 
 async function initialize(): Promise<void> {
-	const app = document.getElementById("app");
+	const app = appHost;
 	if (!app) throw new Error("App container not found");
 
 	render(
@@ -474,7 +476,7 @@ function setupKeyboardShortcuts(): void {
 }
 
 function renderApp(): void {
-	const app = document.getElementById("app");
+	const app = appHost;
 	if (!app) return;
 
 	if (connectionError) {
@@ -579,6 +581,11 @@ function renderApp(): void {
 	if (activeProject) titleBar?.setProject(activeProject.name);
 }
 
-applyInitialTheme();
-setupKeyboardShortcuts();
-void initialize();
+export function bootstrapDesktop(host: HTMLElement): void {
+	if (bootstrapped) return;
+	bootstrapped = true;
+	appHost = host;
+	applyInitialTheme();
+	setupKeyboardShortcuts();
+	void initialize();
+}
