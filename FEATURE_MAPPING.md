@@ -88,6 +88,7 @@ This document maps `pi-mono/packages/coding-agent` capabilities to this Tauri de
 | Auth/account visibility | ✅ Settings panel inspects `auth.json` + known provider env vars |
 | CLI update visibility | ✅ Settings panel compares local CLI version vs npm latest and offers in-app update (PATH installs) |
 | RPC compatibility verification | ✅ Startup and settings-triggered compatibility probes (`get_state` / `get_commands` / `get_available_models`) |
+| RPC capability fallback messaging | ✅ Optional capability probe warnings + actionable per-feature error messages when CLI lacks support |
 | Update discoverability UX | ✅ Titlebar badge/button appears when CLI update is available |
 
 ## 9) Keyboard Shortcuts (Desktop)

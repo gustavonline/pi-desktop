@@ -39,6 +39,7 @@ export class SettingsPanel {
 	private cliActionMessage = "";
 	private compatibilityReport: RpcCompatibilityReport | null = null;
 	private compatibilityLoading = false;
+	private statusMessage = "";
 
 	constructor(container: HTMLElement) {
 		this.container = container;
@@ -143,6 +144,9 @@ export class SettingsPanel {
 			this.compatibilityReport = {
 				ok: false,
 				checks: [],
+				failedChecks: ["compatibility_check"],
+				optionalWarnings: [],
+				details: [],
 				error: err instanceof Error ? err.message : String(err),
 				checkedAt: Date.now(),
 			};
@@ -174,6 +178,17 @@ export class SettingsPanel {
 		}
 	}
 
+	private showStatusMessage(message: string): void {
+		this.statusMessage = message;
+		this.render();
+		setTimeout(() => {
+			if (this.statusMessage === message) {
+				this.statusMessage = "";
+				this.render();
+			}
+		}, 4500);
+	}
+
 	private async setTheme(theme: "dark" | "light"): Promise<void> {
 		this.state.theme = theme;
 		this.applyTheme(theme);
@@ -189,6 +204,7 @@ export class SettingsPanel {
 			await this.saveSettings();
 		} catch (err) {
 			console.error("Failed to set auto-compaction:", err);
+			this.showStatusMessage(rpcBridge.formatFeatureError("Auto-compaction setting", err));
 		}
 	}
 
@@ -200,6 +216,7 @@ export class SettingsPanel {
 			await this.saveSettings();
 		} catch (err) {
 			console.error("Failed to set auto-retry:", err);
+			this.showStatusMessage(rpcBridge.formatFeatureError("Auto-retry setting", err));
 		}
 	}
 
@@ -211,6 +228,7 @@ export class SettingsPanel {
 			await this.saveSettings();
 		} catch (err) {
 			console.error("Failed to set steering mode:", err);
+			this.showStatusMessage(rpcBridge.formatFeatureError("Steering mode setting", err));
 		}
 	}
 
@@ -222,6 +240,7 @@ export class SettingsPanel {
 			await this.saveSettings();
 		} catch (err) {
 			console.error("Failed to set follow-up mode:", err);
+			this.showStatusMessage(rpcBridge.formatFeatureError("Follow-up mode setting", err));
 		}
 	}
 
@@ -244,6 +263,7 @@ export class SettingsPanel {
 			});
 		} catch (err) {
 			console.error("Failed to save settings:", err);
+			this.showStatusMessage(rpcBridge.formatFeatureError("Settings persistence", err));
 		} finally {
 			this.saving = false;
 		}
@@ -405,18 +425,29 @@ export class SettingsPanel {
 						</div>
 						${this.compatibilityReport
 							? html`
-								<div class="settings-desc">
-									RPC compatibility: ${this.compatibilityReport.ok ? "OK" : "Failed"}
-									${this.compatibilityReport.checks.length > 0
-										? html` (${this.compatibilityReport.checks.join(", ")})`
-										: null}
-								</div>
+								<div class="settings-desc">RPC compatibility: ${this.compatibilityReport.ok ? "OK" : "Failed"}</div>
+								${this.compatibilityReport.checks.length > 0
+									? html`<div class="settings-desc">Required checks passed: ${this.compatibilityReport.checks.join(", ")}</div>`
+									: null}
+								${this.compatibilityReport.failedChecks.length > 0
+									? html`<div class="settings-desc">Required checks failed: ${this.compatibilityReport.failedChecks.join(", ")}</div>`
+									: null}
+								${this.compatibilityReport.optionalWarnings.length > 0
+									? html`
+										<div class="settings-desc">Optional capability warnings:</div>
+										<div class="settings-desc">
+											${this.compatibilityReport.optionalWarnings.map((w) => html`<div>• ${w}</div>`)}
+										</div>
+									`
+									: null}
 								${this.compatibilityReport.error
 									? html`<div class="settings-desc">${this.compatibilityReport.error}</div>`
 									: null}
 							`
 							: null}
 					</div>
+
+					${this.statusMessage ? html`<div class="settings-desc">${this.statusMessage}</div>` : null}
 				</div>
 			</div>
 		`;
