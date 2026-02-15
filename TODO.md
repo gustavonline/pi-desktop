@@ -1,15 +1,15 @@
 # TODO (Issue Mirror)
 
 ## Active issue
-- Issue: #9 — [P0] Migrate core UI surfaces from Lit to React (chat/sidebar/settings/titlebar)
-- Branch: feat/9-react-chat-view
-- Scope summary: Complete the remaining chat-view migration to React after merged titlebar/sidebar/settings migration.
+- Issue: #10 — [P1] Remove legacy Lit bridge and finalize React-only frontend
+- Branch: feat/10-react-only-frontend
+- Scope summary: Remove `src/legacy-bootstrap.ts`, remove `lit` dependency, update architecture docs to React-only, and run regression validation.
 
 ## Acceptance criteria (from issue)
-- [x] Core migrated surfaces are React-based
-- [x] Feature parity with existing behavior is preserved
-- [x] `npm run check`, `npm run build:frontend`, `cargo check` pass
-- [x] tauri dev smoke tests pass for chat/session/settings/titlebar workflows
+- [x] Legacy Lit bootstrap is removed
+- [x] Lit dependency is removed
+- [x] Frontend architecture docs updated
+- [x] Validation and smoke checks pass
 
 ## Session checklist
 - [x] Implementation done
@@ -21,6 +21,10 @@
 - [x] PR opened/updated
 
 ## Session notes
-- Previous slice merged in PR #11: titlebar/sidebar/settings are now React-rendered.
-- `chat-view` migrated from Lit templates to React rendering in `src/components/chat-view.tsx` with parity for toolbar, message actions, tool calls, composer/image attachments, fork picker, history viewer, notices, and streaming state UX.
-- Validation run: `npm run check`, `npm run build:frontend`, `cargo check -q`, and `npm run tauri dev` startup smoke (after clearing stale port 1420 process).
+- Issue #9 closed after PR #12 merged into `dev`.
+- Removed `src/legacy-bootstrap.ts` and introduced `src/bootstrap.ts` (React-hosted desktop bootstrap with no Lit renderer).
+- Migrated remaining Lit-based overlays/components to React render roots: command palette, session browser, extensions panel, shortcuts panel, extension UI handler.
+- Removed unused Lit-only components (`login-panel.ts`, `model-selector.ts`).
+- Removed direct `lit` dependency from `package.json`.
+- Updated architecture docs (`README.md`, `FEATURE_MAPPING.md`) for React-only bootstrap state.
+- Validation run: `npm run check`, `npm run build:frontend`, `cargo check -q`, and `npm run tauri dev` startup smoke.

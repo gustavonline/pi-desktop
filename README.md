@@ -1,6 +1,6 @@
 # Pi Desktop
 
-A native-feeling, cross-platform desktop client for the **pi coding agent** CLI, built with **Tauri 2 + Rust + React** (with remaining Lit surfaces during migration).
+A native-feeling, cross-platform desktop client for the **pi coding agent** CLI, built with **Tauri 2 + Rust + React**.
 
 Pi Desktop uses `pi --mode rpc` under the hood and maps core CLI capabilities into a desktop UI.
 
@@ -68,32 +68,31 @@ App bundles land in:
 
 ## Architecture
 
-- **Frontend**: React (entrypoint/app shell) + Tailwind CSS utilities + custom CSS
-- **UI migration state**: React-first entrypoint + incremental Lit-to-React surface migration (titlebar/sidebar/settings already React-rendered)
+- **Frontend**: React-first/React-rendered desktop UI + Tailwind CSS utilities + custom CSS
 - **Backend**: Rust (Tauri command bridge + package command runner)
 - **Protocol**: JSON-lines RPC over stdin/stdout to `pi --mode rpc`
 
 Key files:
 
-- `src/main.tsx` — React entrypoint and app host
-- `src/legacy-bootstrap.ts` — legacy Lit bootstrap hosted by React during migration
+- `src/main.tsx` — React entrypoint
+- `src/bootstrap.ts` — desktop orchestration/bootstrap (no Lit bridge)
 - `src/rpc/bridge.ts` — typed RPC client
-- `src/components/chat-view.ts` — chat, streaming, tools, queueing, attachments
-- `src/components/sidebar.ts` — projects + sessions
-- `src/components/settings-panel.ts` — runtime config
+- `src/components/chat-view.tsx` — chat, streaming, tools, queueing, attachments
+- `src/components/sidebar.tsx` — projects + sessions
+- `src/components/settings-panel.tsx` — runtime config + auth/runtime diagnostics
+- `src/components/titlebar.tsx` — window controls + model/session status
 - `src-tauri/src/lib.rs` — process manager + session indexing
 
 ---
 
 ## Frontend migration status
 
-The project is now **React-first at the entrypoint level** (`src/main.tsx`) to support ecosystem/contributor scaling.
+The desktop frontend is now **React-only at the app layer** (legacy Lit bootstrap removed).
 
-Current status:
-- React hosts the desktop shell mount point
-- `titlebar`, `sidebar`, and `settings-panel` are React-rendered surfaces
-- `chat-view` and legacy app orchestration are still Lit-based through `src/legacy-bootstrap.ts`
-- Active migration tracking issues: **#7**, **#9**, **#10**
+Tracking issues:
+- Foundation: **#7** ✅
+- Core surface migration: **#9** ✅
+- React-only cleanup: **#10**
 
 ---
 

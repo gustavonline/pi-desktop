@@ -2,7 +2,8 @@
  * Extensions Panel - discovered resources + package management
  */
 
-import { html, render, type TemplateResult } from "lit";
+import { type ReactElement } from "react";
+import { createRoot, type Root } from "react-dom/client";
 import { rpcBridge } from "../rpc/bridge.js";
 
 interface CommandInfo {
@@ -26,6 +27,7 @@ function getActiveProjectPath(): string {
 
 export class ExtensionsPanel {
 	private container: HTMLElement;
+	private root: Root;
 	private isOpen = false;
 	private loading = false;
 	private runningCommand = false;
@@ -39,6 +41,7 @@ export class ExtensionsPanel {
 
 	constructor(container: HTMLElement) {
 		this.container = container;
+		this.root = createRoot(container);
 	}
 
 	setOnClose(callback: () => void): void {
@@ -70,22 +73,22 @@ export class ExtensionsPanel {
 		}
 	}
 
-	private renderBlock(title: string, entries: CommandInfo[], emptyLabel: string): TemplateResult {
-		return html`
-			<div class="resource-block">
-				<div class="resource-title">${title}</div>
-				${entries.length === 0
-					? html`<div class="resource-empty">${emptyLabel}</div>`
-					: entries.map(
-							(item) => html`
-								<div class="resource-row" title=${item.path || ""}>
-									<div class="resource-main">/${item.name}</div>
-									<div class="resource-meta">${item.description || item.location || item.path || item.source}</div>
-								</div>
-							`,
-						)}
+	private renderBlock(title: string, entries: CommandInfo[], emptyLabel: string): ReactElement {
+		return (
+			<div className="resource-block">
+				<div className="resource-title">{title}</div>
+				{entries.length === 0 ? (
+					<div className="resource-empty">{emptyLabel}</div>
+				) : (
+					entries.map((item) => (
+						<div className="resource-row" title={item.path || ""} key={`${item.source}-${item.name}-${item.path || item.location || ""}`}>
+							<div className="resource-main">/{item.name}</div>
+							<div className="resource-meta">{item.description || item.location || item.path || item.source}</div>
+						</div>
+					))
+				)}
 			</div>
-		`;
+		);
 	}
 
 	private async runPackageCommand(args: string[]): Promise<void> {
@@ -139,68 +142,77 @@ export class ExtensionsPanel {
 		await this.runPackageCommand(["list"]);
 	}
 
-	render(): void {
-		if (!this.isOpen) {
-			this.container.innerHTML = "";
-			return;
-		}
-
+	private renderOpen(): ReactElement {
 		const extensions = this.commands.filter((c) => c.source === "extension");
 		const prompts = this.commands.filter((c) => c.source === "prompt");
 		const skills = this.commands.filter((c) => c.source === "skill");
 
-		const template = html`
-			<div class="overlay" @click=${(e: Event) => e.target === e.currentTarget && this.close()}>
-				<div class="extensions-card">
-					<div class="extensions-header">
+		return (
+			<div
+				className="overlay"
+				onClick={(e) => {
+					if (e.target === e.currentTarget) this.close();
+				}}
+			>
+				<div className="extensions-card">
+					<div className="extensions-header">
 						<h2>Extensions, Skills & Packages</h2>
-						<button @click=${() => this.close()}>✕</button>
+						<button onClick={() => this.close()} type="button">
+							✕
+						</button>
 					</div>
 
-					<div class="extensions-body">
-						<div class="resource-tabs">
-							<button class="ghost-btn ${this.activeTab === "resources" ? "active-tab" : ""}" @click=${() => {
-								this.activeTab = "resources";
-								this.render();
-							}}>Discovered resources</button>
-							<button class="ghost-btn ${this.activeTab === "packages" ? "active-tab" : ""}" @click=${() => {
-								this.activeTab = "packages";
-								this.render();
-							}}>Package manager</button>
+					<div className="extensions-body">
+						<div className="resource-tabs">
+							<button
+								className={`ghost-btn ${this.activeTab === "resources" ? "active-tab" : ""}`}
+								onClick={() => {
+									this.activeTab = "resources";
+									this.render();
+								}}
+								type="button"
+							>
+								Discovered resources
+							</button>
+							<button
+								className={`ghost-btn ${this.activeTab === "packages" ? "active-tab" : ""}`}
+								onClick={() => {
+									this.activeTab = "packages";
+									this.render();
+								}}
+								type="button"
+							>
+								Package manager
+							</button>
 						</div>
 
-						${this.activeTab === "resources"
-							? this.loading
-								? html`<div class="overlay-empty">Loading resources…</div>`
-								: html`
-									${this.renderBlock(
-										`Extensions (${extensions.length})`,
-										extensions,
-										"No extension commands discovered.",
-									)}
-									${this.renderBlock(
-										`Prompt templates (${prompts.length})`,
-										prompts,
-										"No prompt templates discovered.",
-									)}
-									${this.renderBlock(`Skills (${skills.length})`, skills, "No skills discovered.")}
-								`
-							: html`
-								<div class="package-controls">
+						{this.activeTab === "resources" ? (
+							this.loading ? (
+								<div className="overlay-empty">Loading resources…</div>
+							) : (
+								<>
+									{this.renderBlock(`Extensions (${extensions.length})`, extensions, "No extension commands discovered.")}
+									{this.renderBlock(`Prompt templates (${prompts.length})`, prompts, "No prompt templates discovered.")}
+									{this.renderBlock(`Skills (${skills.length})`, skills, "No skills discovered.")}
+								</>
+							)
+						) : (
+							<>
+								<div className="package-controls">
 									<input
 										type="text"
 										placeholder="npm:@scope/pkg or git:github.com/user/repo"
-										.value=${this.packageSource}
-										@input=${(e: Event) => {
-											this.packageSource = (e.target as HTMLInputElement).value;
+										value={this.packageSource}
+										onInput={(e) => {
+											this.packageSource = e.currentTarget.value;
 											this.render();
 										}}
 									/>
 									<select
-										class="settings-select"
-										.value=${this.packageScope}
-										@change=${(e: Event) => {
-											this.packageScope = (e.target as HTMLSelectElement).value as "global" | "local";
+										className="settings-select"
+										value={this.packageScope}
+										onChange={(e) => {
+											this.packageScope = e.target.value as "global" | "local";
 											this.render();
 										}}
 									>
@@ -209,34 +221,63 @@ export class ExtensionsPanel {
 									</select>
 								</div>
 
-								<div class="settings-actions">
-									<button class="ghost-btn" ?disabled=${this.runningCommand || !this.packageSource.trim()} @click=${() => this.installPackage()}>Install</button>
-									<button class="ghost-btn" ?disabled=${this.runningCommand || !this.packageSource.trim()} @click=${() => this.removePackage()}>Remove</button>
-									<button class="ghost-btn" ?disabled=${this.runningCommand} @click=${() => this.updatePackages()}>Update</button>
-									<button class="ghost-btn" ?disabled=${this.runningCommand} @click=${() => this.listPackages()}>List</button>
+								<div className="settings-actions">
+									<button
+										className="ghost-btn"
+										disabled={this.runningCommand || !this.packageSource.trim()}
+										onClick={() => void this.installPackage()}
+										type="button"
+									>
+										Install
+									</button>
+									<button
+										className="ghost-btn"
+										disabled={this.runningCommand || !this.packageSource.trim()}
+										onClick={() => void this.removePackage()}
+										type="button"
+									>
+										Remove
+									</button>
+									<button className="ghost-btn" disabled={this.runningCommand} onClick={() => void this.updatePackages()} type="button">
+										Update
+									</button>
+									<button className="ghost-btn" disabled={this.runningCommand} onClick={() => void this.listPackages()} type="button">
+										List
+									</button>
 								</div>
 
-								<div class="resource-block">
-									<div class="resource-title">Command Output</div>
-									<pre class="tool-output" style="max-height:280px">${this.commandOutput || "No command run yet."}</pre>
+								<div className="resource-block">
+									<div className="resource-title">Command Output</div>
+									<pre className="tool-output" style={{ maxHeight: 280 }}>
+										{this.commandOutput || "No command run yet."}
+									</pre>
 								</div>
-							`}
+							</>
+						)}
 					</div>
 
-					<div class="extensions-footer">
-						<button class="ghost-btn" @click=${() => this.open()}>Refresh</button>
-						<span class="settings-desc">
+					<div className="extensions-footer">
+						<button className="ghost-btn" onClick={() => void this.open()} type="button">
+							Refresh
+						</button>
+						<span className="settings-desc">
 							This runs real <code>pi install/remove/update/list</code> commands via the desktop backend.
 						</span>
 					</div>
 				</div>
 			</div>
-		`;
+		);
+	}
 
-		render(template, this.container);
+	render(): void {
+		if (!this.isOpen) {
+			this.root.render(<></>);
+			return;
+		}
+		this.root.render(this.renderOpen());
 	}
 
 	destroy(): void {
-		this.container.innerHTML = "";
+		this.root.unmount();
 	}
 }

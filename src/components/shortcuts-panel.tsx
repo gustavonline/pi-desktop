@@ -2,7 +2,8 @@
  * Shortcuts Panel
  */
 
-import { html, nothing, render } from "lit";
+import { type ReactElement } from "react";
+import { createRoot, type Root } from "react-dom/client";
 
 interface Shortcut {
 	keys: string[];
@@ -34,11 +35,13 @@ const SHORTCUTS: Shortcut[] = [
 
 export class ShortcutsPanel {
 	private container: HTMLElement;
+	private root: Root;
 	private isOpen = false;
 	private onClose: (() => void) | null = null;
 
 	constructor(container: HTMLElement) {
 		this.container = container;
+		this.root = createRoot(container);
 		this.render();
 	}
 
@@ -57,12 +60,7 @@ export class ShortcutsPanel {
 		this.onClose = callback;
 	}
 
-	render(): void {
-		if (!this.isOpen) {
-			this.container.innerHTML = "";
-			return;
-		}
-
+	private renderOpen(): ReactElement {
 		const grouped = SHORTCUTS.reduce(
 			(acc, shortcut) => {
 				if (!acc[shortcut.category]) acc[shortcut.category] = [];
@@ -74,42 +72,55 @@ export class ShortcutsPanel {
 
 		const categories = ["Navigation", "Session", "Input", "Model", "Display", "Utility", "Agent"];
 
-		const template = html`
-			<div class="overlay" @click=${(e: Event) => e.target === e.currentTarget && this.close()}>
-				<div class="shortcuts-card">
-					<div class="shortcuts-header">
+		return (
+			<div
+				className="overlay"
+				onClick={(e) => {
+					if (e.target === e.currentTarget) this.close();
+				}}
+			>
+				<div className="shortcuts-card">
+					<div className="shortcuts-header">
 						<h2>Keyboard shortcuts</h2>
-						<button @click=${() => this.close()}>✕</button>
+						<button onClick={() => this.close()} type="button">
+							✕
+						</button>
 					</div>
-					<div class="shortcuts-body">
-						${categories.map((category) => {
+					<div className="shortcuts-body">
+						{categories.map((category) => {
 							const entries = grouped[category];
-							if (!entries || entries.length === 0) return nothing;
-							return html`
-								<div class="shortcuts-group">
-									<div class="shortcuts-group-title">${category}</div>
-									${entries.map(
-										(entry) => html`
-											<div class="shortcut-row">
-												<span>${entry.description}</span>
-												<div class="shortcut-keys">
-													${entry.keys.map((key) => html`<kbd>${key}</kbd>`) }
-												</div>
+							if (!entries || entries.length === 0) return null;
+							return (
+								<div className="shortcuts-group" key={category}>
+									<div className="shortcuts-group-title">{category}</div>
+									{entries.map((entry) => (
+										<div className="shortcut-row" key={`${category}-${entry.description}`}>
+											<span>{entry.description}</span>
+											<div className="shortcut-keys">
+												{entry.keys.map((key) => (
+													<kbd key={`${entry.description}-${key}`}>{key}</kbd>
+												))}
 											</div>
-										`,
-									)}
+										</div>
+									))}
 								</div>
-							`;
+							);
 						})}
 					</div>
 				</div>
 			</div>
-		`;
+		);
+	}
 
-		render(template, this.container);
+	render(): void {
+		if (!this.isOpen) {
+			this.root.render(<></>);
+			return;
+		}
+		this.root.render(this.renderOpen());
 	}
 
 	destroy(): void {
-		this.container.innerHTML = "";
+		this.root.unmount();
 	}
 }

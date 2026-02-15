@@ -22,7 +22,6 @@
 		"@xterm/addon-fit": "^0.11.0",
 		"@xterm/addon-webgl": "^0.19.0",
 		"@xterm/xterm": "^6.0.0",
-		"lit": "^3.3.1",
 		"lucide": "^0.544.0",
 		"react": "^18.3.1",
 		"react-dom": "^18.3.1"

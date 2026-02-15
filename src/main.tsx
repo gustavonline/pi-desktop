@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { createRoot } from "react-dom/client";
-import { bootstrapDesktop } from "./legacy-bootstrap.js";
+import { bootstrapDesktop } from "./bootstrap.js";
 import "./styles/app.css";
 
 function DesktopHost() {
