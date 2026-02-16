@@ -83,48 +83,42 @@ interface SidebarViewProps {
 
 function SidebarView(props: SidebarViewProps): ReactElement {
 	return (
-		<div className="h-full bg-[#171717] border-r border-[#262626] flex flex-col w-64">
-			<div className="p-2 border-b border-[#262626] space-y-1">
-				<button
-					className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-[#262626] transition-colors text-left"
-					onClick={props.onOpenExtensions}
-					type="button"
-				>
-					<span className="text-amber-400">⚡</span>
-					<span className="text-sm text-gray-200">Resources</span>
+		<div className="sidebar-root">
+			<div className="sidebar-top">
+				<button className="sidebar-link-btn" onClick={props.onOpenExtensions} type="button">
+					<span className="sidebar-link-icon accent">⚡</span>
+					<span className="sidebar-link-label">Resources</span>
 				</button>
 			</div>
 
-			<div className="flex-1 overflow-y-auto p-2">
-				<div className="flex items-center justify-between px-2 mb-2">
-					<span className="text-[11px] uppercase tracking-wide text-gray-500">Projects</span>
-					<button className="text-gray-500 hover:text-gray-300 text-xs" onClick={props.onOpenFolder} title="Open project" type="button">
+			<div className="sidebar-projects">
+				<div className="sidebar-projects-header">
+					<span>Projects</span>
+					<button className="sidebar-compact-btn" onClick={props.onOpenFolder} title="Open project" type="button">
 						+
 					</button>
 				</div>
 
 				{props.projects.length === 0 ? (
-					<div className="px-2 py-2 text-xs text-gray-500">No projects</div>
+					<div className="sidebar-empty">No projects</div>
 				) : (
 					props.projects.map((project) => (
-						<div className="mb-1" key={project.id}>
-							<div className="group flex items-center gap-1">
+						<div className="sidebar-project" key={project.id}>
+							<div className="sidebar-project-row-group">
 								<button
-									className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg transition-colors ${
-										props.activeId === project.id ? "bg-[#262626]" : "hover:bg-[#222]"
-									}`}
+									className={`sidebar-project-btn ${props.activeId === project.id ? "active" : ""}`}
 									onClick={() => {
 										props.onSelectProject(project.id);
 										props.onToggleProject(project.id);
 									}}
 									type="button"
 								>
-									<span className="w-2 h-2 rounded-full shrink-0" style={{ background: project.color }}></span>
-									<span className="text-sm text-gray-200 truncate flex-1 text-left">{project.name}</span>
-									<span className="text-gray-500 text-xs">{project.expanded ? "▾" : "▸"}</span>
+									<span className="sidebar-project-dot" style={{ background: project.color }}></span>
+									<span className="sidebar-project-name">{project.name}</span>
+									<span className="sidebar-project-chevron">{project.expanded ? "▾" : "▸"}</span>
 								</button>
 								<button
-									className="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-blue-400 text-xs px-1.5"
+									className="sidebar-project-action"
 									onClick={(e) => {
 										e.stopPropagation();
 										props.onNewSessionInProject(project.id);
@@ -135,7 +129,7 @@ function SidebarView(props: SidebarViewProps): ReactElement {
 									+
 								</button>
 								<button
-									className="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-red-400 text-xs px-1.5"
+									className="sidebar-project-action danger"
 									onClick={(e) => {
 										e.stopPropagation();
 										props.onRemoveProject(project.id);
@@ -148,27 +142,27 @@ function SidebarView(props: SidebarViewProps): ReactElement {
 							</div>
 
 							{project.expanded ? (
-								<div className="ml-4 mt-1 space-y-0.5">
+								<div className="sidebar-session-list">
 									{project.loadingSessions ? (
-										<div className="px-2 py-1 text-[11px] text-gray-500">Loading sessions...</div>
+										<div className="sidebar-session-state">Loading sessions...</div>
 									) : project.sessions.length === 0 ? (
-										<div className="px-2 py-1 text-[11px] text-gray-500">No sessions</div>
+										<div className="sidebar-session-state">No sessions</div>
 									) : (
 										project.sessions.map((session) => (
 											<button
-												className="w-full flex items-center justify-between px-2 py-1 rounded hover:bg-[#222] text-left"
+												className="sidebar-session-btn"
 												onClick={() => props.onSelectSession(project.id, session.path)}
 												title={session.path}
 												type="button"
 												key={session.id}
 											>
-												<div className="min-w-0">
-													<div className="text-[11px] text-gray-400 truncate">{session.name}</div>
-													<div className="text-[10px] text-gray-600">
+												<div className="sidebar-session-main">
+													<div className="sidebar-session-name">{session.name}</div>
+													<div className="sidebar-session-meta">
 														{formatTokens(session.tokens)} · {formatCost(session.cost)}
 													</div>
 												</div>
-												<span className="text-[10px] text-gray-600 ml-2">{formatRelativeDate(session.modifiedAt)}</span>
+												<span className="sidebar-session-age">{formatRelativeDate(session.modifiedAt)}</span>
 											</button>
 										))
 									)}
@@ -179,22 +173,14 @@ function SidebarView(props: SidebarViewProps): ReactElement {
 				)}
 			</div>
 
-			<div className="p-2 border-t border-[#262626] space-y-1">
-				<button
-					className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-[#262626] transition-colors text-left"
-					onClick={props.onOpenFolder}
-					type="button"
-				>
-					<span className="text-gray-400">📁</span>
-					<span className="text-sm text-gray-300">Open Folder</span>
+			<div className="sidebar-bottom">
+				<button className="sidebar-link-btn" onClick={props.onOpenFolder} type="button">
+					<span className="sidebar-link-icon">📁</span>
+					<span className="sidebar-link-label">Open Folder</span>
 				</button>
-				<button
-					className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-[#262626] transition-colors text-left"
-					onClick={props.onOpenSettings}
-					type="button"
-				>
-					<span className="text-gray-400">⚙️</span>
-					<span className="text-sm text-gray-300">Settings</span>
+				<button className="sidebar-link-btn" onClick={props.onOpenSettings} type="button">
+					<span className="sidebar-link-icon">⚙️</span>
+					<span className="sidebar-link-label">Settings</span>
 				</button>
 			</div>
 		</div>

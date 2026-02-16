@@ -332,10 +332,10 @@ export class ExtensionUiHandler {
 
 	private showNotification(request: ExtensionUiRequest): void {
 		const type = request.notifyType || "info";
-		const bgColor = type === "error" ? "bg-red-500" : type === "warning" ? "bg-amber-500" : "bg-primary";
 
 		const notification = document.createElement("div");
-		notification.className = `fixed bottom-4 right-4 ${bgColor} text-white px-4 py-3 rounded-lg shadow-lg z-50 text-sm animate-slide-in`;
+		notification.className = `extension-toast ${type}`;
+		notification.style.animation = "toastSlideIn 0.16s ease";
 		notification.textContent = request.message || "";
 
 		document.body.appendChild(notification);

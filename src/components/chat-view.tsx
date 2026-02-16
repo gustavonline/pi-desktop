@@ -945,20 +945,12 @@ export class ChatView {
 	private renderNotices(): ReactElement | null {
 		if (this.notices.length === 0) return null;
 		return (
-			<div className="absolute top-4 right-4 z-30 flex flex-col gap-2 max-w-sm pointer-events-none">
-				{this.notices.map((notice) => {
-					const cls =
-						notice.kind === "error"
-							? "bg-red-500/95"
-							: notice.kind === "success"
-								? "bg-emerald-500/95"
-								: "bg-zinc-800/95";
-					return (
-						<div key={notice.id} className={`rounded-xl px-3 py-2 text-xs text-white shadow-xl backdrop-blur ${cls}`}>
-							{notice.text}
-						</div>
-					);
-				})}
+			<div className="notice-stack">
+				{this.notices.map((notice) => (
+					<div key={notice.id} className={`notice-card ${notice.kind}`}>
+						{notice.text}
+					</div>
+				))}
 			</div>
 		);
 	}
