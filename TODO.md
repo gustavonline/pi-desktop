@@ -16,8 +16,8 @@
 - [x] `npm run build:frontend` passed
 - [x] `cargo check` passed
 - [x] Manual smoke checks done for changed flow
-- [ ] Changes committed and pushed
-- [ ] PR opened/updated
+- [x] Changes committed and pushed
+- [x] PR opened/updated
 
 ## Session notes
 - React-only frontend baseline is complete (#9/#10/#14).
