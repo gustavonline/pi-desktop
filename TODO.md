@@ -1,29 +1,25 @@
 # TODO (Issue Mirror)
 
 ## Active issue
-- Issue: #4 — [P1] Polish minimal Apple/Codex-like UI rhythm for v1
-- Branch: feat/4-ui-polish-v1
-- Scope summary: spacing/typography consistency pass, micro-interaction polish, light-theme tuning, and notice/error visual consistency.
+- Issue: #5 — [P1] Distribution pipeline for Windows + macOS (post-v1 stabilization)
+- Branch: feat/5-distribution-pipeline
+- Scope summary: document and validate reproducible release artifact flow for Windows/macOS, including signing/notarization guidance and release checklist linkage.
 
 ## Acceptance criteria (from issue)
-- [x] Visual hierarchy is consistent across core surfaces
-- [x] No rough/unintended spacing collisions in main workflows
-- [x] Interaction states feel responsive and coherent
+- [ ] Windows release artifacts are reproducibly built and verified
+- [ ] macOS `.dmg`/`.app` artifacts are reproducibly built and verified
+- [ ] Signing/notarization requirements are documented with actionable steps
+- [ ] Release checklist exists and is linked from README/release docs
 
 ## Session checklist
-- [x] Implementation done
-- [x] `npm run check` passed
-- [x] `npm run build:frontend` passed
-- [x] `cargo check` passed
-- [x] Manual smoke checks done for changed flow
-- [x] Changes committed and pushed
-- [x] PR opened/updated
+- [ ] Implementation done
+- [ ] `npm run check` passed
+- [ ] `npm run build:frontend` passed
+- [ ] `cargo check` passed
+- [ ] Manual smoke checks done for changed flow
+- [ ] Changes committed and pushed
+- [ ] PR opened/updated
 
 ## Session notes
-- React-only frontend baseline is complete (#9/#10/#14).
-- Polished spacing/typography rhythm across titlebar/chat/composer/sidebar overlays.
-- Reworked sidebar visual system to theme-token-based classes (improves dark/light consistency).
-- Improved micro-interactions: hover/active/focus-visible states and button/input/select transitions.
-- Unified notice/toast style language between chat notices and extension notifications.
-- Added responsive guards for tighter window widths to reduce titlebar/chat toolbar collisions.
-- Validation run: `npm run check`, `npm run build:frontend`, `cargo check -q`, and tauri startup smoke (`npm run tauri dev`).
+- Core v1 product/stability work is complete on `dev` (#2/#3/#7/#9/#10/#14/#4).
+- Remaining open v1 child issue is #5 (distribution pipeline/release packaging documentation).

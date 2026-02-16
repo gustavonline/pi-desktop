@@ -19,7 +19,7 @@ Ship a stable desktop client that feels native, minimal, and polished (Apple/Cod
 - Settings runtime panel (auth state, CLI update checks/actions, compatibility checks)
 - Command palette + shortcuts
 - Basic extension UI protocol handling
-- React-first frontend foundation established (legacy Lit bridge allowed during transition)
+- React-only frontend architecture established
 
 ## Out of scope for V1
 - Re-implementing interactive TUI-only flows that are not exposed by RPC
@@ -32,7 +32,7 @@ Ship a stable desktop client that feels native, minimal, and polished (Apple/Cod
 - Lock major regressions in process handling and project/session switching
 - Add startup and on-demand compatibility probes
 - Ensure no process/window spawn loops
-- Establish React-first app entrypoint and migration-safe hosting for existing UI surfaces
+- Establish and keep React-only app entrypoint/bootstrap with no legacy Lit bridge
 
 ### M2 — UX polish baseline
 - Tighten spacing/typography and interaction rhythm

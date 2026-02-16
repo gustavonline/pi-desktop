@@ -48,21 +48,37 @@ pi --version
 
 ```bash
 npm install
+npm run check
 npm run tauri dev
 ```
 
----
-
-## Build
+Useful variants:
 
 ```bash
-npm run build:frontend
-npm run tauri build
+npm run dev        # frontend only (Vite)
+npm run tauri dev  # full desktop app (frontend + Tauri backend)
 ```
 
-App bundles land in:
+During desktop dev, the debug binary is produced at:
 
-`src-tauri/target/release/bundle/`
+`src-tauri/target/debug/pi-desktop.exe` (Windows)
+
+---
+
+## Build / Bundle
+
+```bash
+npm run build      # runs tauri build
+# or: npm run tauri build
+```
+
+After a successful build:
+
+- release executable (Windows):
+  - `src-tauri/target/release/pi-desktop.exe`
+- bundled installer artifacts:
+  - `src-tauri/target/release/bundle/`
+  - (subfolder depends on target/bundler, e.g. `nsis/`, `msi/`, etc.)
 
 ---
 
@@ -85,14 +101,15 @@ Key files:
 
 ---
 
-## Frontend migration status
+## Frontend architecture status
 
-The desktop frontend is now **React-only at the app layer** (legacy Lit bootstrap removed).
+The desktop frontend is now **React-only**.
 
-Tracking issues:
+Completed migration/cleanup issues:
 - Foundation: **#7** ✅
 - Core surface migration: **#9** ✅
-- React-only cleanup: **#10**
+- React-only bootstrap cleanup: **#10** ✅
+- mini-lit/lit dependency removal: **#14** ✅
 
 ---
 

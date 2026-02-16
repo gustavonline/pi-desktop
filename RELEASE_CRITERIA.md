@@ -14,10 +14,10 @@ Every work item must have a GitHub issue with:
 
 `TODO.md` should mirror only the **currently active issue** for the session.
 
-## Frontend migration guardrails
-- React is the active frontend entrypoint (`src/main.tsx`).
-- During migration, legacy Lit surfaces may remain, but **new UI work should be React-first** unless explicitly scoped as legacy maintenance.
-- Migration progress is tracked in issue #7.
+## Frontend architecture guardrails
+- React is the active frontend entrypoint (`src/main.tsx`) and app bootstrap (`src/bootstrap.ts`).
+- New UI work should remain React-based; do not reintroduce Lit/mini-lit surfaces.
+- For markdown/theming changes, preserve chat rendering parity and run the standard smoke matrix.
 
 ## Per-issue workflow (required)
 1. Pick/open issue on GitHub.
