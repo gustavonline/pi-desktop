@@ -11,7 +11,7 @@
 - [x] 2) Update markdown docs to match current reality
 - [x] 3) Post concise GitHub issue progress update + next steps
 - [x] 4) Run validation (`npm run check`, `npm run tauri build`) and fix real breakages
-- [ ] 5) Commit, push, merge into `dev`, push `dev`
+- [x] 5) Commit, push, merge into `dev`, push `dev`
 
 ## Verification log
 - [x] `npm run check` (pass)
@@ -21,3 +21,4 @@
 - Session audit reads: `src/main.tsx`, `src/components/sidebar.tsx`, `src/components/chat-view.tsx`, `src/components/titlebar.tsx`, `src/components/settings-panel.tsx`, `src/rpc/bridge.ts`, `src-tauri/src/lib.rs`.
 - Docs aligned: `README.md`, `FEATURE_MAPPING.md`, `RELEASE_CRITERIA.md`, `ROADMAP_V1.md`, `TODO.md`.
 - Issue update posted: https://github.com/gustavonline/pi-desktop/issues/5#issuecomment-3914584289
+- Docs commit: `ab5f101`; merge commit to `dev`: `37abcbf`.
