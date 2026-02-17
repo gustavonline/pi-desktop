@@ -1,25 +1,23 @@
-# TODO (Issue Mirror)
+# TODO (State Consolidation + Dev Release Pass)
 
-## Active issue
-- Issue: #5 — [P1] Distribution pipeline for Windows + macOS (post-v1 stabilization)
-- Branch: feat/5-distribution-pipeline
-- Scope summary: document and validate reproducible release artifact flow for Windows/macOS, including signing/notarization guidance and release checklist linkage.
+## Context
+- Repo: `C:\Users\gusta\downloads\pi-desktop`
+- Active branch: `feat/5-distribution-pipeline`
+- Related issue: #5 — **[P1] Distribution pipeline for Windows + macOS (post-v1 stabilization)**
+- Session goal: consolidate current state, align docs, verify build/check, update issue, and merge verified work into `dev`.
 
-## Acceptance criteria (from issue)
-- [ ] Windows release artifacts are reproducibly built and verified
-- [ ] macOS `.dmg`/`.app` artifacts are reproducibly built and verified
-- [ ] Signing/notarization requirements are documented with actionable steps
-- [ ] Release checklist exists and is linked from README/release docs
+## Task checklist
+- [x] 1) Audit current codebase status (done/stable, partial, risks, priorities)
+- [x] 2) Update markdown docs to match current reality
+- [x] 3) Post concise GitHub issue progress update + next steps
+- [x] 4) Run validation (`npm run check`, `npm run tauri build`) and fix real breakages
+- [ ] 5) Commit, push, merge into `dev`, push `dev`
 
-## Session checklist
-- [ ] Implementation done
-- [ ] `npm run check` passed
-- [ ] `npm run build:frontend` passed
-- [ ] `cargo check` passed
-- [ ] Manual smoke checks done for changed flow
-- [ ] Changes committed and pushed
-- [ ] PR opened/updated
+## Verification log
+- [x] `npm run check` (pass)
+- [x] `npm run tauri build` (pass)
 
-## Session notes
-- Core v1 product/stability work is complete on `dev` (#2/#3/#7/#9/#10/#14/#4).
-- Remaining open v1 child issue is #5 (distribution pipeline/release packaging documentation).
+## Notes
+- Session audit reads: `src/main.tsx`, `src/components/sidebar.tsx`, `src/components/chat-view.tsx`, `src/components/titlebar.tsx`, `src/components/settings-panel.tsx`, `src/rpc/bridge.ts`, `src-tauri/src/lib.rs`.
+- Docs aligned: `README.md`, `FEATURE_MAPPING.md`, `RELEASE_CRITERIA.md`, `ROADMAP_V1.md`, `TODO.md`.
+- Issue update posted: https://github.com/gustavonline/pi-desktop/issues/5#issuecomment-3914584289
