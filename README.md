@@ -2,24 +2,44 @@
 
 A native-feeling, cross-platform desktop client for the **pi coding agent** CLI, built with **Tauri 2 + Rust + React**.
 
-Pi Desktop uses `pi --mode rpc` under the hood and maps core CLI capabilities into a desktop UI.
+Pi Desktop uses `pi --mode rpc` under the hood and maps core CLI capabilities into a desktop UX.
+
+## Current Status (2026-02-17)
+
+- ✅ **Core app UX is stable on `dev`** (React-only frontend, project-centric navigation, streaming chat, settings/runtime diagnostics).
+- ✅ **Recent UI/flow work is integrated** (minimal Codex-like polish, project sidebar + persisted projects, per-project sessions, composer model/thinking controls, switch refresh fixes).
+- ✅ **Backend session indexing is wired to real pi data** (`~/.pi/agent/sessions`, with cwd/tokens/cost metadata).
+- ✅ **Validation pass green**: `npm run check` and `npm run tauri build` both pass.
+- ⚠️ **Main remaining v1-adjacent gap**: issue **#5** (distribution pipeline/reproducible Windows+macOS release packaging + signing/notarization documentation).
 
 ## Highlights
 
-- Native window shell (custom titlebar, mac-like minimal controls)
-- Project sidebar with persisted folders + per-project sessions
-- Streaming chat with tool-call blocks, thinking blocks, and live status pills
-- Full RPC model controls (model switch, thinking levels, queue modes, compaction, retry)
-- Message queue UX (steer + follow-up)
-- Session workflows (new, resume, fork picker, history viewer, rename, export HTML)
-- Message-level actions (copy/edit/retry) with hover affordances
-- Command palette for extension commands, prompt templates, and skills
-- Built-in package manager panel (`pi install/remove/update/list`, global or project-local scope)
-- Settings account status panel (auth.json + env-provider detection)
-- In-app CLI runtime check (current vs latest version, RPC compatibility probe, one-click npm update for PATH installs)
-- Titlebar “Update CLI” badge when a newer PATH-installed CLI is available
-- Extension UI protocol support (select/confirm/input/editor/notify/status/widget/title/set_editor_text)
-- Image attachments (button, drag/drop, clipboard paste)
+- Native window shell with custom titlebar and desktop controls
+- Minimal dark-first visual system (Apple/Codex-inspired)
+- Project-centric sidebar:
+  - persisted projects
+  - colored project dots
+  - expand/collapse project groups
+  - per-project “new session” action
+  - recent session metadata (tokens/cost/age)
+- Streaming chat with:
+  - tool-call cards
+  - thinking blocks
+  - queue/retry/compaction indicators
+  - image attachments (button, drag/drop, clipboard paste)
+- Composer runtime controls:
+  - model dropdown
+  - thinking dropdown
+  - steer/follow-up actions while streaming
+- Session workflows:
+  - new/resume/switch/rename/fork/export
+  - history viewer with search/filter/jump
+  - message-level copy/edit/retry
+- Command palette for built-ins + discovered extension/prompt/skill commands
+- Settings runtime panel:
+  - auth status (`auth.json` + env providers)
+  - CLI update check/action (PATH installs)
+  - RPC compatibility probe + fallback messaging
 
 Detailed capability matrix: **[`FEATURE_MAPPING.md`](./FEATURE_MAPPING.md)**
 
@@ -48,72 +68,57 @@ pi --version
 
 ```bash
 npm install
+npm run check
 npm run tauri dev
+```
+
+Useful variants:
+
+```bash
+npm run dev        # frontend only (Vite)
+npm run tauri dev  # full desktop app (frontend + Tauri backend)
 ```
 
 ---
 
-## Build
+## Build / Bundle
 
 ```bash
-npm run build:frontend
 npm run tauri build
 ```
 
-App bundles land in:
+After a successful build:
 
-`src-tauri/target/release/bundle/`
+- release executable (Windows):
+  - `src-tauri/target/release/pi-desktop.exe`
+- bundled installer artifacts:
+  - `src-tauri/target/release/bundle/`
+
+> Distribution pipeline hardening and cross-platform reproducibility/signing docs are tracked in issue #5.
 
 ---
 
 ## Architecture
 
-- **Frontend**: React-first/React-rendered desktop UI + Tailwind CSS utilities + custom CSS
-- **Backend**: Rust (Tauri command bridge + package command runner)
+- **Frontend**: React entrypoint + TSX components + shared CSS tokens/utilities
+- **Backend**: Rust (Tauri command bridge, RPC process manager, session indexing, CLI command runner)
 - **Protocol**: JSON-lines RPC over stdin/stdout to `pi --mode rpc`
 
 Key files:
 
 - `src/main.tsx` — React entrypoint
-- `src/bootstrap.ts` — desktop orchestration/bootstrap (no Lit bridge)
+- `src/bootstrap.ts` — desktop orchestration/bootstrap
 - `src/rpc/bridge.ts` — typed RPC client
 - `src/components/chat-view.tsx` — chat, streaming, tools, queueing, attachments
-- `src/components/sidebar.tsx` — projects + sessions
+- `src/components/sidebar.tsx` — project + session navigation
 - `src/components/settings-panel.tsx` — runtime config + auth/runtime diagnostics
 - `src/components/titlebar.tsx` — window controls + model/session status
-- `src-tauri/src/lib.rs` — process manager + session indexing
+- `src-tauri/src/lib.rs` — process manager + session indexing + CLI helpers
 
 ---
 
-## Frontend migration status
+## Next Steps
 
-The desktop frontend is now **React-only at the app layer** (legacy Lit bootstrap removed).
-
-Tracking issues:
-- Foundation: **#7** ✅
-- Core surface migration: **#9** ✅
-- React-only cleanup: **#10**
-
----
-
-## Notes
-
-RPC mode does not expose every interactive TUI-only CLI command directly. Pi Desktop implements the RPC-exposed core feature set and desktop-native workflows around it.
-
-Runtime discovery order for the `pi` process is:
-1. explicit dev CLI path (if provided)
-2. bundled sidecar binary (if present)
-3. `pi` found on PATH
-
-### Windows build-script policy errors
-
-If `cargo check` / `tauri dev` fails with:
-
-`An Application Control policy has blocked this file. (os error 4551)`
-
-this is an OS policy issue (build-script/proc-macro execution), not an app code error.
-
-Typical fixes:
-- run from a trusted development location (not a restricted folder)
-- remove enterprise/AppLocker/WDAC restrictions for Rust build artifacts
-- clear and rebuild target dir after policy changes (`cargo clean`)
+1. Close issue #5 (distribution pipeline): reproducible Windows/macOS release flow + signing/notarization guidance.
+2. Add CI-level build/check guardrails for pre-merge and release candidate branches.
+3. Run final release smoke matrix from `RELEASE_CRITERIA.md` before `dev -> main` promotion.
