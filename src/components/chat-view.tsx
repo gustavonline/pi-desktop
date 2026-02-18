@@ -1250,7 +1250,7 @@ export class ChatView {
 							}}
 							type="button"
 						>
-							📎
+							＋
 						</button>
 
 						<textarea

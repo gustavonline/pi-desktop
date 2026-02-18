@@ -11,9 +11,18 @@ import { SettingsPanel } from "./components/settings-panel.js";
 import { ShortcutsPanel } from "./components/shortcuts-panel.js";
 import { Sidebar } from "./components/sidebar.js";
 import { TitleBar } from "./components/titlebar.js";
+import { WorkspaceTabs } from "./components/workspace-tabs.js";
 import { type CliUpdateStatus, rpcBridge } from "./rpc/bridge.js";
 
+const PROJECTS_STORAGE_KEY = "pi-desktop.projects.v1";
+const ACTIVE_PROJECT_STORAGE_KEY = "pi-desktop.projects.active.v1";
+const SIDEBAR_WIDTH_STORAGE_KEY = "pi-desktop.sidebar.width.v1";
+const SIDEBAR_MIN_WIDTH = 220;
+const SIDEBAR_MAX_WIDTH = 560;
+const SIDEBAR_DEFAULT_WIDTH = 292;
+
 let titleBar: TitleBar | null = null;
+let workspaceTabs: WorkspaceTabs | null = null;
 let sidebar: Sidebar | null = null;
 let chatView: ChatView | null = null;
 let connectionError: string | null = null;
@@ -45,9 +54,14 @@ function findCliPath(): string | null {
 
 function getCwd(): string {
 	try {
-		const raw = localStorage.getItem("pi-desktop.projects.v1");
+		const raw = localStorage.getItem(PROJECTS_STORAGE_KEY);
 		if (raw) {
-			const projects = JSON.parse(raw) as Array<{ path?: string }>;
+			const projects = JSON.parse(raw) as Array<{ id?: string; path?: string }>;
+			const activeId = localStorage.getItem(ACTIVE_PROJECT_STORAGE_KEY);
+			if (activeId) {
+				const activeProject = projects.find((project) => project.id === activeId);
+				if (activeProject?.path) return activeProject.path;
+			}
 			if (projects[0]?.path) return projects[0].path;
 		}
 	} catch {
@@ -59,6 +73,61 @@ function getCwd(): string {
 function normalizeProjectPath(path: string | null | undefined): string {
 	if (!path) return "";
 	return path.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+}
+
+function clampSidebarWidth(width: number): number {
+	if (!Number.isFinite(width)) return SIDEBAR_DEFAULT_WIDTH;
+	return Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, Math.round(width)));
+}
+
+function getStoredSidebarWidth(): number {
+	const raw = localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY);
+	if (!raw) return SIDEBAR_DEFAULT_WIDTH;
+	return clampSidebarWidth(Number(raw));
+}
+
+function setupSidebarResizer(): void {
+	const sidebarEl = document.getElementById("sidebar-container") as HTMLDivElement | null;
+	const resizerEl = document.getElementById("sidebar-resizer") as HTMLDivElement | null;
+	if (!sidebarEl || !resizerEl) return;
+
+	let width = getStoredSidebarWidth();
+	sidebarEl.style.width = `${width}px`;
+
+	let dragging = false;
+
+	const applyWidth = (clientX: number) => {
+		width = clampSidebarWidth(clientX);
+		sidebarEl.style.width = `${width}px`;
+	};
+
+	const finishDrag = () => {
+		if (!dragging) return;
+		dragging = false;
+		document.body.classList.remove("sidebar-resizing");
+		localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(width));
+	};
+
+	resizerEl.addEventListener("pointerdown", (event: PointerEvent) => {
+		event.preventDefault();
+		dragging = true;
+		document.body.classList.add("sidebar-resizing");
+		resizerEl.setPointerCapture(event.pointerId);
+		applyWidth(event.clientX);
+	});
+
+	resizerEl.addEventListener("pointermove", (event: PointerEvent) => {
+		if (!dragging) return;
+		applyWidth(event.clientX);
+	});
+
+	resizerEl.addEventListener("pointerup", () => {
+		finishDrag();
+	});
+
+	resizerEl.addEventListener("pointercancel", () => {
+		finishDrag();
+	});
 }
 
 async function ensureRpcForProject(projectPath: string): Promise<void> {
@@ -200,8 +269,10 @@ function mountAppShell(app: HTMLElement): void {
 	app.innerHTML = `
 		<div class="app-shell">
 			<div id="titlebar"></div>
+			<div id="workspace-tabs-container"></div>
 			<div class="content-shell">
 				<div id="sidebar-container"></div>
+				<div id="sidebar-resizer" aria-hidden="true"></div>
 				<div id="chat-container"></div>
 			</div>
 		</div>
@@ -393,7 +464,8 @@ function setupKeyboardShortcuts(): void {
 		const isCtrlOrMeta = e.ctrlKey || e.metaKey;
 		const isShift = e.shiftKey;
 		const target = e.target as HTMLElement;
-		const isInput = target.tagName === "INPUT" || target.tagName === "TEXTAREA";
+		const isInput =
+			target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT" || target.isContentEditable;
 
 		if (isCtrlOrMeta && e.key.toLowerCase() === "n") {
 			e.preventDefault();
@@ -480,7 +552,7 @@ function setupKeyboardShortcuts(): void {
 			return;
 		}
 
-		if (e.key === "Tab" && isShift && !isInput) {
+		if (e.key === "Tab" && !isCtrlOrMeta && !e.altKey && !isInput) {
 			e.preventDefault();
 			void rpcBridge
 				.cycleThinkingLevel()
@@ -531,9 +603,38 @@ function renderApp(): void {
 		wireTitlebarCallbacks();
 	}
 
+	const workspaceTabsContainer = document.getElementById("workspace-tabs-container");
+	if (!workspaceTabsContainer) return;
+	workspaceTabs?.destroy();
+	workspaceTabs = new WorkspaceTabs(workspaceTabsContainer);
+
 	const sidebarContainer = document.getElementById("sidebar-container");
 	if (!sidebarContainer) return;
+	setupSidebarResizer();
+	sidebar?.destroy();
 	sidebar = new Sidebar(sidebarContainer);
+
+	const syncWorkspaceTabs = () => {
+		const projects = sidebar?.getProjects() ?? [];
+		const activeId = sidebar?.getActiveProject()?.id ?? null;
+		workspaceTabs?.setTabs(projects, activeId);
+	};
+
+	workspaceTabs.setOnOpenProject(() => {
+		void sidebar?.openFolder();
+	});
+	workspaceTabs.setOnSelectTab((projectId) => {
+		sidebar?.activateProject(projectId);
+	});
+	workspaceTabs.setOnCloseTab((projectId) => {
+		sidebar?.closeProject(projectId);
+	});
+
+	sidebar.setOnProjectsChanged(() => {
+		syncWorkspaceTabs();
+		const activeProject = sidebar?.getActiveProject() ?? null;
+		titleBar?.setProject(activeProject?.path ?? null);
+	});
 
 	sidebar.setOnOpenSettings(() => {
 		void settingsPanel?.open();
@@ -544,7 +645,7 @@ function renderApp(): void {
 	});
 
 	sidebar.setOnProjectSelect((project) => {
-		titleBar?.setProject(project.name);
+		titleBar?.setProject(project.path);
 		projectSwitchTask = projectSwitchTask
 			.then(async () => {
 				await ensureRpcForProject(project.path);
@@ -559,7 +660,7 @@ function renderApp(): void {
 	});
 
 	sidebar.setOnNewSessionInProject((project) => {
-		titleBar?.setProject(project.name);
+		titleBar?.setProject(project.path);
 		projectSwitchTask = projectSwitchTask
 			.then(async () => {
 				await ensureRpcForProject(project.path);
@@ -590,8 +691,9 @@ function renderApp(): void {
 		}
 	});
 
+	syncWorkspaceTabs();
 	const activeProject = sidebar.getActiveProject();
-	if (activeProject) titleBar?.setProject(activeProject.name);
+	titleBar?.setProject(activeProject?.path ?? null);
 }
 
 export function bootstrapDesktop(host: HTMLElement): void {

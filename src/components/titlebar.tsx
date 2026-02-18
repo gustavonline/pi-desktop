@@ -14,7 +14,6 @@ interface SessionStats {
 
 interface TitleBarViewProps {
 	currentProject: string | null;
-	modelId: string;
 	thinkingLevel: string | undefined;
 	tokens: string;
 	cost: string;
@@ -48,9 +47,6 @@ function TitleBarView(props: TitleBarViewProps): ReactElement {
 			</div>
 
 			<div className="titlebar-center" data-tauri-drag-region>
-				<span className="titlebar-model" title={props.modelId}>
-					{props.modelId}
-				</span>
 				{props.thinkingLevel && props.thinkingLevel !== "off" ? (
 					<span className="titlebar-pill thinking">{props.thinkingLevel}</span>
 				) : null}
@@ -81,10 +77,6 @@ function TitleBarView(props: TitleBarViewProps): ReactElement {
 						{props.cliUpdating ? "Updating…" : props.canUpdateInApp ? "Update CLI" : "CLI Update"}
 					</button>
 				) : null}
-				<button className="titlebar-action" onClick={props.onOpenSettings} title="Settings" type="button">
-					⚙
-				</button>
-
 				<button className="titlebar-window" onClick={props.onMinimize} title="Minimize" type="button">
 					—
 				</button>
@@ -253,7 +245,6 @@ export class TitleBar {
 	}
 
 	render(): void {
-		const modelId = this.state?.model?.id || "No model";
 		const thinkingLevel = this.state?.thinkingLevel;
 		const tokens = this.formatTokens(this.stats?.tokens?.total);
 		const cost = this.formatCost(this.stats?.cost);
@@ -267,7 +258,6 @@ export class TitleBar {
 		this.root.render(
 			<TitleBarView
 				currentProject={this.currentProject}
-				modelId={modelId}
 				thinkingLevel={thinkingLevel}
 				tokens={tokens}
 				cost={cost}

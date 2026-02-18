@@ -164,11 +164,11 @@ export class CommandPalette {
 			case "builtin":
 				return "⌘";
 			case "extension":
-				return "⚡";
+				return "∷";
 			case "prompt":
-				return "📝";
+				return "✎";
 			case "skill":
-				return "🎯";
+				return "◇";
 			default:
 				return "•";
 		}

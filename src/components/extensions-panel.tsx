@@ -18,7 +18,14 @@ function getActiveProjectPath(): string {
 	try {
 		const raw = localStorage.getItem("pi-desktop.projects.v1");
 		if (!raw) return ".";
-		const projects = JSON.parse(raw) as Array<{ path?: string }>;
+
+		const projects = JSON.parse(raw) as Array<{ id?: string; path?: string }>;
+		const activeId = localStorage.getItem("pi-desktop.projects.active.v1");
+		if (activeId) {
+			const activeProject = projects.find((project) => project.id === activeId);
+			if (activeProject?.path) return activeProject.path;
+		}
+
 		return projects[0]?.path || ".";
 	} catch {
 		return ".";
