@@ -241,7 +241,9 @@ function escapeHtml(value: string): string {
 function mountLoadingView(app: HTMLElement): void {
 	app.innerHTML = `
 		<div class="app-shell loading">
-			<div id="titlebar"></div>
+			<div id="topbar-shell">
+				<div id="titlebar"></div>
+			</div>
 			<div class="loading-view">Starting pi agent…</div>
 		</div>
 	`;
@@ -268,8 +270,10 @@ function mountConnectionError(app: HTMLElement): void {
 function mountAppShell(app: HTMLElement): void {
 	app.innerHTML = `
 		<div class="app-shell">
-			<div id="titlebar"></div>
-			<div id="workspace-tabs-container"></div>
+			<div id="topbar-shell">
+				<div id="titlebar"></div>
+				<div id="workspace-tabs-container"></div>
+			</div>
 			<div class="content-shell">
 				<div id="sidebar-container"></div>
 				<div id="sidebar-resizer" aria-hidden="true"></div>
@@ -306,6 +310,10 @@ async function initialize(): Promise<void> {
 		if (!chatContainer) throw new Error("Chat container missing");
 		chatView = new ChatView(chatContainer);
 		chatView.setOnStateChange((state) => titleBar?.updateState(state));
+		chatView.setOnOpenActions(() => {
+			void commandPalette?.open();
+		});
+		chatView.setProjectPath(sidebar?.getActiveProject()?.path ?? null);
 		chatView.connect();
 		chatView.render();
 		chatView.focusInput();
@@ -427,6 +435,26 @@ function wireCommandPaletteBuiltins(): void {
 			description: "Compact current session context",
 			action: async () => chatView?.compactNow(),
 		},
+		{
+			name: "rename-session",
+			description: "Rename current session",
+			action: async () => chatView?.renameSession(),
+		},
+		{
+			name: "copy-last",
+			description: "Copy last assistant message",
+			action: async () => chatView?.copyLastMessage(),
+		},
+		{
+			name: "export-html",
+			description: "Export session as HTML",
+			action: async () => chatView?.exportToHtml(),
+		},
+		{
+			name: "copy-exported-html",
+			description: "Copy exported HTML for sharing",
+			action: async () => chatView?.shareAsGist(),
+		},
 	]);
 }
 
@@ -479,24 +507,6 @@ function setupKeyboardShortcuts(): void {
 			return;
 		}
 
-		if (isCtrlOrMeta && isShift && e.key.toLowerCase() === "c") {
-			e.preventDefault();
-			void chatView?.copyLastMessage();
-			return;
-		}
-
-		if (isCtrlOrMeta && e.key.toLowerCase() === "e" && !isShift) {
-			e.preventDefault();
-			void chatView?.exportToHtml();
-			return;
-		}
-
-		if (isCtrlOrMeta && isShift && e.key.toLowerCase() === "e") {
-			e.preventDefault();
-			void chatView?.shareAsGist();
-			return;
-		}
-
 		if (isCtrlOrMeta && e.key.toLowerCase() === "k") {
 			e.preventDefault();
 			void commandPalette?.open();
@@ -518,12 +528,6 @@ function setupKeyboardShortcuts(): void {
 		if (isCtrlOrMeta && e.key.toLowerCase() === "r" && !isShift) {
 			e.preventDefault();
 			void sessionBrowser?.open();
-			return;
-		}
-
-		if (isCtrlOrMeta && isShift && e.key.toLowerCase() === "h") {
-			e.preventDefault();
-			chatView?.openHistoryViewer();
 			return;
 		}
 
@@ -552,7 +556,7 @@ function setupKeyboardShortcuts(): void {
 			return;
 		}
 
-		if (e.key === "Tab" && !isCtrlOrMeta && !e.altKey && !isInput) {
+		if (e.key === "Tab" && isShift && !isCtrlOrMeta && !e.altKey && !isInput) {
 			e.preventDefault();
 			void rpcBridge
 				.cycleThinkingLevel()
@@ -629,11 +633,15 @@ function renderApp(): void {
 	workspaceTabs.setOnCloseTab((projectId) => {
 		sidebar?.closeProject(projectId);
 	});
+	workspaceTabs.setOnReorderTab((draggedProjectId, targetProjectId) => {
+		sidebar?.reorderProjects(draggedProjectId, targetProjectId);
+	});
 
 	sidebar.setOnProjectsChanged(() => {
 		syncWorkspaceTabs();
 		const activeProject = sidebar?.getActiveProject() ?? null;
 		titleBar?.setProject(activeProject?.path ?? null);
+		chatView?.setProjectPath(activeProject?.path ?? null);
 	});
 
 	sidebar.setOnOpenSettings(() => {
@@ -694,6 +702,7 @@ function renderApp(): void {
 	syncWorkspaceTabs();
 	const activeProject = sidebar.getActiveProject();
 	titleBar?.setProject(activeProject?.path ?? null);
+	chatView?.setProjectPath(activeProject?.path ?? null);
 }
 
 export function bootstrapDesktop(host: HTMLElement): void {

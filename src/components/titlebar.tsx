@@ -1,82 +1,32 @@
 /**
- * TitleBar - custom native-like frame with quick controls + live stats
+ * TitleBar - minimal native-like frame
  */
 
+import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { type CliUpdateStatus, type RpcSessionState, rpcBridge } from "../rpc/bridge.js";
-
-interface SessionStats {
-	tokens: { total?: number };
-	cost?: number;
-}
+import { type CliUpdateStatus, type RpcSessionState } from "../rpc/bridge.js";
 
 interface TitleBarViewProps {
-	currentProject: string | null;
-	thinkingLevel: string | undefined;
-	tokens: string;
-	cost: string;
-	pending: number;
-	updateAvailable: boolean;
-	canUpdateInApp: boolean;
-	cliUpdating: boolean;
-	updateTitle: string;
+	appVersion: string | null;
 	isMaximized: boolean;
-	onNewSession: () => void;
-	onOpenSessions: () => void;
-	onOpenCommandPalette: () => void;
-	onOpenSettings: () => void;
-	onUpdateCli: () => void;
 	onMinimize: () => void;
 	onToggleMaximize: () => void;
 	onClose: () => void;
 }
 
 function TitleBarView(props: TitleBarViewProps): ReactElement {
+	const versionLabel = props.appVersion ? `v${props.appVersion}` : "dev";
+
 	return (
 		<div className="titlebar" data-tauri-drag-region>
 			<div className="titlebar-left" data-tauri-drag-region>
-				<span className="titlebar-app">pi</span>
-				{props.currentProject ? (
-					<>
-						<span className="titlebar-sep">/</span>
-						<span className="titlebar-project">{props.currentProject}</span>
-					</>
-				) : null}
+				<span className="titlebar-build">PI-desktop {versionLabel}</span>
 			</div>
-
-			<div className="titlebar-center" data-tauri-drag-region>
-				{props.thinkingLevel && props.thinkingLevel !== "off" ? (
-					<span className="titlebar-pill thinking">{props.thinkingLevel}</span>
-				) : null}
-				{props.pending > 0 ? <span className="titlebar-pill queue">{props.pending} queued</span> : null}
-				<span className="titlebar-meta">
-					{props.tokens} tok · {props.cost}
-				</span>
-			</div>
+			<div className="titlebar-center" data-tauri-drag-region></div>
 
 			<div className="titlebar-right">
-				<button className="titlebar-action" onClick={props.onNewSession} title="New session" type="button">
-					New
-				</button>
-				<button className="titlebar-action" onClick={props.onOpenSessions} title="Sessions" type="button">
-					Sessions
-				</button>
-				<button className="titlebar-action" onClick={props.onOpenCommandPalette} title="Commands" type="button">
-					⌘K
-				</button>
-				{props.updateAvailable ? (
-					<button
-						className="titlebar-action update"
-						disabled={props.cliUpdating}
-						onClick={() => (props.canUpdateInApp ? props.onUpdateCli() : props.onOpenSettings())}
-						title={props.updateTitle}
-						type="button"
-					>
-						{props.cliUpdating ? "Updating…" : props.canUpdateInApp ? "Update CLI" : "CLI Update"}
-					</button>
-				) : null}
 				<button className="titlebar-window" onClick={props.onMinimize} title="Minimize" type="button">
 					—
 				</button>
@@ -102,10 +52,7 @@ export class TitleBar {
 	private state: RpcSessionState | null = null;
 	private currentProject: string | null = null;
 	private isMaximized = false;
-	private stats: SessionStats | null = null;
-	private statsTimer: ReturnType<typeof setInterval> | null = null;
-	private cliStatus: CliUpdateStatus | null = null;
-	private cliUpdating = false;
+	private appVersion: string | null = null;
 
 	private onNewSession: (() => void) | null = null;
 	private onOpenSessions: (() => void) | null = null;
@@ -117,14 +64,12 @@ export class TitleBar {
 		this.container = container;
 		this.root = createRoot(container);
 		void this.checkMaximized();
-		void this.refreshStats();
-		this.startStatsRefresh();
+		void this.loadVersion();
 		this.render();
 	}
 
 	updateState(state: RpcSessionState): void {
 		this.state = state;
-		void this.refreshStats();
 		this.render();
 	}
 
@@ -153,40 +98,21 @@ export class TitleBar {
 		this.onUpdateCli = cb;
 	}
 
-	setCliUpdateStatus(status: CliUpdateStatus | null): void {
-		this.cliStatus = status;
-		this.render();
+	setCliUpdateStatus(_status: CliUpdateStatus | null): void {
+		// retained for API compatibility
 	}
 
-	setCliUpdating(updating: boolean): void {
-		this.cliUpdating = updating;
-		this.render();
+	setCliUpdating(_updating: boolean): void {
+		// retained for API compatibility
 	}
 
-	private startStatsRefresh(): void {
-		this.stopStatsRefresh();
-		this.statsTimer = setInterval(() => {
-			void this.refreshStats();
-		}, 8000);
-	}
-
-	private stopStatsRefresh(): void {
-		if (!this.statsTimer) return;
-		clearInterval(this.statsTimer);
-		this.statsTimer = null;
-	}
-
-	private async refreshStats(): Promise<void> {
+	private async loadVersion(): Promise<void> {
 		try {
-			const raw = await rpcBridge.getSessionStats();
-			this.stats = {
-				tokens: (raw.tokens as SessionStats["tokens"]) ?? {},
-				cost: typeof raw.cost === "number" ? raw.cost : 0,
-			};
-			this.render();
+			this.appVersion = await getVersion();
 		} catch {
-			// not critical
+			this.appVersion = null;
 		}
+		this.render();
 	}
 
 	private async checkMaximized(): Promise<void> {
@@ -226,52 +152,15 @@ export class TitleBar {
 		}
 	}
 
-	private formatTokens(value: number | undefined): string {
-		if (!value || value <= 0) return "0";
-		if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
-		if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
-		return String(value);
-	}
-
-	private formatCost(value: number | undefined): string {
-		if (!value || value <= 0) return "$0";
-		if (value < 0.01) return `$${value.toFixed(4)}`;
-		return `$${value.toFixed(2)}`;
-	}
-
 	destroy(): void {
-		this.stopStatsRefresh();
 		this.root.unmount();
 	}
 
 	render(): void {
-		const thinkingLevel = this.state?.thinkingLevel;
-		const tokens = this.formatTokens(this.stats?.tokens?.total);
-		const cost = this.formatCost(this.stats?.cost);
-		const pending = this.state?.pendingMessageCount ?? 0;
-		const updateAvailable = Boolean(this.cliStatus?.update_available);
-		const canUpdateInApp = Boolean(this.cliStatus?.can_update_in_app && this.cliStatus?.npm_available);
-		const updateTitle = this.cliStatus
-			? `CLI ${this.cliStatus.current_version || "unknown"} → ${this.cliStatus.latest_version || "latest"}`
-			: "CLI update status";
-
 		this.root.render(
 			<TitleBarView
-				currentProject={this.currentProject}
-				thinkingLevel={thinkingLevel}
-				tokens={tokens}
-				cost={cost}
-				pending={pending}
-				updateAvailable={updateAvailable}
-				canUpdateInApp={canUpdateInApp}
-				cliUpdating={this.cliUpdating}
-				updateTitle={updateTitle}
+				appVersion={this.appVersion}
 				isMaximized={this.isMaximized}
-				onNewSession={() => this.onNewSession?.()}
-				onOpenSessions={() => this.onOpenSessions?.()}
-				onOpenCommandPalette={() => this.onOpenCommandPalette?.()}
-				onOpenSettings={() => this.onOpenSettings?.()}
-				onUpdateCli={() => this.onUpdateCli?.()}
 				onMinimize={() => void this.minimize()}
 				onToggleMaximize={() => void this.toggleMaximize()}
 				onClose={() => void this.close()}

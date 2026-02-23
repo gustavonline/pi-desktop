@@ -14,7 +14,6 @@ interface Shortcut {
 const SHORTCUTS: Shortcut[] = [
 	{ keys: ["Ctrl/Cmd+N"], description: "New session", category: "Session" },
 	{ keys: ["Ctrl/Cmd+R"], description: "Open sessions browser", category: "Session" },
-	{ keys: ["Ctrl/Cmd+Shift+H"], description: "Open session history viewer", category: "Session" },
 	{ keys: ["Ctrl/Cmd+K"], description: "Open command palette", category: "Navigation" },
 	{ keys: ["/"], description: "Open command palette (when editor not focused)", category: "Navigation" },
 	{ keys: ["Ctrl/Cmd+L"], description: "Focus composer", category: "Input" },
@@ -25,9 +24,6 @@ const SHORTCUTS: Shortcut[] = [
 	{ keys: ["Ctrl/Cmd+M"], description: "Cycle model", category: "Model" },
 	{ keys: ["Shift+Tab"], description: "Cycle thinking level", category: "Model" },
 	{ keys: ["Ctrl/Cmd+T"], description: "Toggle thinking blocks", category: "Display" },
-	{ keys: ["Ctrl/Cmd+Shift+C"], description: "Copy last assistant message", category: "Utility" },
-	{ keys: ["Ctrl/Cmd+E"], description: "Export session as HTML", category: "Utility" },
-	{ keys: ["Ctrl/Cmd+Shift+E"], description: "Copy exported HTML to clipboard", category: "Utility" },
 	{ keys: ["Ctrl/Cmd+,"], description: "Open settings", category: "Navigation" },
 	{ keys: ["Ctrl/Cmd+/"], description: "Open this shortcuts panel", category: "Navigation" },
 	{ keys: ["Ctrl/Cmd+Shift+T"], description: "Toggle light/dark theme", category: "Display" },
@@ -70,7 +66,7 @@ export class ShortcutsPanel {
 			{} as Record<string, Shortcut[]>,
 		);
 
-		const categories = ["Navigation", "Session", "Input", "Model", "Display", "Utility", "Agent"];
+		const categories = ["Navigation", "Session", "Input", "Model", "Display", "Agent"];
 
 		return (
 			<div

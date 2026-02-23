@@ -7,6 +7,7 @@ import { createRoot, type Root } from "react-dom/client";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
+	type ProjectGitStatus,
 	type RpcImageInput,
 	type RpcSessionState,
 	type ThinkingLevel,
@@ -69,6 +70,16 @@ interface ForkOption {
 	text: string;
 }
 
+interface SessionStatusStats {
+	tokensTotal: number;
+	costTotal: number;
+}
+
+interface GitBranchOption {
+	name: string;
+	current: boolean;
+}
+
 function uid(prefix = "id"): string {
 	return `${prefix}_${Math.random().toString(36).slice(2, 8)}_${Date.now().toString(36)}`;
 }
@@ -88,6 +99,7 @@ export class ChatView {
 	private scrollContainer: HTMLElement | null = null;
 	private unsubscribeEvents: (() => void) | null = null;
 	private onStateChange: ((state: RpcSessionState) => void) | null = null;
+	private onOpenActions: (() => void) | null = null;
 	private availableModels: ModelOption[] = [];
 	private loadingModels = false;
 	private settingModel = false;
@@ -105,6 +117,14 @@ export class ChatView {
 	private historyQuery = "";
 	private historyRoleFilter: UiRole | "all" = "all";
 	private disconnectNoticeTimer: ReturnType<typeof setTimeout> | null = null;
+	private projectPath: string | null = null;
+	private gitStatus: ProjectGitStatus | null = null;
+	private loadingGitStatus = false;
+	private sessionStats: SessionStatusStats | null = null;
+	private statusPollTimer: ReturnType<typeof setInterval> | null = null;
+	private availableBranches: GitBranchOption[] = [];
+	private loadingBranches = false;
+	private switchingBranch = false;
 
 	constructor(container: HTMLElement) {
 		this.container = container;
@@ -113,6 +133,21 @@ export class ChatView {
 
 	setOnStateChange(cb: (state: RpcSessionState) => void): void {
 		this.onStateChange = cb;
+	}
+
+	setOnOpenActions(cb: () => void): void {
+		this.onOpenActions = cb;
+	}
+
+	setProjectPath(path: string | null): void {
+		const normalized = path && path.trim() ? path : null;
+		if (this.projectPath === normalized) return;
+		this.projectPath = normalized;
+		this.gitStatus = null;
+		if (normalized) {
+			void this.refreshGitStatus();
+		}
+		this.render();
 	}
 
 	getState(): RpcSessionState | null {
@@ -138,11 +173,17 @@ export class ChatView {
 		if (!this.isConnected) return;
 		void this.refreshFromBackend();
 		void this.loadAvailableModels();
+		void this.refreshSessionStats();
+		if (this.projectPath) {
+			void this.refreshGitStatus();
+		}
+		this.startStatusPolling();
 	}
 
 	disconnect(): void {
 		this.unsubscribeEvents?.();
 		this.unsubscribeEvents = null;
+		this.stopStatusPolling();
 	}
 
 	async refreshFromBackend(): Promise<void> {
@@ -155,6 +196,7 @@ export class ChatView {
 			this.pendingDeliveryMode = state.isStreaming ? "steer" : "prompt";
 			this.render();
 			this.scrollToBottom();
+			void this.refreshSessionStats();
 			if (!this.loadingModels && this.availableModels.length === 0) {
 				void this.loadAvailableModels();
 			}
@@ -935,6 +977,112 @@ export class ChatView {
 		this.render();
 	}
 
+	private startStatusPolling(): void {
+		this.stopStatusPolling();
+		this.statusPollTimer = setInterval(() => {
+			void this.refreshSessionStats();
+		}, 10_000);
+	}
+
+	private stopStatusPolling(): void {
+		if (!this.statusPollTimer) return;
+		clearInterval(this.statusPollTimer);
+		this.statusPollTimer = null;
+	}
+
+	private async refreshSessionStats(): Promise<void> {
+		try {
+			const raw = await rpcBridge.getSessionStats();
+			const tokensData = (raw.tokens as Record<string, unknown> | undefined) ?? {};
+			const tokensTotal =
+				typeof tokensData.total === "number"
+					? tokensData.total
+					: typeof tokensData.totalTokens === "number"
+						? tokensData.totalTokens
+						: 0;
+			const costTotal =
+				typeof raw.cost === "number"
+					? raw.cost
+					: typeof (raw.cost as Record<string, unknown> | undefined)?.total === "number"
+						? ((raw.cost as Record<string, unknown>).total as number)
+						: 0;
+
+			this.sessionStats = {
+				tokensTotal,
+				costTotal,
+			};
+			this.render();
+		} catch {
+			// optional status
+		}
+	}
+
+	private async refreshGitStatus(): Promise<void> {
+		if (!this.projectPath) {
+			this.gitStatus = null;
+			this.availableBranches = [];
+			this.loadingGitStatus = false;
+			this.loadingBranches = false;
+			this.render();
+			return;
+		}
+
+		this.loadingGitStatus = true;
+		this.render();
+		try {
+			this.gitStatus = await rpcBridge.getProjectGitStatus(this.projectPath);
+			if (this.gitStatus?.inside_repo) {
+				await this.refreshGitBranches();
+			} else {
+				this.availableBranches = [];
+			}
+		} catch {
+			this.gitStatus = null;
+			this.availableBranches = [];
+		} finally {
+			this.loadingGitStatus = false;
+			this.render();
+		}
+	}
+
+	private async refreshGitBranches(): Promise<void> {
+		if (!this.projectPath || !this.gitStatus?.inside_repo) {
+			this.availableBranches = [];
+			this.loadingBranches = false;
+			return;
+		}
+
+		this.loadingBranches = true;
+		this.render();
+		try {
+			this.availableBranches = await rpcBridge.listProjectGitBranches(this.projectPath);
+		} catch {
+			this.availableBranches = [];
+		} finally {
+			this.loadingBranches = false;
+			this.render();
+		}
+	}
+
+	private async switchBranch(nextBranch: string): Promise<void> {
+		if (!this.projectPath || !nextBranch || this.switchingBranch) return;
+		if (nextBranch === this.gitStatus?.branch) return;
+
+		this.switchingBranch = true;
+		this.render();
+		try {
+			await rpcBridge.switchProjectGitBranch(this.projectPath, nextBranch);
+			this.pushNotice(`Switched to ${nextBranch}`, "success");
+			await this.refreshGitStatus();
+			await this.refreshFromBackend();
+		} catch (err) {
+			this.pushFeatureError("Switch branch", err);
+		} finally {
+			this.switchingBranch = false;
+			this.render();
+		}
+	}
+
 	private scrollToBottom(): void {
 		requestAnimationFrame(() => {
 			if (!this.scrollContainer) return;
@@ -951,54 +1099,6 @@ export class ChatView {
 						{notice.text}
 					</div>
 				))}
-			</div>
-		);
-	}
-
-	private renderToolbar(): ReactElement {
-		const sessionName = this.state?.sessionName || "Untitled session";
-		const count = this.state?.messageCount ?? this.messages.length;
-		const pending = this.state?.pendingMessageCount ?? 0;
-		const streaming = this.currentIsStreaming();
-
-		return (
-			<div className="chat-toolbar">
-				<div className="chat-toolbar-left">
-					<div className="chat-session-title" title={sessionName}>
-						{sessionName}
-					</div>
-					<div className="chat-toolbar-meta">
-						{count} msgs{pending > 0 ? ` · ${pending} queued` : ""}
-					</div>
-				</div>
-				<div className="chat-toolbar-actions">
-					<button className="ghost-btn" onClick={() => void this.newSession()} type="button">
-						New
-					</button>
-					<button className="ghost-btn" onClick={() => void this.renameSession()} type="button">
-						Name
-					</button>
-					<button className="ghost-btn" onClick={() => void this.compactNow()} type="button">
-						Compact
-					</button>
-					<button className="ghost-btn" onClick={() => void this.openForkPicker()} type="button">
-						Fork
-					</button>
-					<button className="ghost-btn" onClick={() => this.openHistoryViewer()} type="button">
-						History
-					</button>
-					<button className="ghost-btn" onClick={() => void this.copyLastMessage()} type="button">
-						Copy
-					</button>
-					<button className="ghost-btn" onClick={() => void this.exportToHtml()} type="button">
-						Export
-					</button>
-					{streaming ? (
-						<button className="danger-btn" onClick={() => void this.abortCurrentRun()} type="button">
-							Stop
-						</button>
-					) : null}
-				</div>
 			</div>
 		);
 	}
@@ -1151,6 +1251,80 @@ export class ChatView {
 		);
 	}
 
+	private formatTokenValue(value: number): string {
+		if (!value || value <= 0) return "0";
+		if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+		if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
+		return `${Math.round(value)}`;
+	}
+
+	private formatCostValue(value: number): string {
+		if (!value || value <= 0) return "$0";
+		if (value < 0.01) return `$${value.toFixed(4)}`;
+		return `$${value.toFixed(2)}`;
+	}
+
+	private renderSessionStatusRow(): ReactElement {
+		const tokensTotal = this.sessionStats?.tokensTotal ?? 0;
+		const costTotal = this.sessionStats?.costTotal ?? 0;
+		const contextWindow = this.state?.model?.contextWindow;
+		const usagePercent = contextWindow && contextWindow > 0 ? Math.min(999, (tokensTotal / contextWindow) * 100) : null;
+		const pending = this.state?.pendingMessageCount ?? 0;
+		const messageCount = this.state?.messageCount ?? this.messages.length;
+		const projectPath = this.projectPath ?? "No project";
+
+		const branchSelectValue = this.gitStatus?.inside_repo && this.gitStatus.branch ? this.gitStatus.branch : "";
+		const canSwitchBranch =
+			Boolean(this.projectPath) &&
+			Boolean(this.gitStatus?.inside_repo) &&
+			!this.loadingGitStatus &&
+			!this.loadingBranches &&
+			!this.switchingBranch &&
+			this.availableBranches.length > 0;
+
+		return (
+			<div className="chat-status-row">
+				<div className="chat-status-left">
+					<span className="chat-status-item path" title={projectPath}>
+						{projectPath}
+					</span>
+					{this.loadingGitStatus ? (
+						<span className="chat-status-item branch">branch: …</span>
+					) : this.gitStatus?.inside_repo ? (
+						<div className="chat-branch-control">
+							<span className="chat-status-item branch-label">branch</span>
+							<select
+								className="chat-branch-select"
+								disabled={!canSwitchBranch}
+								onChange={(event) => void this.switchBranch(event.target.value)}
+								value={branchSelectValue}
+							>
+								{branchSelectValue && !this.availableBranches.some((branch) => branch.name === branchSelectValue) ? (
+									<option value={branchSelectValue}>{branchSelectValue}</option>
+								) : null}
+								{this.availableBranches.map((branch) => (
+									<option value={branch.name} key={branch.name}>
+										{branch.name}
+									</option>
+								))}
+							</select>
+							{this.gitStatus?.dirty ? <span className="chat-status-item dirty">dirty</span> : null}
+						</div>
+					) : (
+						<span className="chat-status-item branch">branch: n/a</span>
+					)}
+				</div>
+				<div className="chat-status-right">
+					<span className="chat-status-item metric tokens">tokens {this.formatTokenValue(tokensTotal)}</span>
+					<span className="chat-status-item metric usage">usage {usagePercent === null ? "n/a" : `${usagePercent.toFixed(1)}%`}</span>
+					<span className="chat-status-item metric cost">cost {this.formatCostValue(costTotal)}</span>
+					<span className="chat-status-item metric msgs">msgs {messageCount}</span>
+					{pending > 0 ? <span className="chat-status-item metric queued">queued {pending}</span> : null}
+				</div>
+			</div>
+		);
+	}
+
 	private renderComposerControls(): ReactElement {
 		const currentProvider = this.state?.model?.provider ?? "";
 		const currentModelId = this.state?.model?.id ?? "";
@@ -1202,9 +1376,19 @@ export class ChatView {
 				</div>
 
 				<div className="control-group right">
+					<button className="ghost-btn commands-btn" onClick={() => this.onOpenActions?.()} type="button">
+						Commands
+					</button>
 					{this.compactionStatus ? <span className="status-pill compact">{this.compactionStatus}</span> : null}
 					{this.retryStatus ? <span className="status-pill retry">{this.retryStatus}</span> : null}
-					{isStreaming ? <span className="status-pill streaming">streaming</span> : null}
+					{isStreaming ? (
+						<>
+							<span className="status-pill streaming">streaming</span>
+							<button className="danger-btn commands-btn" onClick={() => void this.abortCurrentRun()} type="button">
+								Stop
+							</button>
+						</>
+					) : null}
 				</div>
 			</div>
 		);
@@ -1318,6 +1502,7 @@ export class ChatView {
 							}}
 						/>
 					</div>
+					{this.renderSessionStatusRow()}
 				</div>
 			</div>
 		);
@@ -1462,7 +1647,6 @@ export class ChatView {
 					}
 				}}
 			>
-				{this.renderToolbar()}
 				<div className="chat-scroll" id="chat-scroll">
 					{hasMessages
 						? this.messages.map((m) => {

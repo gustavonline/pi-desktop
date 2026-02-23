@@ -972,6 +972,201 @@ async fn run_pi_cli_command(
     })
 }
 
+#[derive(Debug, Serialize)]
+struct ProjectGitStatus {
+    inside_repo: bool,
+    branch: Option<String>,
+    detached: bool,
+    dirty: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct GitBranchEntry {
+    name: String,
+    current: bool,
+}
+
+fn run_git_command(project_path: &str, args: &[&str]) -> Result<std::process::Output, String> {
+    let mut cmd = Command::new("git");
+    cmd.args(args)
+        .current_dir(project_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+
+    cmd.output()
+        .map_err(|e| format!("Failed to run git {:?} in {}: {}", args, project_path, e))
+}
+
+/// Read git branch/dirty state for a project path.
+#[tauri::command]
+async fn get_project_git_status(project_path: String) -> Result<ProjectGitStatus, String> {
+    let trimmed = project_path.trim();
+    if trimmed.is_empty() {
+        return Ok(ProjectGitStatus {
+            inside_repo: false,
+            branch: None,
+            detached: false,
+            dirty: false,
+        });
+    }
+
+    let inside_repo = run_git_command(trimmed, &["rev-parse", "--is-inside-work-tree"])
+        .ok()
+        .map(|output| {
+            output.status.success() && String::from_utf8_lossy(&output.stdout).trim().eq_ignore_ascii_case("true")
+        })
+        .unwrap_or(false);
+
+    if !inside_repo {
+        return Ok(ProjectGitStatus {
+            inside_repo: false,
+            branch: None,
+            detached: false,
+            dirty: false,
+        });
+    }
+
+    let mut branch = run_git_command(trimmed, &["rev-parse", "--abbrev-ref", "HEAD"])
+        .ok()
+        .and_then(|output| {
+            if !output.status.success() {
+                return None;
+            }
+            let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if value.is_empty() {
+                None
+            } else {
+                Some(value)
+            }
+        });
+
+    let mut detached = matches!(branch.as_deref(), Some("HEAD"));
+    if detached {
+        branch = run_git_command(trimmed, &["rev-parse", "--short", "HEAD"])
+            .ok()
+            .and_then(|output| {
+                if !output.status.success() {
+                    return None;
+                }
+                let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if value.is_empty() {
+                    None
+                } else {
+                    Some(value)
+                }
+            });
+    }
+
+    if branch.is_none() {
+        detached = false;
+    }
+
+    let dirty = run_git_command(trimmed, &["status", "--porcelain"])
+        .ok()
+        .map(|output| {
+            output.status.success() && !String::from_utf8_lossy(&output.stdout).trim().is_empty()
+        })
+        .unwrap_or(false);
+
+    Ok(ProjectGitStatus {
+        inside_repo: true,
+        branch,
+        detached,
+        dirty,
+    })
+}
+
+/// List local git branches for a project path.
+#[tauri::command]
+async fn list_project_git_branches(project_path: String) -> Result<Vec<GitBranchEntry>, String> {
+    let trimmed = project_path.trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let inside_repo = run_git_command(trimmed, &["rev-parse", "--is-inside-work-tree"])
+        .ok()
+        .map(|output| {
+            output.status.success() && String::from_utf8_lossy(&output.stdout).trim().eq_ignore_ascii_case("true")
+        })
+        .unwrap_or(false);
+
+    if !inside_repo {
+        return Ok(Vec::new());
+    }
+
+    let output = run_git_command(
+        trimmed,
+        &["branch", "--format", "%(refname:short)|%(HEAD)"],
+    )?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            "Failed to list git branches".to_string()
+        } else {
+            stderr
+        });
+    }
+
+    let mut branches = Vec::new();
+    for raw_line in String::from_utf8_lossy(&output.stdout).lines() {
+        let line = raw_line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let mut parts = line.split('|');
+        let name = parts.next().unwrap_or("").trim();
+        if name.is_empty() {
+            continue;
+        }
+        let head_marker = parts.next().unwrap_or("").trim();
+        branches.push(GitBranchEntry {
+            name: name.to_string(),
+            current: head_marker == "*",
+        });
+    }
+
+    Ok(branches)
+}
+
+/// Switch current git branch for project path.
+#[tauri::command]
+async fn switch_project_git_branch(project_path: String, branch: String) -> Result<(), String> {
+    let trimmed_path = project_path.trim();
+    let trimmed_branch = branch.trim();
+    if trimmed_path.is_empty() {
+        return Err("Project path is required".to_string());
+    }
+    if trimmed_branch.is_empty() {
+        return Err("Branch name is required".to_string());
+    }
+
+    let output = run_git_command(trimmed_path, &["checkout", trimmed_branch])?;
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let message = if !stderr.is_empty() {
+        stderr
+    } else if !stdout.is_empty() {
+        stdout
+    } else {
+        format!("Failed to switch to branch '{}'", trimmed_branch)
+    };
+
+    Err(message)
+}
+
 /// Get current vs latest CLI version and whether in-app update is available.
 #[tauri::command]
 async fn get_cli_update_status(
@@ -1084,6 +1279,9 @@ pub fn run() {
             load_settings,
             open_file_dialog,
             run_pi_cli_command,
+            get_project_git_status,
+            list_project_git_branches,
+            switch_project_git_branch,
             get_cli_update_status,
             update_cli_via_npm,
         ])

@@ -1,39 +1,44 @@
-# TODO (Warp-like tabbed workspace UI polish)
+# TODO (Final UI polish pass)
 
 ## Context
 - Repo: `C:\Users\gusta\downloads\pi-desktop`
 - Base branch: `dev`
 - Working branch: `feat/tabbed-terminal-ui-polish`
-- Goal: tabbed project UX with a single minimal sidebar
+- Goal: final minimal shell cleanup (top-to-bottom bars, tabs, chat status, sidebar footer)
 
-## Completed
-- [x] Tabs as project workspaces (`WorkspaceTabs`) with open/switch/close
-- [x] Active tab persisted and reused on restart
-- [x] Sidebar sessions/files bound to active project only
-- [x] Last tab close => auto open folder dialog
-- [x] `Tab` key cycles thinking level when focus is not in input/select/editor
+## Current request checklist
+- [x] 1) Move `PI-desktop vX` from top-right to top-left
+- [x] 2) Add breathing space below titlebar divider
+- [x] 3) Fix new project tab placement + add tab reordering via drag/drop
+- [x] 4) Improve general alignment between sidebar/workspace/chat shell
+- [x] 5) Move path/session usage data below chat input and reorganize left/right
+  - [x] Path + branch on left
+  - [x] Branch selectable (switch branch)
+  - [x] Usage metrics grouped on right with stronger color separation
+- [x] 6) Restore default thinking-level shortcut to `Shift+Tab`
+- [x] 7) Remove top chat header title/`0 msgs`; place command trigger more cleanly
+- [x] 8) Rename action trigger to `Commands`
+- [x] 9) Reorganize sidebar bottom controls with profile-circle dropdown for settings/resources
 
-## Latest polish pass
-- [x] Simplified duplicate project labeling:
-  - [x] Titlebar now shows active **project path**
-  - [x] Sidebar panel headers no longer repeat project name
-- [x] Reduced visual noise in top shell:
-  - [x] Titlebar model label removed
-  - [x] Project color dots removed from tabs
-- [x] Replaced emoji visuals with minimal monochrome icons/glyphs where prominent
-
-## New sidebar simplification (current request)
-- [x] Removed inner left activity rail (no more “sidebar inside sidebar”)
-- [x] Added top inline panel switcher in sidebar header (`Sessions` / `Files`)
-- [x] Removed redundant static section title text in the header area
-- [x] Added draggable sidebar resize handle between sidebar and chat
-- [x] Persist sidebar width in localStorage (`pi-desktop.sidebar.width.v1`)
+## Additional implementation notes
+- Added new backend/bridge API for git branch operations:
+  - `get_project_git_status`
+  - `list_project_git_branches`
+  - `switch_project_git_branch`
+- Sidebar width resize remains persisted (`pi-desktop.sidebar.width.v1`).
 
 ## Validation
 - [x] `npm run check`
 - [x] `npm run build:frontend`
+- [x] `cargo check`
+- [x] `npm run build` (release `.exe`)
 - [ ] Manual UX smoke test by user
 
-## Notes
-- `Ctrl/Cmd+T` remains unchanged (toggle thinking blocks) to avoid conflicts with current pi defaults.
-- Session browser remains global for now (can be filtered by active project in a follow-up).
+## Local runnable artifact
+- [x] Built release app binary: `src-tauri/target/release/pi-desktop.exe`
+- [x] Copied runnable binary to project root: `pi-desktop.exe`
+- [x] Added launcher script: `run-pi-desktop.bat`
+
+## Follow-up tweak (top chrome cohesion)
+- [x] Merge tabs into a unified top shell (`#topbar-shell`) with titlebar
+- [x] Use one shared top divider under title + tabs to cleanly section sidebar/chat content

@@ -275,9 +275,11 @@ interface SidebarViewProps {
 	panel: SidebarPanel;
 	activeProject: Project | null;
 	fileState: ProjectFileExplorerState | null;
+	profileMenuOpen: boolean;
 	onSwitchPanel: (panel: SidebarPanel) => void;
 	onOpenExtensions: () => void;
 	onOpenSettings: () => void;
+	onToggleProfileMenu: () => void;
 	onRefreshSessions: () => void;
 	onNewSessionInProject: () => void;
 	onSelectSession: (sessionPath: string) => void;
@@ -296,26 +298,40 @@ function SidebarView(props: SidebarViewProps): ReactElement {
 			: null;
 
 	const utilityActions = (
-		<>
+		<div className="sidebar-footer-row">
 			<button className="sidebar-link-btn" disabled={!props.activeProject} onClick={props.onNewSessionInProject} type="button">
 				<span className="sidebar-link-icon">
 					<SidebarIcon name="newSession" />
 				</span>
 				<span className="sidebar-link-label">New Session</span>
 			</button>
-			<button className="sidebar-link-btn" onClick={props.onOpenExtensions} type="button">
-				<span className="sidebar-link-icon">
-					<SidebarIcon name="resources" />
-				</span>
-				<span className="sidebar-link-label">Resources</span>
-			</button>
-			<button className="sidebar-link-btn" onClick={props.onOpenSettings} type="button">
-				<span className="sidebar-link-icon">
-					<SidebarIcon name="settings" />
-				</span>
-				<span className="sidebar-link-label">Settings</span>
-			</button>
-		</>
+			<div className="sidebar-profile-wrap">
+				<button
+					className={`sidebar-profile-btn ${props.profileMenuOpen ? "active" : ""}`}
+					onClick={props.onToggleProfileMenu}
+					title="Profile menu"
+					type="button"
+				>
+					<span className="sidebar-profile-dot"></span>
+				</button>
+				{props.profileMenuOpen ? (
+					<div className="sidebar-profile-menu">
+						<button className="sidebar-profile-menu-btn" onClick={props.onOpenExtensions} type="button">
+							<span className="sidebar-link-icon">
+								<SidebarIcon name="resources" />
+							</span>
+							<span>Resources</span>
+						</button>
+						<button className="sidebar-profile-menu-btn" onClick={props.onOpenSettings} type="button">
+							<span className="sidebar-link-icon">
+								<SidebarIcon name="settings" />
+							</span>
+							<span>Settings</span>
+						</button>
+					</div>
+				) : null}
+			</div>
+		</div>
 	);
 
 	const refreshLabel = props.panel === "sessions" ? "Refresh sessions" : "Refresh files";
@@ -436,6 +452,7 @@ export class Sidebar {
 	private projects: Project[] = [];
 	private activeProjectId: string | null = null;
 	private panel: SidebarPanel = "sessions";
+	private profileMenuOpen = false;
 	private fileExplorerState = new Map<string, ProjectFileExplorerState>();
 
 	private onOpenSettings: (() => void) | null = null;
@@ -507,6 +524,20 @@ export class Sidebar {
 		this.removeProject(projectId);
 	}
 
+	reorderProjects(draggedProjectId: string, targetProjectId: string): void {
+		if (draggedProjectId === targetProjectId) return;
+		const fromIndex = this.projects.findIndex((project) => project.id === draggedProjectId);
+		const toIndex = this.projects.findIndex((project) => project.id === targetProjectId);
+		if (fromIndex < 0 || toIndex < 0) return;
+
+		const [dragged] = this.projects.splice(fromIndex, 1);
+		const adjustedTargetIndex = fromIndex < toIndex ? toIndex - 1 : toIndex;
+		this.projects.splice(adjustedTargetIndex, 0, dragged);
+		this.persistProjects();
+		this.render();
+		this.emitProjectsChanged();
+	}
+
 	// Legacy compatibility for existing keybindings in main.ts
 	setActiveView(_view: string): void {
 		// no-op
@@ -540,7 +571,7 @@ export class Sidebar {
 				loadingSessions: false,
 			};
 
-			this.projects.unshift(project);
+			this.projects.push(project);
 			this.selectProject(project.id);
 			await this.loadSessionsForProject(project.id);
 			if (this.panel === "files") {
@@ -551,8 +582,32 @@ export class Sidebar {
 		}
 	}
 
+	private toggleProfileMenu(): void {
+		this.profileMenuOpen = !this.profileMenuOpen;
+		this.render();
+	}
+
+	private closeProfileMenu(): void {
+		if (!this.profileMenuOpen) return;
+		this.profileMenuOpen = false;
+		this.render();
+	}
+
+	private openExtensions(): void {
+		this.profileMenuOpen = false;
+		this.render();
+		this.onOpenExtensions?.();
+	}
+
+	private openSettings(): void {
+		this.profileMenuOpen = false;
+		this.render();
+		this.onOpenSettings?.();
+	}
+
 	private setPanel(panel: SidebarPanel): void {
 		if (this.panel === panel) return;
+		this.profileMenuOpen = false;
 		this.panel = panel;
 		localStorage.setItem(SIDEBAR_PANEL_STORAGE_KEY, panel);
 		if (panel === "files") {
@@ -574,6 +629,7 @@ export class Sidebar {
 
 		const changed = this.activeProjectId !== projectId;
 		this.activeProjectId = projectId;
+		this.profileMenuOpen = false;
 
 		if (!project.loadingSessions && project.sessions.length === 0) {
 			void this.loadSessionsForProject(projectId);
@@ -909,9 +965,11 @@ export class Sidebar {
 				panel={this.panel}
 				activeProject={activeProject}
 				fileState={fileState}
+				profileMenuOpen={this.profileMenuOpen}
 				onSwitchPanel={(panel) => this.setPanel(panel)}
-				onOpenExtensions={() => this.onOpenExtensions?.()}
-				onOpenSettings={() => this.onOpenSettings?.()}
+				onOpenExtensions={() => this.openExtensions()}
+				onOpenSettings={() => this.openSettings()}
+				onToggleProfileMenu={() => this.toggleProfileMenu()}
 				onRefreshSessions={() => void this.refreshSessions()}
 				onNewSessionInProject={() => this.newSessionInProject()}
 				onSelectSession={(sessionPath) => {

@@ -74,6 +74,18 @@ export interface CliUpdateStatus {
 	note: string | null;
 }
 
+export interface ProjectGitStatus {
+	inside_repo: boolean;
+	branch: string | null;
+	detached: boolean;
+	dirty: boolean;
+}
+
+export interface GitBranchEntry {
+	name: string;
+	current: boolean;
+}
+
 export interface NpmCommandResult {
 	stdout: string;
 	stderr: string;
@@ -345,6 +357,25 @@ export class RpcBridge {
 				cwd: this.lastStartOptions?.cwd ?? null,
 				env: this.lastStartOptions?.env ?? null,
 			},
+		});
+	}
+
+	async getProjectGitStatus(projectPath: string): Promise<ProjectGitStatus> {
+		return invoke<ProjectGitStatus>("get_project_git_status", {
+			projectPath,
+		});
+	}
+
+	async listProjectGitBranches(projectPath: string): Promise<GitBranchEntry[]> {
+		return invoke<GitBranchEntry[]>("list_project_git_branches", {
+			projectPath,
+		});
+	}
+
+	async switchProjectGitBranch(projectPath: string, branch: string): Promise<void> {
+		await invoke("switch_project_git_branch", {
+			projectPath,
+			branch,
 		});
 	}
 
