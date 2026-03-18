@@ -17,6 +17,21 @@ npm install
 npm run tauri dev
 ```
 
+## Branch strategy
+
+- `main`: release-ready branch only
+- `dev`: active integration branch
+- feature/fix branches: branch from `dev` (`feat/...`, `fix/...`)
+- open PRs into `dev`; merge `dev -> main` when ready to release
+
+Example:
+
+```bash
+git checkout dev
+git pull
+git checkout -b feat/workspace-rename
+```
+
 ## Validation checklist
 
 Run before opening a PR:
