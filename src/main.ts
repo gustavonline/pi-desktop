@@ -6,7 +6,7 @@ import { html, render } from "lit";
 import { ChatView } from "./components/chat-view.js";
 import { CommandPalette } from "./components/command-palette.js";
 import { ContentTabs } from "./components/content-tabs.js";
-import { ExtensionUiHandler, type NotificationActionTarget } from "./components/extension-ui-handler.js";
+import { ExtensionUiHandler, normalizeExtensionUiRequest, type NotificationActionTarget } from "./components/extension-ui-handler.js";
 import { FileViewer } from "./components/file-viewer.js";
 import { PackagesView } from "./components/packages-view.js";
 import { SessionBrowser } from "./components/session-browser.js";
@@ -324,7 +324,23 @@ function handleBackgroundRuntimeNotifyEvent(runtimeKey: string, event: Record<st
 		markSessionAttentionTarget(target);
 	}
 
-	void extensionUiHandler?.handleRequest(request as any);
+	const normalizedRequest = normalizeExtensionUiRequest(request);
+	if (!normalizedRequest) {
+		const requestId = typeof request.id === "string" ? request.id.trim() : "";
+		const unsupportedMethod = typeof request.method === "string" ? request.method : "unknown";
+		recordDebugTrace(`extension_ui_request unsupported method=${unsupportedMethod} source=background runtime=${runtime.instanceId}`);
+		if (requestId) {
+			void runtime.bridge.sendExtensionUiResponse({
+				type: "extension_ui_response",
+				id: requestId,
+				success: false,
+				error: `Unsupported extension UI capability: ${unsupportedMethod}`,
+			});
+		}
+		return;
+	}
+
+	void extensionUiHandler?.handleRequest(normalizedRequest);
 }
 
 function setRuntimeRunning(runtime: SessionRuntime | null, running: boolean, _options: { suppressNotify?: boolean } = {}): void {
@@ -2327,7 +2343,27 @@ function initializeComponents(): void {
 				}
 			}
 
-			void extensionUiHandler?.handleRequest(request as any);
+			const normalizedRequest = normalizeExtensionUiRequest(request);
+			if (!normalizedRequest) {
+				const requestId = typeof request.id === "string" ? request.id.trim() : "";
+				const unsupportedMethod = typeof request.method === "string" ? request.method : "unknown";
+				recordDebugTrace(`extension_ui_request unsupported method=${unsupportedMethod} source=active`);
+				if (requestId) {
+					if (extensionUiHandler) {
+						void extensionUiHandler.respondUnsupportedRequest(requestId, unsupportedMethod, "active");
+					} else {
+						void rpcBridge.sendExtensionUiResponse({
+							type: "extension_ui_response",
+							id: requestId,
+							success: false,
+							error: `Unsupported extension UI capability: ${unsupportedMethod}`,
+						});
+					}
+				}
+				return;
+			}
+
+			void extensionUiHandler?.handleRequest(normalizedRequest);
 		}
 	});
 }

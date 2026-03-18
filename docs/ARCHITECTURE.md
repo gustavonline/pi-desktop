@@ -59,6 +59,8 @@ This keeps the desktop shell generic and maintainable.
 - Add new user-facing workflows through **packages/extensions first** whenever possible.
 - Treat Pi Desktop as a **capability host** (`ctx.ui`, native shell bridge), not a hardcoded workflow layer.
 
+For an explicit host contract and capability list, see [`docs/CAPABILITY_MODEL.md`](./CAPABILITY_MODEL.md).
+
 ---
 
 ## Runtime/session design

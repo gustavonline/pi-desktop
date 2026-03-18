@@ -129,7 +129,9 @@ Artifacts are generated under:
 
 ## Architecture
 
-See: **[`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md)**
+See:
+- **[`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md)**
+- **[`docs/CAPABILITY_MODEL.md`](./docs/CAPABILITY_MODEL.md)**
 
 Short version:
 - **Frontend (Lit/TypeScript)**: UI shell, panes, interactions

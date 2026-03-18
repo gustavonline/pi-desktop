@@ -14,19 +14,25 @@ import { type Options as DesktopNotificationOptions, isPermissionGranted, onActi
 import { html, render, type TemplateResult } from "lit";
 import { rpcBridge } from "../rpc/bridge.js";
 
-/** Extension UI request types */
-type UiMethod =
-	| "select"
-	| "confirm"
-	| "input"
-	| "editor"
-	| "notify"
-	| "setStatus"
-	| "setWidget"
-	| "setTitle"
-	| "set_editor_text";
+/**
+ * Explicit desktop capability contract for extension UI requests.
+ * Keep this surface small and grow it intentionally.
+ */
+export const SUPPORTED_EXTENSION_UI_METHODS = [
+	"select",
+	"confirm",
+	"input",
+	"editor",
+	"notify",
+	"setStatus",
+	"setWidget",
+	"setTitle",
+	"set_editor_text",
+] as const;
 
-interface ExtensionUiRequest {
+export type UiMethod = (typeof SUPPORTED_EXTENSION_UI_METHODS)[number];
+
+export interface ExtensionUiRequest {
 	id: string;
 	method: UiMethod;
 	title?: string;
@@ -45,6 +51,23 @@ interface ExtensionUiRequest {
 	notifyTargetWorkspaceId?: string;
 	notifyTargetTabId?: string;
 	notifyTargetSessionPath?: string;
+}
+
+export function isSupportedExtensionUiMethod(value: unknown): value is UiMethod {
+	return typeof value === "string" && (SUPPORTED_EXTENSION_UI_METHODS as readonly string[]).includes(value);
+}
+
+export function normalizeExtensionUiRequest(raw: Record<string, unknown>): ExtensionUiRequest | null {
+	const id = typeof raw.id === "string" ? raw.id.trim() : "";
+	const method = raw.method;
+	if (!id || !isSupportedExtensionUiMethod(method)) {
+		return null;
+	}
+	return {
+		...(raw as Partial<ExtensionUiRequest>),
+		id,
+		method,
+	};
 }
 
 function sanitizeUiStatusText(text: string): string {
@@ -298,6 +321,14 @@ export class ExtensionUiHandler {
 				this.setEditorText(request);
 				break;
 		}
+	}
+
+	async respondUnsupportedRequest(id: string, method: string, source: "active" | "background" | "unknown" = "unknown"): Promise<void> {
+		this.trace(`unsupported-ui-capability method=${method} source=${source}`);
+		await this.sendResponse(id, {
+			success: false,
+			error: `Unsupported extension UI capability: ${method}`,
+		});
 	}
 
 	private async showSelectDialog(request: ExtensionUiRequest): Promise<void> {
