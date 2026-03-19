@@ -1528,13 +1528,22 @@ export class ChatView {
 		switch (type) {
 			case "agent_start":
 				this.pendingDeliveryMode = "steer";
+				if (this.state) {
+					this.state = { ...this.state, isStreaming: true };
+					this.onStateChange?.(this.state);
+				}
 				this.onRunStateChange?.(true);
 				this.scheduleStreamingUiReconcile(2400);
 				this.render();
+				this.scrollToBottom();
 				break;
 
 			case "agent_end": {
 				this.cancelStreamingUiReconcile();
+				if (this.state) {
+					this.state = { ...this.state, isStreaming: false };
+					this.onStateChange?.(this.state);
+				}
 				const last = this.messages[this.messages.length - 1];
 				if (last && last.role === "assistant") last.isStreaming = false;
 				this.retryStatus = "";
@@ -2410,15 +2419,6 @@ export class ChatView {
 		`;
 	}
 
-	private assistantHasVisibleStreamingContent(msg: UiMessage): boolean {
-		if (msg.text.trim().length > 0) return true;
-		if ((msg.thinking ?? "").trim().length > 0) return true;
-		return msg.toolCalls.some((tc) => {
-			const output = tc.streamingOutput ?? tc.result ?? "";
-			return tc.isRunning || output.trim().length > 0;
-		});
-	}
-
 	private renderWorkingChip(): TemplateResult {
 		return html`
 			<div class="chat-working-indicator" role="status" aria-live="polite">
@@ -2428,12 +2428,7 @@ export class ChatView {
 		`;
 	}
 
-	private shouldRenderDetachedWorkingIndicator(): boolean {
-		if (!this.currentIsStreaming()) return false;
-		return !this.messages.some((message) => message.role === "assistant" && message.isStreaming);
-	}
-
-	private renderDetachedWorkingIndicator(): TemplateResult {
+	private renderWorkingIndicatorRow(): TemplateResult {
 		return html`
 			<div class="chat-row assistant-row working-row">
 				<div class="message-shell assistant-message-shell">
@@ -2522,13 +2517,11 @@ export class ChatView {
 	}
 
 	private renderAssistantMessage(msg: UiMessage): TemplateResult {
-		const showWorkingChip = Boolean(msg.isStreaming && !this.assistantHasVisibleStreamingContent(msg));
 		const canCopy = Boolean(msg.text.trim().length > 0 || msg.toolCalls.length > 0 || (msg.thinking ?? "").trim().length > 0);
 		return html`
 			<div class="chat-row assistant-row" data-message-id=${msg.id}>
 				<div class="message-shell assistant-message-shell">
 					<div class="assistant-block">
-						${showWorkingChip ? this.renderWorkingChip() : nothing}
 						${this.renderThinking(msg)}
 						${msg.text
 							? html`
@@ -3220,7 +3213,7 @@ export class ChatView {
 	private doRender(): void {
 		const hasProject = Boolean(this.projectPath);
 		const hasMessages = this.messages.length > 0;
-		const showDetachedWorkingIndicator = hasProject && this.shouldRenderDetachedWorkingIndicator();
+		const showWorkingIndicator = hasProject && this.currentIsStreaming();
 		if (!hasProject && !this.welcomeDashboard.loading && this.welcomeDashboard.updatedAt === 0) {
 			void this.refreshWelcomeDashboard();
 		}
@@ -3267,7 +3260,7 @@ export class ChatView {
 							: this.bindingStatusText
 								? this.renderBindingState()
 								: this.renderEmptyState()}
-					${showDetachedWorkingIndicator ? this.renderDetachedWorkingIndicator() : nothing}
+					${showWorkingIndicator ? this.renderWorkingIndicatorRow() : nothing}
 				</div>
 				${hasProject ? this.renderComposer() : nothing}
 				${hasProject ? this.renderForkPicker() : nothing}

@@ -3525,33 +3525,40 @@ body.sidebar-resizing {
 }
 
 .working-row {
-	margin-top: 4px;
+	margin-top: 10px;
+	margin-bottom: 2px;
 }
 
 .chat-working-indicator {
 	display: inline-flex;
 	align-items: center;
-	gap: 7px;
-	padding: 6px 11px;
-	border-radius: 999px;
-	border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
-	background: color-mix(in srgb, var(--bg-soft) 66%, transparent);
-	color: color-mix(in srgb, var(--text) 72%, var(--muted));
+	gap: 8px;
+	height: 30px;
+	padding: 0 10px;
+	border-radius: 10px;
+	border: none;
+	background: color-mix(in srgb, var(--bg-soft) 34%, transparent);
+	color: color-mix(in srgb, var(--text) 90%, var(--muted));
 	width: fit-content;
+	animation: workingBreath 2.4s ease-in-out infinite;
+}
+
+:root.light .chat-working-indicator {
+	background: color-mix(in srgb, var(--bg-soft) 82%, #fff 18%);
 }
 
 .chat-working-pi {
-	width: 12px;
-	height: 12px;
+	width: 11px;
+	height: 11px;
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
-	animation: blink 1.05s infinite;
+	opacity: 0.88;
 }
 
 .chat-working-pi svg {
-	width: 12px;
-	height: 12px;
+	width: 11px;
+	height: 11px;
 	display: block;
 }
 
@@ -3560,10 +3567,22 @@ body.sidebar-resizing {
 }
 
 .chat-working-label {
-	font-size: 10px;
-	letter-spacing: 0.06em;
-	text-transform: lowercase;
+	font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+	font-size: 11px;
+	font-weight: 600;
+	color: color-mix(in srgb, var(--text) 94%, var(--muted));
 	line-height: 1;
+	text-transform: none;
+}
+
+@keyframes workingBreath {
+	0%,
+	100% {
+		opacity: 0.54;
+	}
+	50% {
+		opacity: 1;
+	}
 }
 
 .assistant-content markdown-block h1,
