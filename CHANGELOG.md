@@ -6,6 +6,8 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-03-19
+
 ### Fixed
 - Hardened RPC bridge listener initialization to avoid duplicate event subscriptions under concurrent setup.
 - Prevented duplicate tool-call cards by de-duplicating `toolCall` ids in both streaming updates and backend message hydration.

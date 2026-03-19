@@ -2,7 +2,7 @@
 	"$schema": "https://raw.githubusercontent.com/nicegui/nicegui/refs/heads/main/nicegui/static/tauri_v2_schema.json",
 	"productName": "Pi Desktop",
 	"identifier": "com.pi.desktop",
-	"version": "0.1.4",
+	"version": "0.1.5",
 	"build": {
 		"beforeDevCommand": "npx vite --port 1420",
 		"devUrl": "http://localhost:1420",
