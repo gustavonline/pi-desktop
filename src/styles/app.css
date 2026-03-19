@@ -3885,6 +3885,10 @@ body.sidebar-resizing {
 }
 
 .thinking-toggle {
+	padding: 0;
+	border: none;
+	background: transparent;
+	cursor: pointer;
 	color: color-mix(in srgb, var(--muted) 88%, var(--text));
 	font-size: 11px;
 	font-style: italic;
@@ -3892,30 +3896,30 @@ body.sidebar-resizing {
 	user-select: none;
 }
 
+.thinking-toggle:hover {
+	color: color-mix(in srgb, var(--text) 80%, var(--muted));
+}
+
 .thinking-content {
 	max-height: 0;
 	overflow: hidden;
 	opacity: 0;
 	margin-top: 0;
-	padding: 0 9px;
-	border-radius: 8px;
-	background: color-mix(in srgb, var(--bg-soft) 26%, transparent);
+	padding: 0;
+	background: transparent;
 	font-size: 12px;
 	line-height: 1.45;
 	color: color-mix(in srgb, var(--muted) 92%, var(--text));
 	font-style: italic;
 	white-space: pre-wrap;
-	transition: max-height 0.2s ease, opacity 0.16s ease, margin-top 0.16s ease, padding 0.16s ease;
+	transition: max-height 0.2s ease, opacity 0.16s ease, margin-top 0.16s ease;
 }
 
-.thinking-block:hover .thinking-content,
-.thinking-block:focus-within .thinking-content,
 .thinking-block.expanded .thinking-content {
 	max-height: 220px;
 	overflow: auto;
 	opacity: 1;
 	margin-top: 6px;
-	padding: 8px 9px;
 }
 
 .tool-card {

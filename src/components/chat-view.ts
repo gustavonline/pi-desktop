@@ -2747,8 +2747,19 @@ export class ChatView {
 		if (!msg.thinking) return nothing;
 		const expanded = msg.thinkingExpanded ?? false;
 		return html`
-			<div class="thinking-block ${expanded ? "expanded" : ""}" title="Hover to preview reasoning">
-				<div class="thinking-toggle">thinking…</div>
+			<div class="thinking-block ${expanded ? "expanded" : ""}">
+				<button
+					type="button"
+					class="thinking-toggle"
+					aria-expanded=${expanded ? "true" : "false"}
+					title="Toggle thinking"
+					@click=${() => {
+						msg.thinkingExpanded = !expanded;
+						this.render();
+					}}
+				>
+					thinking…
+				</button>
 				<div class="thinking-content">${msg.thinking}</div>
 			</div>
 		`;
