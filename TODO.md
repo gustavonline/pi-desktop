@@ -1,5 +1,13 @@
 # TODO — V1/V1.1 release cleanup plan
 
+## Active issue (current session)
+- [x] #33 RPC reliability: fix duplicate tool cards + loading/reconnect UX
+  - [x] Make RPC bridge listener setup idempotent under concurrent `ensureListeners()` calls
+  - [x] De-dup tool cards by `toolCall.id` (live events + backend hydration)
+  - [x] Disable composer send while RPC binding/reconnecting and surface status inline
+  - [x] Add unsigned macOS workaround command to release template
+  - [x] Validate: `npm run check`, `npm run build:frontend`, `cargo check --manifest-path src-tauri/Cargo.toml`
+
 ## Goal
 Ship Pi Desktop as a **minimal native desktop host for Pi**:
 - strong desktop shell / UX

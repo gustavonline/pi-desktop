@@ -74,3 +74,8 @@ For production distribution, configure platform signing:
 - Linux: optional signature strategy depending on distro/channel
 
 Without macOS signing/notarization, some users may see Gatekeeper warnings (“app is damaged”).
+Include this workaround in release notes while unsigned builds are shipped:
+
+```bash
+xattr -cr /Applications/Pi\ Desktop.app
+```

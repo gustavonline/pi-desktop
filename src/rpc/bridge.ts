@@ -166,6 +166,7 @@ export class RpcBridge {
 	private unlistenClosed: UnlistenFn | null = null;
 	private unlistenStderr: UnlistenFn | null = null;
 	private listenersReady = false;
+	private listenersReadyPromise: Promise<void> | null = null;
 	private _isConnected = false;
 	private currentGeneration: number | null = null;
 	private pendingGeneration: number | null = null;
@@ -214,6 +215,7 @@ export class RpcBridge {
 			this.lastStartOptions = { ...options };
 			this.lastDiscoveryInfo = result.discovery;
 			traceBridge(`started instance=${this.instanceId} generation=${this.currentGeneration ?? -1} discovery=${result.discovery}`);
+			this.emitToListeners({ type: "rpc_connected", discovery: result.discovery });
 			return result.discovery;
 		} catch (err) {
 			this.pendingGeneration = null;
@@ -243,7 +245,9 @@ export class RpcBridge {
 	}
 
 	onEvent(callback: RpcEventCallback): () => void {
-		void this.ensureListeners();
+		void this.ensureListeners().catch((err) => {
+			traceBridge(`listener-init-failed instance=${this.instanceId}: ${err instanceof Error ? err.message : String(err)}`);
+		});
 		this.eventListeners.push(callback);
 		return () => {
 			const idx = this.eventListeners.indexOf(callback);
@@ -484,40 +488,71 @@ export class RpcBridge {
 		return generation === this.currentGeneration;
 	}
 
+	private emitToListeners(event: Record<string, unknown>): void {
+		for (const listener of this.eventListeners) {
+			try {
+				listener(event);
+			} catch (err) {
+				traceBridge(`listener-error instance=${this.instanceId}: ${err instanceof Error ? err.message : String(err)}`);
+			}
+		}
+	}
+
 	private async ensureListeners(): Promise<void> {
 		if (this.listenersReady) return;
+		if (this.listenersReadyPromise) {
+			await this.listenersReadyPromise;
+			return;
+		}
 
-		this.unlistenEvent = await listen<RpcLineEventPayload>("rpc-event", (event) => {
-			const payload = event.payload;
-			if (payloadInstanceId(payload) !== this.instanceId) return;
-			if (!this.matchesPayloadGeneration(payload)) return;
-			const line = typeof payload.line === "string" ? payload.line : "";
-			if (!line) return;
-			this.handleLine(line);
-		});
+		this.listenersReadyPromise = (async () => {
+			let unlistenEventLocal: UnlistenFn | null = null;
+			let unlistenClosedLocal: UnlistenFn | null = null;
+			let unlistenStderrLocal: UnlistenFn | null = null;
+			try {
+				unlistenEventLocal = await listen<RpcLineEventPayload>("rpc-event", (event) => {
+					const payload = event.payload;
+					if (payloadInstanceId(payload) !== this.instanceId) return;
+					if (!this.matchesPayloadGeneration(payload)) return;
+					const line = typeof payload.line === "string" ? payload.line : "";
+					if (!line) return;
+					this.handleLine(line);
+				});
 
-		this.unlistenClosed = await listen<RpcClosedEventPayload>("rpc-closed", (event) => {
-			const payload = event.payload;
-			if (payloadInstanceId(payload) !== this.instanceId) return;
-			if (!this.matchesPayloadGeneration(payload)) return;
-			this._isConnected = false;
-			traceBridge(`closed instance=${this.instanceId} generation=${payload.generation ?? -1} reason=${typeof payload.reason === "string" ? payload.reason : "RPC process closed"}`);
-			this.rejectAllPending(typeof payload.reason === "string" ? payload.reason : "RPC process closed");
-			for (const listener of this.eventListeners) {
-				listener({ type: "rpc_disconnected" });
+				unlistenClosedLocal = await listen<RpcClosedEventPayload>("rpc-closed", (event) => {
+					const payload = event.payload;
+					if (payloadInstanceId(payload) !== this.instanceId) return;
+					if (!this.matchesPayloadGeneration(payload)) return;
+					this._isConnected = false;
+					traceBridge(`closed instance=${this.instanceId} generation=${payload.generation ?? -1} reason=${typeof payload.reason === "string" ? payload.reason : "RPC process closed"}`);
+					this.rejectAllPending(typeof payload.reason === "string" ? payload.reason : "RPC process closed");
+					this.emitToListeners({ type: "rpc_disconnected" });
+				});
+
+				unlistenStderrLocal = await listen<RpcLineEventPayload>("rpc-stderr", (event) => {
+					const payload = event.payload;
+					if (payloadInstanceId(payload) !== this.instanceId) return;
+					if (!this.matchesPayloadGeneration(payload)) return;
+					const line = typeof payload.line === "string" ? payload.line : "";
+					if (!line) return;
+					console.debug(`[pi stderr:${this.instanceId}]`, line);
+				});
+
+				this.unlistenEvent = unlistenEventLocal;
+				this.unlistenClosed = unlistenClosedLocal;
+				this.unlistenStderr = unlistenStderrLocal;
+				this.listenersReady = true;
+			} catch (err) {
+				unlistenEventLocal?.();
+				unlistenClosedLocal?.();
+				unlistenStderrLocal?.();
+				throw err;
+			} finally {
+				this.listenersReadyPromise = null;
 			}
-		});
+		})();
 
-		this.unlistenStderr = await listen<RpcLineEventPayload>("rpc-stderr", (event) => {
-			const payload = event.payload;
-			if (payloadInstanceId(payload) !== this.instanceId) return;
-			if (!this.matchesPayloadGeneration(payload)) return;
-			const line = typeof payload.line === "string" ? payload.line : "";
-			if (!line) return;
-			console.debug(`[pi stderr:${this.instanceId}]`, line);
-		});
-
-		this.listenersReady = true;
+		await this.listenersReadyPromise;
 	}
 
 	private handleLine(line: string): void {
@@ -543,7 +578,7 @@ export class RpcBridge {
 			return;
 		}
 
-		for (const listener of this.eventListeners) listener(data);
+		this.emitToListeners(data);
 	}
 
 	private async send(command: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -597,6 +632,11 @@ export class RpcBridge {
 	}
 
 	async teardownListeners(): Promise<void> {
+		if (this.listenersReadyPromise) {
+			await this.listenersReadyPromise.catch(() => {
+				// ignore listener initialization races during teardown
+			});
+		}
 		this.unlistenEvent?.();
 		this.unlistenClosed?.();
 		this.unlistenStderr?.();
@@ -604,6 +644,7 @@ export class RpcBridge {
 		this.unlistenClosed = null;
 		this.unlistenStderr = null;
 		this.listenersReady = false;
+		this.listenersReadyPromise = null;
 	}
 }
 

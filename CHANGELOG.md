@@ -6,6 +6,14 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Fixed
+- Hardened RPC bridge listener initialization to avoid duplicate event subscriptions under concurrent setup.
+- Prevented duplicate tool-call cards by de-duplicating `toolCall` ids in both streaming updates and backend message hydration.
+
+### Changed
+- Composer now shows RPC/binding status inline and blocks send/actions while a session is still loading or reconnecting.
+- Release template/checklists now include the unsigned macOS Gatekeeper workaround command (`xattr -cr /Applications/Pi\ Desktop.app`).
+
 ## [0.1.4] - 2026-03-19
 
 ### Added

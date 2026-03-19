@@ -562,7 +562,16 @@ export class ChatView {
 							thinking += p.thinking;
 						}
 						if (type === "toolCall") {
-							const id = typeof p.id === "string" ? p.id : uid("tc");
+							const id = typeof p.id === "string" && p.id.trim().length > 0 ? p.id.trim() : uid("tc");
+							const existing = toolCalls.find((entry) => entry.id === id);
+							if (existing) {
+								existing.name = typeof p.name === "string" ? p.name : existing.name;
+								existing.args = (p.arguments as Record<string, unknown>) ?? existing.args;
+								existing.isRunning = false;
+								existing.isExpanded = false;
+								toolCallMap.set(existing.id, existing);
+								continue;
+							}
 							const tc: ToolCallBlock = {
 								id,
 								name: typeof p.name === "string" ? p.name : "tool",
@@ -1587,13 +1596,23 @@ export class ChatView {
 				} else if (subtype === "toolcall_end") {
 					const tc = assistantEvent.toolCall as Record<string, unknown>;
 					if (tc) {
-						last.toolCalls.push({
-							id: (tc.id as string) || uid("tc"),
-							name: (tc.name as string) || "tool",
-							args: ((tc.arguments ?? {}) as Record<string, unknown>) || {},
-							isRunning: true,
-							isExpanded: false,
-						});
+						const rawId = typeof tc.id === "string" ? tc.id.trim() : "";
+						const id = rawId || uid("tc");
+						const existing = last.toolCalls.find((entry) => entry.id === id);
+						if (existing) {
+							existing.name = typeof tc.name === "string" && tc.name.trim().length > 0 ? tc.name : existing.name;
+							existing.args = ((tc.arguments ?? existing.args) as Record<string, unknown>) || existing.args;
+							existing.isRunning = true;
+							existing.isExpanded = false;
+						} else {
+							last.toolCalls.push({
+								id,
+								name: (tc.name as string) || "tool",
+								args: ((tc.arguments ?? {}) as Record<string, unknown>) || {},
+								isRunning: true,
+								isExpanded: false,
+							});
+						}
 						this.render();
 					}
 				} else if (subtype === "error") {
@@ -1703,6 +1722,22 @@ export class ChatView {
 				this.pushNotice(`Extension error: ${truncate(error, 120)}`, "error");
 				break;
 			}
+
+			case "rpc_connected":
+				this.isConnected = true;
+				this.bindingStatusText = this.projectPath ? "Loading session…" : null;
+				if (this.disconnectNoticeTimer) {
+					clearTimeout(this.disconnectNoticeTimer);
+					this.disconnectNoticeTimer = null;
+				}
+				this.render();
+				if (this.projectPath) {
+					void this.refreshFromBackend();
+					if (!this.loadingModels) {
+						void this.loadAvailableModels();
+					}
+				}
+				break;
 
 			case "rpc_disconnected":
 				this.isConnected = false;
@@ -1981,6 +2016,12 @@ export class ChatView {
 		return Boolean(this.state?.isStreaming) || this.messages.some((m) => m.isStreaming);
 	}
 
+	private isComposerInteractionLocked(): boolean {
+		if (!this.projectPath) return true;
+		if (!this.isConnected) return true;
+		return Boolean(this.bindingStatusText);
+	}
+
 	private toRpcImages(images: PendingImage[]): RpcImageInput[] {
 		return images.map((img) => ({ type: "image", data: img.data, mimeType: img.mimeType }));
 	}
@@ -2027,6 +2068,10 @@ export class ChatView {
 	}
 
 	async sendMessage(mode: DeliveryMode = this.pendingDeliveryMode): Promise<void> {
+		if (this.isComposerInteractionLocked()) {
+			this.pushNotice(this.bindingStatusText || "Session is still loading. Try again in a moment.", "info");
+			return;
+		}
 		const text = this.inputText.trim();
 		const images = [...this.pendingImages];
 		if (!text && images.length === 0) return;
@@ -2692,7 +2737,7 @@ export class ChatView {
 		`;
 	}
 
-	private renderComposerControls(canSend: boolean, isStreaming: boolean): TemplateResult {
+	private renderComposerControls(canSend: boolean, isStreaming: boolean, interactionLocked: boolean): TemplateResult {
 		const currentProvider = normalizeText(this.state?.model?.provider);
 		const currentModelId = normalizeText(this.state?.model?.id);
 		const currentModelValue = currentProvider && currentModelId ? `${currentProvider}::${currentModelId}` : "";
@@ -2706,7 +2751,9 @@ export class ChatView {
 					<button
 						class="composer-icon-btn"
 						title="Attach image"
+						?disabled=${interactionLocked}
 						@click=${() => {
+							if (interactionLocked) return;
 							const input = this.container.querySelector("#file-picker") as HTMLInputElement | null;
 							input?.click();
 						}}
@@ -2718,7 +2765,7 @@ export class ChatView {
 						<select
 							class="composer-select model-select"
 							.value=${currentModelValue}
-							?disabled=${this.loadingModels || this.settingModel}
+							?disabled=${interactionLocked || this.loadingModels || this.settingModel}
 							@pointerdown=${() => {
 								if (!this.loadingModels && this.availableModels.length === 0) {
 									void this.loadAvailableModels();
@@ -2754,7 +2801,7 @@ export class ChatView {
 						<select
 							class="thinking-select-native"
 							.value=${thinkingValue}
-							?disabled=${this.settingThinking}
+							?disabled=${interactionLocked || this.settingThinking}
 							@change=${(e: Event) => void this.setThinkingLevel((e.target as HTMLSelectElement).value as ThinkingLevel)}
 						>
 							<option value="off">Off</option>
@@ -2773,7 +2820,9 @@ export class ChatView {
 						<button
 							class="composer-icon-btn"
 							title="Session actions"
+							?disabled=${interactionLocked}
 							@click=${() => {
+								if (interactionLocked) return;
 								this.quickActionsOpen = !this.quickActionsOpen;
 								this.render();
 							}}
@@ -2828,8 +2877,32 @@ export class ChatView {
 							: nothing}
 					</div>
 					${isStreaming
-						? html`<button class="send-btn stop-btn" title="Stop generation" @click=${() => void this.abortCurrentRun()}>${uiIcon("stop")}</button>`
-						: html`<button class="send-btn primary-send" ?disabled=${!canSend} title="Send" @click=${() => this.sendMessage("prompt")}>${uiIcon("send")}</button>`}
+						? html`
+							<button
+								class="send-btn stop-btn"
+								title="Stop generation"
+								?disabled=${interactionLocked}
+								@click=${() => {
+									if (interactionLocked) return;
+									void this.abortCurrentRun();
+								}}
+							>
+								${uiIcon("stop")}
+							</button>
+						`
+						: html`
+							<button
+								class="send-btn primary-send"
+								?disabled=${interactionLocked || !canSend}
+								title="Send"
+								@click=${() => {
+									if (interactionLocked) return;
+									void this.sendMessage("prompt");
+								}}
+							>
+								${uiIcon("send")}
+							</button>
+						`}
 				</div>
 			</div>
 		`;
@@ -2857,8 +2930,10 @@ export class ChatView {
 
 	private renderComposer(): TemplateResult {
 		const isStreaming = this.currentIsStreaming();
-		const canSend = this.inputText.trim().length > 0 || this.pendingImages.length > 0;
-		const statusText = [this.compactionStatus, this.retryStatus].filter(Boolean).join(" · ");
+		const interactionLocked = this.isComposerInteractionLocked();
+		const canSend = !interactionLocked && (this.inputText.trim().length > 0 || this.pendingImages.length > 0);
+		const connectivityStatus = this.bindingStatusText || (!this.isConnected && this.projectPath ? "RPC disconnected" : "");
+		const statusText = [connectivityStatus, this.compactionStatus, this.retryStatus].filter(Boolean).join(" · ");
 		const ratio = Math.min(1, Math.max(0, this.sessionStats.usageRatio ?? 0));
 		const ratioPercent = `${Math.round(ratio * 100)}%`;
 		const ringRadius = 9;
@@ -2875,16 +2950,22 @@ export class ChatView {
 							<textarea
 								id="chat-input"
 								class="chat-input"
-								placeholder="Ask for follow-up changes"
+								placeholder=${interactionLocked ? (connectivityStatus || "Session not ready…") : "Ask for follow-up changes"}
 								rows="1"
+								?disabled=${interactionLocked}
 								.value=${this.inputText}
 								@input=${(e: Event) => {
+									if (interactionLocked) return;
 									const ta = e.target as HTMLTextAreaElement;
 									this.inputText = ta.value;
 									ta.style.height = "auto";
 									ta.style.height = `${Math.min(ta.scrollHeight, 220)}px`;
 								}}
 								@paste=${(e: ClipboardEvent) => {
+									if (interactionLocked) {
+										e.preventDefault();
+										return;
+									}
 									const items = Array.from(e.clipboardData?.items || []);
 									const files = items
 										.filter((item) => item.type.startsWith("image/"))
@@ -2897,13 +2978,15 @@ export class ChatView {
 								}}
 								@dragover=${(e: DragEvent) => {
 									e.preventDefault();
-									if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+									if (e.dataTransfer) e.dataTransfer.dropEffect = interactionLocked ? "none" : "copy";
 								}}
 								@drop=${(e: DragEvent) => {
 									e.preventDefault();
+									if (interactionLocked) return;
 									this.handleDroppedDataTransfer(e.dataTransfer ?? null);
 								}}
 								@keydown=${(e: KeyboardEvent) => {
+									if (interactionLocked) return;
 									if (e.key === "Enter" && !e.shiftKey) {
 										e.preventDefault();
 										if (e.altKey) {
@@ -2916,7 +2999,7 @@ export class ChatView {
 								}}
 							></textarea>
 						</div>
-						${this.renderComposerControls(canSend, isStreaming)}
+						${this.renderComposerControls(canSend, isStreaming, interactionLocked)}
 						${statusText ? html`<div class="composer-status-inline">${statusText}</div>` : nothing}
 					</div>
 
@@ -2973,6 +3056,10 @@ export class ChatView {
 						multiple
 						style="display:none"
 						@change=${(e: Event) => {
+							if (interactionLocked) {
+								(e.target as HTMLInputElement).value = "";
+								return;
+							}
 							const files = (e.target as HTMLInputElement).files;
 							if (files?.length) void this.prepareImages(files);
 							(e.target as HTMLInputElement).value = "";
