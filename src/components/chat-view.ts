@@ -277,6 +277,7 @@ export class ChatView {
 	private historyQuery = "";
 	private historyRoleFilter: UiRole | "all" = "all";
 	private quickActionsOpen = false;
+	private autoFollowChat = true;
 	private disconnectNoticeTimer: ReturnType<typeof setTimeout> | null = null;
 	private streamingReconcileTimer: ReturnType<typeof setTimeout> | null = null;
 	private sessionStats: SessionStatsSummary = {
@@ -2070,8 +2071,9 @@ export class ChatView {
 			attachments: images,
 			deliveryMode: mode,
 		});
+		this.autoFollowChat = true;
 		this.render();
-		this.scrollToBottom();
+		this.scrollToBottom(true);
 	}
 
 	private clearComposer(): void {
@@ -2395,7 +2397,23 @@ export class ChatView {
 		this.render();
 	}
 
-	private scrollToBottom(): void {
+	private isNearChatBottom(target: HTMLElement, threshold = 84): boolean {
+		return target.scrollHeight - target.scrollTop - target.clientHeight <= threshold;
+	}
+
+	private handleChatScroll(event: Event): void {
+		const target = event.currentTarget as HTMLElement | null;
+		if (!target) return;
+		if (this.currentIsStreaming()) {
+			this.autoFollowChat = true;
+			return;
+		}
+		this.autoFollowChat = this.isNearChatBottom(target);
+	}
+
+	private scrollToBottom(force = false): void {
+		const shouldFollow = force || this.currentIsStreaming() || this.autoFollowChat;
+		if (!shouldFollow) return;
 		requestAnimationFrame(() => {
 			if (!this.scrollContainer) return;
 			this.scrollContainer.scrollTop = this.scrollContainer.scrollHeight;
@@ -3248,7 +3266,7 @@ export class ChatView {
 					this.handleDroppedDataTransfer(e.dataTransfer ?? null);
 				}}
 			>
-				<div class="chat-scroll ${hasProject ? "" : "welcome-scroll"}" id="chat-scroll">
+				<div class="chat-scroll ${hasProject ? "" : "welcome-scroll"}" id="chat-scroll" @scroll=${(e: Event) => this.handleChatScroll(e)}>
 					${!hasProject
 						? this.renderWelcomeDashboard()
 						: hasMessages
@@ -3275,6 +3293,7 @@ export class ChatView {
 
 	render(): void {
 		this.doRender();
+		this.scrollToBottom();
 	}
 
 	notify(text: string, kind: "info" | "success" | "error" = "info"): void {
