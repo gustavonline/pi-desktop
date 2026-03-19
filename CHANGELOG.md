@@ -11,9 +11,10 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Fixed
 - Improved reasoning/thinking rendering compatibility by accepting both `thinking` and `reasoning` payload shapes during streaming updates and backend hydration.
+- Improved tool output parsing/merging so expanded tool cards surface more payload formats and show a clear placeholder while waiting for output.
 
 ### Changed
-- Slowed the working-status animation cadence and phrase rotation so each status line remains visible longer.
+- Slowed the working-status animation cadence, phrase rotation, and typewriter speed so each status line stays visible longer.
 
 ## [0.1.5] - 2026-03-19
 

@@ -3548,7 +3548,7 @@ body.sidebar-resizing {
 	align-items: center;
 	justify-content: center;
 	opacity: 0.92;
-	animation: workingBreath 3.2s ease-in-out infinite;
+	animation: workingBreath 5.4s ease-in-out infinite;
 }
 
 .chat-working-pi svg {
@@ -3959,6 +3959,11 @@ body.sidebar-resizing {
 	color: color-mix(in srgb, var(--text) 78%, var(--muted));
 	max-height: 360px;
 	overflow: auto;
+}
+
+.tool-output.tool-output-empty {
+	font-style: italic;
+	color: color-mix(in srgb, var(--muted) 90%, var(--text));
 }
 
 :root.light .tool-output {

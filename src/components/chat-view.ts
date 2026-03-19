@@ -592,7 +592,8 @@ export class ChatView {
 						if (type === "text" && typeof p.text === "string") {
 							text += p.text;
 						}
-						if (type === "thinking" || type === "reasoning") {
+						const typeLower = (type ?? "").toLowerCase();
+						if (typeLower === "thinking" || typeLower === "reasoning" || typeLower.includes("thinking") || typeLower.includes("reason")) {
 							if (typeof p.thinking === "string") thinking += p.thinking;
 							else if (typeof p.reasoning === "string") thinking += p.reasoning;
 							else if (typeof p.text === "string") thinking += p.text;
@@ -632,7 +633,7 @@ export class ChatView {
 				}
 				case "toolResult": {
 					const toolCallId = raw.toolCallId as string | undefined;
-					const content = this.extractText(raw.content);
+					const content = this.extractToolOutput(raw.content ?? raw.result ?? raw);
 					const isError = Boolean(raw.isError);
 					if (toolCallId && toolCallMap.has(toolCallId)) {
 						const tool = toolCallMap.get(toolCallId)!;
@@ -644,7 +645,7 @@ export class ChatView {
 						mapped.push({
 							id: uid("toolResult"),
 							role: "system",
-							text: `Tool result${isError ? " (error)" : ""}:\n${content}`,
+							text: `Tool result${isError ? " (error)" : ""}:\n${content || "(no output)"}`,
 							label: "tool-result",
 							toolCalls: [],
 						});
@@ -719,6 +720,66 @@ export class ChatView {
 		return "";
 	}
 
+	private stringifyData(value: unknown): string {
+		try {
+			return JSON.stringify(value, null, 2);
+		} catch {
+			return String(value);
+		}
+	}
+
+	private extractToolOutput(payload: unknown, depth = 0): string {
+		if (depth > 6 || payload === null || typeof payload === "undefined") return "";
+		if (typeof payload === "string") return payload;
+		if (typeof payload === "number" || typeof payload === "boolean") return String(payload);
+		if (Array.isArray(payload)) {
+			const parts = payload
+				.map((item) => this.extractToolOutput(item, depth + 1).trim())
+				.filter(Boolean);
+			return parts.join("\n").trim();
+		}
+		if (typeof payload !== "object") return "";
+
+		const source = payload as Record<string, unknown>;
+		const textFirst = this.extractText(source.content ?? payload).trim();
+		const chunks: string[] = textFirst ? [textFirst] : [];
+		const append = (value: unknown): void => {
+			const text = this.extractToolOutput(value, depth + 1).trim();
+			if (!text) return;
+			if (!chunks.includes(text)) chunks.push(text);
+		};
+
+		for (const key of ["output", "stdout", "stderr", "result", "message", "error", "text", "delta", "reasoning", "thinking"]) {
+			if (key in source) append(source[key]);
+		}
+		if ("content" in source) append(source.content);
+		if ("parts" in source) append(source.parts);
+		if ("messages" in source) append(source.messages);
+
+		if (chunks.length > 0) return chunks.join("\n").trim();
+		return this.stringifyData(source);
+	}
+
+	private mergeStreamingText(current: string, partial: string | null, deltaCandidate: unknown): string {
+		const delta = typeof deltaCandidate === "string" ? deltaCandidate : "";
+		if (partial !== null) {
+			if (!current) return partial;
+			if (partial === current) return current;
+			if (partial.startsWith(current)) return partial;
+			if (current.startsWith(partial) && delta) return current + delta;
+			if (partial.length > current.length + 24) {
+				const overlap = current.slice(Math.max(0, current.length - 24));
+				if (!overlap || partial.includes(overlap)) return partial;
+			}
+		}
+		if (delta) return current + delta;
+		if (partial !== null) {
+			if (current.endsWith(partial)) return current;
+			return current + partial;
+		}
+		return current;
+	}
+
 	private extractImages(content: unknown): PendingImage[] {
 		if (!Array.isArray(content)) return [];
 		const images: PendingImage[] = [];
@@ -748,8 +809,9 @@ export class ChatView {
 			if (!part || typeof part !== "object") return null;
 			const p = part as Record<string, unknown>;
 			const type = typeof p.type === "string" ? p.type : "";
-			if (mode === "text" && type === "text" && typeof p.text === "string") return p.text;
-			if (mode === "thinking" && (type === "thinking" || type === "reasoning")) {
+			const typeLower = type.toLowerCase();
+			if (mode === "text" && typeLower === "text" && typeof p.text === "string") return p.text;
+			if (mode === "thinking" && (typeLower.includes("thinking") || typeLower.includes("reason"))) {
 				if (typeof p.thinking === "string") return p.thinking;
 				if (typeof p.reasoning === "string") return p.reasoning;
 				if (typeof p.text === "string") return p.text;
@@ -1618,27 +1680,20 @@ export class ChatView {
 			case "message_update": {
 				const assistantEvent = event.assistantMessageEvent as Record<string, unknown>;
 				if (!assistantEvent) break;
-				const subtype = assistantEvent.type as string;
+				const subtype = typeof assistantEvent.type === "string" ? assistantEvent.type : "";
 				const last = this.messages[this.messages.length - 1];
 				if (!last || last.role !== "assistant") break;
 
 				if (subtype === "text_delta") {
 					const partialText = this.extractAssistantPartialContent(assistantEvent, "text");
-					if (partialText !== null) {
-						last.text = partialText;
-					} else {
-						last.text += (assistantEvent.delta as string) || "";
-					}
+					last.text = this.mergeStreamingText(last.text, partialText, assistantEvent.delta);
 					this.scheduleStreamingUiReconcile(1800);
 					this.render();
 					this.scrollToBottom();
-				} else if (subtype === "thinking_delta" || subtype === "reasoning_delta") {
+				} else if (subtype === "thinking_delta" || subtype === "reasoning_delta" || subtype.includes("thinking") || subtype.includes("reason")) {
 					const partialThinking = this.extractAssistantPartialContent(assistantEvent, "thinking");
-					if (partialThinking !== null) {
-						last.thinking = partialThinking;
-					} else {
-						last.thinking = (last.thinking || "") + ((assistantEvent.delta as string) || "");
-					}
+					const currentThinking = last.thinking || "";
+					last.thinking = this.mergeStreamingText(currentThinking, partialThinking, assistantEvent.delta);
 					this.scheduleStreamingUiReconcile(1800);
 					if ((last.thinking?.length || 0) % 100 === 0) this.render();
 				} else if (subtype === "toolcall_end") {
@@ -1698,8 +1753,11 @@ export class ChatView {
 				if (!toolCallId || !partialResult) break;
 				const tool = this.findToolCall(toolCallId);
 				if (!tool) break;
-				const text = this.extractText(partialResult.content);
-				tool.streamingOutput = text;
+				const partialText = this.extractToolOutput(partialResult);
+				if (partialText) {
+					const currentOutput = tool.streamingOutput ?? tool.result ?? "";
+					tool.streamingOutput = this.mergeStreamingText(currentOutput, partialText, partialResult.delta);
+				}
 				tool.isRunning = true;
 				this.render();
 				this.scrollToBottom();
@@ -1719,8 +1777,10 @@ export class ChatView {
 				if (typeof result === "string") {
 					tool.result = result;
 				} else if (result && typeof result === "object") {
-					const content = this.extractText((result as Record<string, unknown>).content);
-					tool.result = content || JSON.stringify(result, null, 2);
+					const content = this.extractToolOutput(result);
+					tool.result = content || "(no output)";
+				} else {
+					tool.result = tool.result || "(no output)";
 				}
 				tool.isExpanded = false;
 				this.render();
@@ -2505,21 +2565,21 @@ export class ChatView {
 		}
 
 		const phrase = this.currentWorkingPhrase();
-		let nextDelay = 240;
+		let nextDelay = 320;
 		if (this.workingStatusPhase === "typing") {
 			this.workingStatusCharCount = Math.min(phrase.length, this.workingStatusCharCount + 1);
 			if (this.workingStatusCharCount >= phrase.length) {
 				this.workingStatusPhase = "hold";
-				nextDelay = 2900;
+				nextDelay = 4600;
 			} else {
-				nextDelay = 88 + Math.floor(Math.random() * 46);
+				nextDelay = 130 + Math.floor(Math.random() * 80);
 			}
 			this.render();
 		} else {
 			this.workingStatusPhase = "typing";
 			this.workingStatusPhraseIndex = (this.workingStatusPhraseIndex + 1) % this.workingStatusPhrases.length;
 			this.workingStatusCharCount = 0;
-			nextDelay = 520;
+			nextDelay = 920;
 			this.render();
 		}
 
@@ -2529,7 +2589,7 @@ export class ChatView {
 	private syncWorkingStatusAnimation(): void {
 		if (this.currentIsStreaming()) {
 			if (!this.workingStatusTimer) {
-				this.scheduleWorkingStatusTick(120);
+				this.scheduleWorkingStatusTick(320);
 			}
 			return;
 		}
@@ -2612,8 +2672,9 @@ export class ChatView {
 	private renderToolCall(tc: ToolCallBlock): TemplateResult {
 		const statusClass = tc.isRunning ? "status-running" : tc.isError ? "status-error" : "status-ok";
 		const titleHint = tc.name === "bash" && typeof tc.args.command === "string" ? (tc.args.command as string) : "";
-		const output = tc.streamingOutput ?? tc.result;
-		const hasOutput = Boolean(output && output.length > 0);
+		const output = (tc.streamingOutput ?? tc.result ?? "").trimEnd();
+		const hasOutput = output.length > 0;
+		const placeholder = tc.isRunning ? "Waiting for tool output…" : "No output reported.";
 
 		return html`
 			<div class="tool-card">
@@ -2629,8 +2690,12 @@ export class ChatView {
 					${titleHint ? html`<span class="tool-hint" title=${titleHint}>${truncate(titleHint, 56)}</span>` : nothing}
 					<span class="tool-chevron">${tc.isExpanded ? "▾" : "▸"}</span>
 				</button>
-				${tc.isExpanded && hasOutput
-					? html`<pre class="tool-output">${output}${tc.isRunning ? html`<span class="streaming-inline"></span>` : nothing}</pre>`
+				${tc.isExpanded
+					? html`
+						<pre class="tool-output ${hasOutput ? "" : "tool-output-empty"}">${hasOutput ? output : placeholder}${tc.isRunning
+							? html`<span class="streaming-inline"></span>`
+							: nothing}</pre>
+					`
 					: nothing}
 			</div>
 		`;
