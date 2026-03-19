@@ -278,7 +278,17 @@ export class ChatView {
 	private historyRoleFilter: UiRole | "all" = "all";
 	private quickActionsOpen = false;
 	private autoFollowChat = true;
-	private readonly workingStatusPhrases = ["starting", "working on it", "running tools", "thinking through", "finalizing"];
+	private readonly workingStatusPhrases = [
+		"starting",
+		"warming up",
+		"working on it",
+		"planning next steps",
+		"running tools",
+		"checking files",
+		"applying changes",
+		"thinking through",
+		"finalizing",
+	];
 	private workingStatusPhraseIndex = 0;
 	private workingStatusPhase: "typing" | "hold" = "typing";
 	private workingStatusCharCount = 0;
@@ -2484,21 +2494,21 @@ export class ChatView {
 		}
 
 		const phrase = this.currentWorkingPhrase();
-		let nextDelay = 120;
+		let nextDelay = 160;
 		if (this.workingStatusPhase === "typing") {
 			this.workingStatusCharCount = Math.min(phrase.length, this.workingStatusCharCount + 1);
 			if (this.workingStatusCharCount >= phrase.length) {
 				this.workingStatusPhase = "hold";
-				nextDelay = 860;
+				nextDelay = 1850;
 			} else {
-				nextDelay = 40 + Math.floor(Math.random() * 22);
+				nextDelay = 62 + Math.floor(Math.random() * 34);
 			}
 			this.render();
 		} else {
 			this.workingStatusPhase = "typing";
 			this.workingStatusPhraseIndex = (this.workingStatusPhraseIndex + 1) % this.workingStatusPhrases.length;
 			this.workingStatusCharCount = 0;
-			nextDelay = 180;
+			nextDelay = 320;
 			this.render();
 		}
 
@@ -2624,8 +2634,8 @@ export class ChatView {
 						${this.renderThinking(msg)}
 						${msg.text
 							? html`
-								<div class="assistant-content">
-									<markdown-block .content=${msg.text} class=${msg.isStreaming ? "streaming-cursor" : ""}></markdown-block>
+								<div class="assistant-content ${msg.isStreaming ? "streaming-cursor" : ""}">
+									<markdown-block .content=${msg.text}></markdown-block>
 								</div>
 							`
 							: nothing}

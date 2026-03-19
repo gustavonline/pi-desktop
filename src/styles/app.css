@@ -5458,10 +5458,15 @@ markdown-block code-block .hljs {
 }
 
 .streaming-cursor::after {
-	content: "▌";
+	content: "";
+	display: inline-block;
+	width: 7px;
+	height: 13px;
+	background: var(--accent);
 	animation: blink 1s infinite;
-	color: var(--accent);
+	vertical-align: text-bottom;
 	margin-left: 2px;
+	border-radius: 1px;
 }
 
 .streaming-inline {
