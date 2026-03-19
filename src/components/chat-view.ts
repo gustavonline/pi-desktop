@@ -285,9 +285,15 @@ export class ChatView {
 		"planning next steps",
 		"running tools",
 		"checking files",
+		"reading context",
+		"mapping dependencies",
+		"editing safely",
+		"verifying output",
+		"reviewing details",
 		"applying changes",
 		"thinking through",
 		"finalizing",
+		"wrapping up",
 	];
 	private workingStatusPhraseIndex = 0;
 	private workingStatusPhase: "typing" | "hold" = "typing";
@@ -586,8 +592,10 @@ export class ChatView {
 						if (type === "text" && typeof p.text === "string") {
 							text += p.text;
 						}
-						if (type === "thinking" && typeof p.thinking === "string") {
-							thinking += p.thinking;
+						if (type === "thinking" || type === "reasoning") {
+							if (typeof p.thinking === "string") thinking += p.thinking;
+							else if (typeof p.reasoning === "string") thinking += p.reasoning;
+							else if (typeof p.text === "string") thinking += p.text;
 						}
 						if (type === "toolCall") {
 							const id = typeof p.id === "string" && p.id.trim().length > 0 ? p.id.trim() : uid("tc");
@@ -741,8 +749,9 @@ export class ChatView {
 			const p = part as Record<string, unknown>;
 			const type = typeof p.type === "string" ? p.type : "";
 			if (mode === "text" && type === "text" && typeof p.text === "string") return p.text;
-			if (mode === "thinking" && type === "thinking") {
+			if (mode === "thinking" && (type === "thinking" || type === "reasoning")) {
 				if (typeof p.thinking === "string") return p.thinking;
+				if (typeof p.reasoning === "string") return p.reasoning;
 				if (typeof p.text === "string") return p.text;
 			}
 			return null;
@@ -926,8 +935,10 @@ export class ChatView {
 					const type = typeof block.type === "string" ? block.type : "";
 					if (type === "text" && typeof block.text === "string") {
 						chars += block.text.length;
-					} else if (type === "thinking" && typeof block.thinking === "string") {
-						chars += block.thinking.length;
+					} else if (type === "thinking" || type === "reasoning") {
+						if (typeof block.thinking === "string") chars += block.thinking.length;
+						else if (typeof block.reasoning === "string") chars += block.reasoning.length;
+						else if (typeof block.text === "string") chars += block.text.length;
 					} else if (type === "toolCall") {
 						const name = typeof block.name === "string" ? block.name : "";
 						const args = JSON.stringify(block.arguments ?? {});
@@ -1621,7 +1632,7 @@ export class ChatView {
 					this.scheduleStreamingUiReconcile(1800);
 					this.render();
 					this.scrollToBottom();
-				} else if (subtype === "thinking_delta") {
+				} else if (subtype === "thinking_delta" || subtype === "reasoning_delta") {
 					const partialThinking = this.extractAssistantPartialContent(assistantEvent, "thinking");
 					if (partialThinking !== null) {
 						last.thinking = partialThinking;
@@ -2494,21 +2505,21 @@ export class ChatView {
 		}
 
 		const phrase = this.currentWorkingPhrase();
-		let nextDelay = 160;
+		let nextDelay = 240;
 		if (this.workingStatusPhase === "typing") {
 			this.workingStatusCharCount = Math.min(phrase.length, this.workingStatusCharCount + 1);
 			if (this.workingStatusCharCount >= phrase.length) {
 				this.workingStatusPhase = "hold";
-				nextDelay = 1850;
+				nextDelay = 2900;
 			} else {
-				nextDelay = 62 + Math.floor(Math.random() * 34);
+				nextDelay = 88 + Math.floor(Math.random() * 46);
 			}
 			this.render();
 		} else {
 			this.workingStatusPhase = "typing";
 			this.workingStatusPhraseIndex = (this.workingStatusPhraseIndex + 1) % this.workingStatusPhrases.length;
 			this.workingStatusCharCount = 0;
-			nextDelay = 320;
+			nextDelay = 520;
 			this.render();
 		}
 

@@ -9,6 +9,12 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 ### Added
 - Chat surface now shows a persistent Pi status indicator during active runs (including tool phases and initial wait), with rotating typewriter-style status text, icon-only calm animation, transparent styling, and automatic bottom-follow while the conversation streams.
 
+### Fixed
+- Improved reasoning/thinking rendering compatibility by accepting both `thinking` and `reasoning` payload shapes during streaming updates and backend hydration.
+
+### Changed
+- Slowed the working-status animation cadence and phrase rotation so each status line remains visible longer.
+
 ## [0.1.5] - 2026-03-19
 
 ### Fixed

@@ -3548,7 +3548,7 @@ body.sidebar-resizing {
 	align-items: center;
 	justify-content: center;
 	opacity: 0.92;
-	animation: workingBreath 1.9s ease-in-out infinite;
+	animation: workingBreath 3.2s ease-in-out infinite;
 }
 
 .chat-working-pi svg {
