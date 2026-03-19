@@ -502,6 +502,7 @@ export class ContentTabs {
 		const template = html`
 			<div
 				class="content-tabs-root ${this.draggingTabKey ? "is-dragging" : ""}"
+				data-tauri-drag-region
 				@click=${(e: Event) => {
 					if (!menuOpen) return;
 					const target = e.target as HTMLElement;

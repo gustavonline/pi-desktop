@@ -416,6 +416,11 @@ body {
 .workspace-context-btn,
 .workspace-emoji-picker,
 .workspace-emoji-picker *,
+.sidebar-window-controls,
+.sidebar-workspace-trigger,
+.sidebar-workspace-menu,
+.sidebar-workspace-menu *,
+.content-tab,
 .content-tab-context-menu,
 .content-tab-context-menu * {
 	-webkit-app-region: no-drag;

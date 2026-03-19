@@ -2669,7 +2669,7 @@ function renderApp(): void {
 								<path d="M6 3.5v9" />
 							</svg>
 						</button>
-						<div id="content-tabs-container"></div>
+						<div id="content-tabs-container" data-tauri-drag-region></div>
 						<div id="session-pane"><div id="chat-container"></div></div>
 						<div id="file-pane" class="hidden-pane"></div>
 						<div id="terminal-pane" class="hidden-pane"></div>

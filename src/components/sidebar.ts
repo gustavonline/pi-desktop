@@ -2473,8 +2473,8 @@ export class Sidebar {
 		const filteredEmojis = this.filteredWorkspaceEmojis();
 
 		return html`
-			<div class="sidebar-workspace-switcher">
-				<div class="sidebar-workspace-switcher-row">
+			<div class="sidebar-workspace-switcher" data-tauri-drag-region>
+				<div class="sidebar-workspace-switcher-row" data-tauri-drag-region>
 					<div class="sidebar-window-controls" @click=${(e: Event) => e.stopPropagation()}>
 						<button class="sidebar-window-dot red" title="Close" @click=${(e: Event) => {
 							e.stopPropagation();
@@ -3141,7 +3141,7 @@ export class Sidebar {
 			>
 				${this.renderWorkspaceSwitcher()}
 
-				<div class="sidebar-topbar">
+				<div class="sidebar-topbar" data-tauri-drag-region>
 					${this.cliUpdateAvailable
 						? html`
 							<button class="sidebar-cli-update-banner" @click=${() => this.onOpenSettings?.()}>
