@@ -3889,15 +3889,29 @@ body.sidebar-resizing {
 	border: none;
 	background: transparent;
 	cursor: pointer;
-	color: color-mix(in srgb, var(--muted) 88%, var(--text));
 	font-size: 11px;
 	font-style: italic;
 	line-height: 1.3;
 	user-select: none;
+	--thinking-idle: color-mix(in srgb, var(--muted) 88%, var(--text));
+	--thinking-active: color-mix(in srgb, var(--text) 80%, var(--muted));
 }
 
-.thinking-toggle:hover {
-	color: color-mix(in srgb, var(--text) 80%, var(--muted));
+.thinking-char {
+	display: inline-block;
+	color: var(--thinking-idle);
+	transition: color 0.16s ease;
+}
+
+.thinking-toggle.animating .thinking-char {
+	animation: thinkingCharSweep 1.8s ease-in-out infinite;
+	animation-delay: calc(var(--thinking-char-index, 0) * 0.12s);
+}
+
+.thinking-toggle:hover .thinking-char,
+.thinking-toggle:focus-visible .thinking-char,
+.thinking-toggle.done .thinking-char {
+	color: var(--thinking-active);
 }
 
 .thinking-content {
@@ -3920,6 +3934,17 @@ body.sidebar-resizing {
 	overflow: auto;
 	opacity: 1;
 	margin-top: 6px;
+}
+
+@keyframes thinkingCharSweep {
+	0%,
+	65%,
+	100% {
+		color: var(--thinking-idle);
+	}
+	30% {
+		color: var(--thinking-active);
+	}
 }
 
 .tool-card {

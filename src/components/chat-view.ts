@@ -2746,19 +2746,22 @@ export class ChatView {
 	private renderThinking(msg: UiMessage): TemplateResult | typeof nothing {
 		if (!msg.thinking) return nothing;
 		const expanded = msg.thinkingExpanded ?? false;
+		const label = "thinking…";
+		const toggleClass = `thinking-toggle ${msg.isStreaming ? "animating" : "done"}`;
 		return html`
 			<div class="thinking-block ${expanded ? "expanded" : ""}">
 				<button
 					type="button"
-					class="thinking-toggle"
+					class=${toggleClass}
 					aria-expanded=${expanded ? "true" : "false"}
+					aria-label="Toggle thinking"
 					title="Toggle thinking"
 					@click=${() => {
 						msg.thinkingExpanded = !expanded;
 						this.render();
 					}}
 				>
-					thinking…
+					${label.split("").map((char, index) => html`<span class="thinking-char" style=${`--thinking-char-index:${index};`}>${char}</span>`)}
 				</button>
 				<div class="thinking-content">${msg.thinking}</div>
 			</div>

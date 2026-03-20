@@ -16,7 +16,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 ### Changed
 - Slowed the working-status animation cadence, phrase rotation, and typewriter speed so each status line stays visible longer.
 - Working indicator now appears only before assistant text starts, and its Pi glyph style/animation matches the sidebar running Pi indicator.
-- Refined chat affordances: the “Latest” button is now a centered icon-only circle, and thinking previews now use a calmer italic click-to-toggle presentation without a background panel.
+- Refined chat affordances: the “Latest” button is now a centered icon-only circle, and thinking previews now use a calmer italic click-to-toggle presentation without a background panel plus a per-letter sweep animation while reasoning streams.
 
 ## [0.1.5] - 2026-03-19
 

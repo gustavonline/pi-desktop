@@ -57,10 +57,29 @@ export function isSupportedExtensionUiMethod(value: unknown): value is UiMethod 
 	return typeof value === "string" && (SUPPORTED_EXTENSION_UI_METHODS as readonly string[]).includes(value);
 }
 
+function normalizeExtensionUiMethod(value: unknown): UiMethod | null {
+	if (isSupportedExtensionUiMethod(value)) return value;
+	if (typeof value !== "string") return null;
+	const raw = value.trim();
+	if (!raw) return null;
+	switch (raw) {
+		case "set_status":
+			return "setStatus";
+		case "set_widget":
+			return "setWidget";
+		case "set_title":
+			return "setTitle";
+		case "setEditorText":
+			return "set_editor_text";
+		default:
+			return null;
+	}
+}
+
 export function normalizeExtensionUiRequest(raw: Record<string, unknown>): ExtensionUiRequest | null {
 	const id = typeof raw.id === "string" ? raw.id.trim() : "";
-	const method = raw.method;
-	if (!id || !isSupportedExtensionUiMethod(method)) {
+	const method = normalizeExtensionUiMethod(raw.method);
+	if (!id || !method) {
 		return null;
 	}
 	return {
@@ -109,6 +128,8 @@ export class ExtensionUiHandler {
 	private notificationPermissionRequested = false;
 	private notificationActionListenerRegistered = false;
 	private lastNotificationActionTarget: NotificationActionTarget | null = null;
+	private lastDesktopNotificationKey = "";
+	private lastDesktopNotificationAt = 0;
 
 	constructor() {
 		this.createContainers();
@@ -175,6 +196,31 @@ export class ExtensionUiHandler {
 		const visibility = typeof document !== "undefined" ? document.visibilityState : "unknown";
 		const domFocused = typeof document !== "undefined" ? document.hasFocus() : false;
 		return `backgrounded=${backgrounded ? "yes" : "no"} visibility=${visibility} domFocus=${domFocused ? "yes" : "no"} appFocus=${this.appWindowFocused ? "yes" : "no"}`;
+	}
+
+	private notificationDedupKey(request: ExtensionUiRequest): string {
+		const title = request.title?.trim() || "";
+		const body = request.message?.trim() || "";
+		const targetSession = request.notifyTargetSessionPath?.trim() || "";
+		const targetTab = request.notifyTargetTabId?.trim() || "";
+		return `${request.notifyType ?? "info"}|${title}|${body}|${targetSession}|${targetTab}`;
+	}
+
+	private shouldThrottleDesktopNotification(request: ExtensionUiRequest): boolean {
+		const key = this.notificationDedupKey(request);
+		const now = Date.now();
+		const timeSinceLast = now - this.lastDesktopNotificationAt;
+		if (timeSinceLast < 1200) {
+			this.trace(`notify:throttled burst deltaMs=${timeSinceLast}`);
+			return true;
+		}
+		if (key === this.lastDesktopNotificationKey && timeSinceLast < 15_000) {
+			this.trace(`notify:throttled duplicate deltaMs=${timeSinceLast}`);
+			return true;
+		}
+		this.lastDesktopNotificationKey = key;
+		this.lastDesktopNotificationAt = now;
+		return false;
 	}
 
 	private buildNotificationActionTarget(request: ExtensionUiRequest): NotificationActionTarget | null {
@@ -315,7 +361,7 @@ export class ExtensionUiHandler {
 				this.setWidget(request);
 				break;
 			case "setTitle":
-				this.setTitle(request);
+				await this.setTitle(request);
 				break;
 			case "set_editor_text":
 				this.setEditorText(request);
@@ -593,6 +639,13 @@ export class ExtensionUiHandler {
 	private async showNotification(request: ExtensionUiRequest): Promise<void> {
 		const backgrounded = this.isAppBackgrounded();
 		this.trace(`notify:request type=${request.notifyType ?? "info"} ${this.describeNotificationContext(backgrounded)}`);
+		if (!backgrounded) {
+			this.trace("notify:skipped foreground");
+			return;
+		}
+		if (this.shouldThrottleDesktopNotification(request)) {
+			return;
+		}
 		const desktopShown = await this.showDesktopNotification(request);
 		if (!desktopShown) {
 			this.trace(`notify:desktop-missed message=${request.message ?? request.title ?? ""}`);
@@ -646,9 +699,15 @@ export class ExtensionUiHandler {
 		}
 	}
 
-	private setTitle(request: ExtensionUiRequest): void {
-		if (request.title) {
-			document.title = request.title;
+	private async setTitle(request: ExtensionUiRequest): Promise<void> {
+		const nextTitle = request.title?.trim();
+		if (!nextTitle) return;
+		document.title = nextTitle;
+		try {
+			await rpcBridge.setSessionName(nextTitle);
+			this.trace(`setTitle:session-renamed title=${nextTitle}`);
+		} catch (err) {
+			this.trace(`setTitle:rename-failed ${err instanceof Error ? err.message : String(err)}`);
 		}
 	}
 
