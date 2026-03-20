@@ -2950,12 +2950,6 @@ body.sidebar-resizing {
 	align-items: center;
 	gap: 4px;
 	min-width: 0;
-	--session-tree-depth: 0;
-	padding-left: calc(var(--session-tree-depth) * 11px);
-}
-
-.sidebar-session-row.branch-child {
-	opacity: 0.98;
 }
 
 .sidebar-session {
@@ -3043,19 +3037,6 @@ body.sidebar-resizing {
 	align-items: center;
 	justify-content: center;
 	margin-left: -16px;
-	gap: 2px;
-}
-
-.sidebar-session-branch-marker {
-	font-size: 9px;
-	line-height: 1;
-	color: var(--muted-2);
-	opacity: 0.8;
-}
-
-.sidebar-session-row.branch-child .sidebar-session-leading {
-	width: auto;
-	min-width: 20px;
 }
 
 .sidebar-session-pi {

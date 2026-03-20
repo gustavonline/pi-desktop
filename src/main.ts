@@ -141,7 +141,6 @@ let runningSessionPollInFlight = false;
 let debugOverlayInterval: ReturnType<typeof setInterval> | null = null;
 let debugTraceLines: string[] = [];
 let notificationAttentionListenersBound = false;
-let lastEscapePressAt = 0;
 
 function recordDebugTrace(message: string): void {
 	const stamp = new Date().toISOString().slice(11, 23);
@@ -2653,19 +2652,7 @@ function setupKeyboardShortcuts(): void {
 			return;
 		}
 
-		if (e.key === "Escape" && !isCtrlOrMeta && !isShift && !e.altKey) {
-			if (e.repeat) {
-				chatView?.abortCurrentRun();
-				return;
-			}
-			const now = Date.now();
-			const deltaMs = now - lastEscapePressAt;
-			lastEscapePressAt = now;
-			if (deltaMs < 420) {
-				e.preventDefault();
-				void sessionBrowser?.open();
-				return;
-			}
+		if (e.key === "Escape") {
 			chatView?.abortCurrentRun();
 			return;
 		}
@@ -3281,7 +3268,12 @@ function renderApp(): void {
 		);
 	});
 
-	sidebar.setOnSessionSelect((projectId, sessionPath, sessionName) => {
+	const activateSidebarSession = (
+		projectId: string,
+		sessionPath: string,
+		sessionName?: string,
+		options?: { label?: string; onActivated?: () => void | Promise<void> },
+	): void => {
 		const workspace = getActiveWorkspace();
 		const project = sidebar?.getProjectById(projectId);
 		if (!workspace || !project) return;
@@ -3313,13 +3305,29 @@ function renderApp(): void {
 				assertProjectTaskCurrent(version);
 				removeRuntimeKeys(oldRuntimeKeys.filter((key) => key !== activeSessionRuntimeKey));
 				await applyWorkspacePane(workspace);
+				if (options?.onActivated) {
+					await options.onActivated();
+				}
 			},
 			(err) => {
 				console.error("Failed to switch session:", err);
 				chatView?.notify("Failed to switch session", "error");
 			},
-			{ label: "sidebar-session-select" },
+			{ label: options?.label ?? "sidebar-session-select" },
 		);
+	};
+
+	sidebar.setOnSessionSelect((projectId, sessionPath, sessionName) => {
+		activateSidebarSession(projectId, sessionPath, sessionName, { label: "sidebar-session-select" });
+	});
+
+	sidebar.setOnSessionFork((projectId, sessionPath, sessionName) => {
+		activateSidebarSession(projectId, sessionPath, sessionName, {
+			label: "sidebar-session-fork",
+			onActivated: () => {
+				chatView?.openHistoryViewerForFork();
+			},
+		});
 	});
 
 	sidebar.setOnSessionRename((projectId, sessionPath, _currentName, nextName) => {

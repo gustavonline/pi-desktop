@@ -2537,6 +2537,13 @@ export class ChatView {
 		this.render();
 	}
 
+	openHistoryViewerForFork(): void {
+		this.historyViewerOpen = true;
+		this.historyQuery = "";
+		this.historyRoleFilter = "user";
+		this.render();
+	}
+
 	private closeHistoryViewer(): void {
 		this.historyViewerOpen = false;
 		this.historyQuery = "";

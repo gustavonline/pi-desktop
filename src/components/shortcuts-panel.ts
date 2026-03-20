@@ -21,7 +21,6 @@ const SHORTCUTS: Shortcut[] = [
 	{ keys: ["Alt+Enter"], description: "Queue follow-up message", category: "Input" },
 	{ keys: ["Shift+Enter"], description: "Insert newline", category: "Input" },
 	{ keys: ["Esc"], description: "Abort current run", category: "Agent" },
-	{ keys: ["Esc", "Esc"], description: "Open sessions browser", category: "Session" },
 	{ keys: ["Ctrl/Cmd+M"], description: "Cycle model", category: "Model" },
 	{ keys: ["Shift+Tab"], description: "Cycle thinking level", category: "Model" },
 	{ keys: ["Ctrl/Cmd+T"], description: "Toggle thinking blocks", category: "Display" },

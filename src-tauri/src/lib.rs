@@ -563,7 +563,6 @@ pub struct SessionInfo {
     pub name: Option<String>,
     pub path: String,
     pub cwd: Option<String>,
-    pub parent_session: Option<String>,
     pub created_at: i64,
     pub modified_at: i64,
     pub tokens: u64,
@@ -665,7 +664,6 @@ fn parse_session_info(path: &Path) -> Option<SessionInfo> {
         .to_string();
     let mut name: Option<String> = None;
     let mut cwd: Option<String> = None;
-    let mut parent_session: Option<String> = None;
     let mut tokens: u64 = 0;
     let mut cost: f64 = 0.0;
 
@@ -688,12 +686,6 @@ fn parse_session_info(path: &Path) -> Option<SessionInfo> {
                     let trimmed = session_cwd.trim();
                     if !trimmed.is_empty() {
                         cwd = Some(trimmed.to_string());
-                    }
-                }
-                if let Some(source_path) = entry.get("parentSession").and_then(|v| v.as_str()) {
-                    let trimmed = source_path.trim();
-                    if !trimmed.is_empty() {
-                        parent_session = Some(trimmed.to_string());
                     }
                 }
             }
@@ -734,7 +726,6 @@ fn parse_session_info(path: &Path) -> Option<SessionInfo> {
         name,
         path: path.to_string_lossy().to_string(),
         cwd,
-        parent_session,
         created_at: get_created_at_ms(path),
         modified_at: get_modified_at_ms(path),
         tokens,

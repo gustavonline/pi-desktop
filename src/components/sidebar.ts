@@ -20,18 +20,12 @@ interface SidebarSession {
 	id: string;
 	name: string;
 	path: string;
-	parentPath?: string | null;
 	createdAt: number;
 	modifiedAt: number;
 	tokens: number;
 	cost: number;
 	optimistic?: boolean;
 	transient?: boolean;
-}
-
-interface SidebarSessionRow {
-	session: SidebarSession;
-	depth: number;
 }
 
 interface Project {
@@ -246,6 +240,7 @@ export class Sidebar {
 	private onSessionSelect: ((projectId: string, sessionPath: string, sessionName?: string) => void) | null = null;
 	private onSessionRename: ((projectId: string, sessionPath: string, currentName: string, nextName: string) => void) | null = null;
 	private onSessionDelete: ((projectId: string, sessionPath: string) => void) | null = null;
+	private onSessionFork: ((projectId: string, sessionPath: string, sessionName?: string) => void) | null = null;
 	private onNewSessionInProject: ((project: { id: string; name: string; path: string }) => void) | null = null;
 	private onNewFileInProject: ((project: { id: string; name: string; path: string }) => void) | null = null;
 	private onFileOpen: ((projectId: string, filePath: string) => void) | null = null;
@@ -445,6 +440,10 @@ export class Sidebar {
 		this.onSessionDelete = cb;
 	}
 
+	setOnSessionFork(cb: (projectId: string, sessionPath: string, sessionName?: string) => void): void {
+		this.onSessionFork = cb;
+	}
+
 	setOnNewSessionInProject(cb: (project: { id: string; name: string; path: string }) => void): void {
 		this.onNewSessionInProject = cb;
 	}
@@ -488,7 +487,7 @@ export class Sidebar {
 		e.preventDefault();
 		e.stopPropagation();
 		const menuWidth = 170;
-		const menuHeight = target.kind === "workspace" ? 116 : 92;
+		const menuHeight = target.kind === "workspace" ? 116 : target.kind === "session" ? 132 : 92;
 		const padding = 8;
 		const x = Math.max(padding, Math.min(e.clientX, window.innerWidth - menuWidth - padding));
 		const y = Math.max(padding, Math.min(e.clientY, window.innerHeight - menuHeight - padding));
@@ -742,7 +741,6 @@ export class Sidebar {
 			id?: string | null;
 			name?: string | null;
 			path: string;
-			parentPath?: string | null;
 			createdAt?: number | null;
 			modifiedAt?: number | null;
 			tokens?: number | null;
@@ -760,7 +758,6 @@ export class Sidebar {
 		if (existing) {
 			existing.id = session.id?.trim() || existing.id;
 			existing.name = nextName;
-			existing.parentPath = session.parentPath ?? existing.parentPath;
 			existing.createdAt = session.createdAt ?? existing.createdAt ?? now;
 			existing.modifiedAt = session.modifiedAt ?? existing.modifiedAt ?? now;
 			existing.tokens = session.tokens ?? existing.tokens ?? 0;
@@ -771,7 +768,6 @@ export class Sidebar {
 				id: session.id?.trim() || uid("session"),
 				name: nextName,
 				path: session.path,
-				parentPath: session.parentPath,
 				createdAt: session.createdAt ?? session.modifiedAt ?? now,
 				modifiedAt: session.modifiedAt ?? session.createdAt ?? now,
 				tokens: session.tokens ?? 0,
@@ -1041,7 +1037,7 @@ export class Sidebar {
 		this.openContextMenu(e, { kind: "workspace", workspaceId });
 	}
 
-	private runSessionContextAction(action: "rename" | "delete"): void {
+	private runSessionContextAction(action: "rename" | "delete" | "fork"): void {
 		const target = this.contextMenu?.target;
 		if (!target || target.kind !== "session") return;
 		this.closeContextMenu(false);
@@ -1052,6 +1048,10 @@ export class Sidebar {
 		}
 		if (action === "rename") {
 			this.startSessionRename(found.project, found.session);
+			return;
+		}
+		if (action === "fork") {
+			this.onSessionFork?.(found.project.id, found.session.path, found.session.name);
 			return;
 		}
 		void this.deleteSession(found.project, found.session);
@@ -1115,6 +1115,8 @@ export class Sidebar {
 		if (target.kind === "session") {
 			menuContent = html`
 				<div class="sidebar-context-menu" style=${`left:${menu.x}px;top:${menu.y}px`} @click=${(e: Event) => e.stopPropagation()}>
+					<button @click=${() => this.runSessionContextAction("fork")}>Fork from message…</button>
+					<div class="sidebar-context-menu-divider"></div>
 					<button @click=${() => this.runSessionContextAction("rename")}>Rename session</button>
 					<button class="danger" @click=${() => this.runSessionContextAction("delete")}>Delete session</button>
 				</div>
@@ -1421,7 +1423,6 @@ export class Sidebar {
 					name: string | null;
 					path: string;
 					cwd: string | null;
-					parent_session: string | null;
 					created_at: number;
 					modified_at: number;
 					tokens: number;
@@ -1441,7 +1442,6 @@ export class Sidebar {
 					id: s.id,
 					name: s.name || "Untitled session",
 					path: s.path,
-					parentPath: s.parent_session,
 					createdAt: s.created_at ?? s.modified_at,
 					modifiedAt: s.modified_at,
 					tokens: s.tokens ?? 0,
@@ -1803,69 +1803,14 @@ export class Sidebar {
 		return [...list];
 	}
 
-	private sessionTimestamp(session: SidebarSession): number {
-		return this.sessionSortBy === "created" ? session.createdAt || session.modifiedAt : session.modifiedAt || session.createdAt;
-	}
-
-	private compareSessions(a: SidebarSession, b: SidebarSession): number {
-		return this.sessionTimestamp(b) - this.sessionTimestamp(a) || a.name.localeCompare(b.name);
-	}
-
 	private sortedSessions(sessions: SidebarSession[]): SidebarSession[] {
 		const sorted = [...sessions];
-		sorted.sort((a, b) => this.compareSessions(a, b));
+		sorted.sort((a, b) => {
+			const aTs = this.sessionSortBy === "created" ? a.createdAt || a.modifiedAt : a.modifiedAt || a.createdAt;
+			const bTs = this.sessionSortBy === "created" ? b.createdAt || b.modifiedAt : b.modifiedAt || b.createdAt;
+			return bTs - aTs || a.name.localeCompare(b.name);
+		});
 		return sorted;
-	}
-
-	private flattenSessionRows(sessions: SidebarSession[]): SidebarSessionRow[] {
-		if (sessions.length === 0) return [];
-
-		const byPath = new Map<string, SidebarSession>();
-		for (const session of sessions) {
-			const normalized = normalizePath(session.path);
-			if (!normalized) continue;
-			byPath.set(normalized, session);
-		}
-
-		const roots: SidebarSession[] = [];
-		const childrenByParent = new Map<string, SidebarSession[]>();
-		for (const session of sessions) {
-			const normalizedSessionPath = normalizePath(session.path);
-			const normalizedParentPath = normalizePath(session.parentPath);
-			const parentVisible =
-				normalizedSessionPath &&
-				normalizedParentPath &&
-				normalizedParentPath !== normalizedSessionPath &&
-				byPath.has(normalizedParentPath);
-			if (parentVisible) {
-				const current = childrenByParent.get(normalizedParentPath) ?? [];
-				current.push(session);
-				childrenByParent.set(normalizedParentPath, current);
-			} else {
-				roots.push(session);
-			}
-		}
-
-		roots.sort((a, b) => this.compareSessions(a, b));
-		for (const list of childrenByParent.values()) {
-			list.sort((a, b) => this.compareSessions(a, b));
-		}
-
-		const rows: SidebarSessionRow[] = [];
-		const visited = new Set<string>();
-		const visit = (session: SidebarSession, depth: number): void => {
-			const normalized = normalizePath(session.path) || session.id;
-			if (visited.has(normalized)) return;
-			visited.add(normalized);
-			rows.push({ session, depth: Math.max(0, Math.min(5, depth)) });
-			const children = childrenByParent.get(normalizePath(session.path));
-			if (!children || children.length === 0) return;
-			for (const child of children) visit(child, depth + 1);
-		};
-
-		for (const root of roots) visit(root, 0);
-		for (const session of this.sortedSessions(sessions)) visit(session, 0);
-		return rows;
 	}
 
 	private visibleSessions(project: Project): SidebarSession[] {
@@ -2831,7 +2776,6 @@ export class Sidebar {
 					const active = this.activeProjectId === project.id;
 					const menuOpen = this.openProjectMenuId === project.id;
 					const sessions = this.visibleSessions(project);
-					const sessionRows = this.flattenSessionRows(sessions);
 					const unreadCount = this.getProjectAttentionCount(project);
 					const showBlockingSessionLoad = project.loadingSessions && sessions.length === 0;
 					const showInlineSessionRefresh = project.loadingSessions && sessions.length > 0;
@@ -2913,70 +2857,69 @@ export class Sidebar {
 											? html`<div class="sidebar-empty">Loading sessions…</div>`
 											: sessions.length === 0
 												? html`<div class="sidebar-empty">${this.sessionShow === "relevant" ? "No relevant sessions." : "No sessions yet."}</div>`
-												: sessionRows.map(
-														({ session, depth }) => {
-															const normalizedSessionPath = normalizePath(session.path);
-															const activeSession = normalizedSessionPath
-																? normalizedSessionPath === this.activeSessionPath
-																: Boolean(session.transient && this.activeProjectId === project.id && !this.activeSessionPath);
-															const runningSession = this.runningSessionPaths.has(normalizedSessionPath);
-															const attentionMessage = this.attentionSessionMessages.get(normalizedSessionPath) ?? null;
-															const sessionRenameActive =
-																Boolean(this.sessionRenameDraft) &&
-																this.sessionRenameDraft?.projectId === project.id &&
-																this.sessionRenameDraft?.sessionPath === normalizePath(session.path);
-															return html`
-																<div class="sidebar-session-row ${activeSession ? "active" : ""} ${depth > 0 ? "branch-child" : ""}" style=${`--session-tree-depth:${depth};`}>
-																	<span class="sidebar-session-leading">
-																		${depth > 0 ? html`<span class="sidebar-session-branch-marker" aria-hidden="true">↳</span>` : nothing}
-																		${this.renderSessionPiIcon(runningSession)}
-																	</span>
-																	<button
-																		class="sidebar-session ${activeSession ? "active-session" : ""}"
-																		@click=${() => {
-																			if (sessionRenameActive) return;
-																			if (session.transient && !session.path) return;
-																			this.selectProject(project.id, false);
-																			this.activeSessionPath = normalizePath(session.path);
-																			this.activeFilePath = null;
-																			this.render();
-																			this.onSessionSelect?.(project.id, session.path, session.name);
-																		}}
-																		@contextmenu=${(e: MouseEvent) => this.handleSessionContextMenu(e, project, session)}
-																		title=${session.path}
-																	>
-																		${sessionRenameActive
-																			? html`
-																				<input
-																					class="sidebar-inline-input sidebar-session-inline-input"
-																					.value=${this.sessionRenameDraft?.value ?? session.name}
-																					@click=${(e: Event) => e.stopPropagation()}
-																					@input=${(e: Event) => {
-																						const target = e.target as HTMLInputElement;
-																						if (!this.sessionRenameDraft) return;
-																						this.sessionRenameDraft = { ...this.sessionRenameDraft, value: target.value };
-																					}}
-																					@keydown=${(e: KeyboardEvent) => {
-																						if (e.key === "Enter") {
-																							e.preventDefault();
-																							this.commitSessionRename(project, session);
-																							return;
-																						}
-																						if (e.key === "Escape") {
-																							e.preventDefault();
-																							this.cancelSessionRename();
-																						}
-																					}}
-																					@blur=${() => this.commitSessionRename(project, session)}
-																					autofocus
-																				/>
-																			`
-																			: html`<span class="sidebar-session-name ${attentionMessage ? "needs-attention" : ""}">${session.name}</span>`}
-																	</button>
-																</div>
-															`;
-														},
-													)}
+												: sessions.map(
+                                                    (session) => {
+                                                        const normalizedSessionPath = normalizePath(session.path);
+                                                        const activeSession = normalizedSessionPath
+                                                            ? normalizedSessionPath === this.activeSessionPath
+                                                            : Boolean(session.transient && this.activeProjectId === project.id && !this.activeSessionPath);
+                                                        const runningSession = this.runningSessionPaths.has(normalizedSessionPath);
+                                                        const attentionMessage = this.attentionSessionMessages.get(normalizedSessionPath) ?? null;
+                                                        const sessionRenameActive =
+                                                            Boolean(this.sessionRenameDraft) &&
+                                                            this.sessionRenameDraft?.projectId === project.id &&
+                                                            this.sessionRenameDraft?.sessionPath === normalizePath(session.path);
+                                                        return html`
+                                                            <div class="sidebar-session-row ${activeSession ? "active" : ""}">
+                                                                <span class="sidebar-session-leading">
+                                                                    ${this.renderSessionPiIcon(runningSession)}
+                                                                </span>
+                                                                <button
+                                                                    class="sidebar-session ${activeSession ? "active-session" : ""}"
+                                                                    @click=${() => {
+                                                                        if (sessionRenameActive) return;
+                                                                        if (session.transient && !session.path) return;
+                                                                        this.selectProject(project.id, false);
+                                                                        this.activeSessionPath = normalizePath(session.path);
+                                                                        this.activeFilePath = null;
+                                                                        this.render();
+                                                                        this.onSessionSelect?.(project.id, session.path, session.name);
+                                                                    }}
+                                                                    @contextmenu=${(e: MouseEvent) => this.handleSessionContextMenu(e, project, session)}
+                                                                    title=${session.path}
+                                                                >
+                                                                    ${sessionRenameActive
+                                                                        ? html`
+                                                                            <input
+                                                                                class="sidebar-inline-input sidebar-session-inline-input"
+                                                                                .value=${this.sessionRenameDraft?.value ?? session.name}
+                                                                                @click=${(e: Event) => e.stopPropagation()}
+                                                                                @input=${(e: Event) => {
+                                                                                    const target = e.target as HTMLInputElement;
+                                                                                    if (!this.sessionRenameDraft) return;
+                                                                                    this.sessionRenameDraft = { ...this.sessionRenameDraft, value: target.value };
+                                                                                }}
+                                                                                @keydown=${(e: KeyboardEvent) => {
+                                                                                    if (e.key === "Enter") {
+                                                                                        e.preventDefault();
+                                                                                        this.commitSessionRename(project, session);
+                                                                                        return;
+                                                                                    }
+                                                                                    if (e.key === "Escape") {
+                                                                                        e.preventDefault();
+                                                                                        this.cancelSessionRename();
+                                                                                    }
+                                                                                }}
+                                                                                @blur=${() => this.commitSessionRename(project, session)}
+                                                                                autofocus
+                                                                            />
+                                                                        `
+                                                                        : html`<span class="sidebar-session-name ${attentionMessage ? "needs-attention" : ""}">${session.name}</span>`}
+                                                                </button>
+                                                            </div>
+                                                        `;
+                                                    },
+                                                  )}
 									</div>
 								`
 								: nothing}
