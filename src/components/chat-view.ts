@@ -288,6 +288,8 @@ export class ChatView {
 	private historyViewerSessionLabel = "";
 	private forkEntryIdByMessageId = new Map<string, string>();
 	private forkTargetsRequestSeq = 0;
+	private forkExpandedMessageRows = new Set<string>();
+	private forkExpandedToolRows = new Set<string>();
 	private historyQuery = "";
 	private historyRoleFilter: UiRole | "all" = "all";
 	private quickActionsOpen = false;
@@ -2561,6 +2563,8 @@ export class ChatView {
 		this.historyViewerMode = "browse";
 		this.historyViewerLoading = false;
 		this.historyViewerSessionLabel = "";
+		this.forkExpandedMessageRows.clear();
+		this.forkExpandedToolRows.clear();
 		this.render();
 	}
 
@@ -2571,6 +2575,8 @@ export class ChatView {
 		this.historyViewerSessionLabel = options?.sessionName?.trim() || this.state?.sessionName?.trim() || "";
 		this.historyQuery = "";
 		this.historyRoleFilter = "all";
+		this.forkExpandedMessageRows.clear();
+		this.forkExpandedToolRows.clear();
 		this.render();
 		if (!this.historyViewerLoading) {
 			void this.loadForkTargetsForHistory();
@@ -2585,6 +2591,8 @@ export class ChatView {
 		this.historyQuery = "";
 		this.historyRoleFilter = "all";
 		this.forkEntryIdByMessageId.clear();
+		this.forkExpandedMessageRows.clear();
+		this.forkExpandedToolRows.clear();
 		this.render();
 	}
 
@@ -3544,13 +3552,13 @@ export class ChatView {
 
 	private buildForkTimelineRows(source: UiMessage[]): ForkTimelineRow[] {
 		const rows: ForkTimelineRow[] = [];
-		let current: ForkTimelineRow | null = null;
+		let latestAssistantRow: ForkTimelineRow | null = null;
 		for (let i = 0; i < source.length; i++) {
 			const msg = source[i];
 			if (!msg) continue;
 			if (msg.role === "user") {
-				current = { main: msg, sourceIndex: i, thinkingSnippets: [], tools: [] };
-				rows.push(current);
+				rows.push({ main: msg, sourceIndex: i, thinkingSnippets: [], tools: [] });
+				latestAssistantRow = null;
 				continue;
 			}
 			if (msg.role !== "assistant") continue;
@@ -3559,25 +3567,63 @@ export class ChatView {
 			const thinking = (msg.thinking ?? "").trim();
 			const tools = msg.toolCalls ?? [];
 			if (text) {
-				current = {
+				const row: ForkTimelineRow = {
 					main: msg,
 					sourceIndex: i,
 					thinkingSnippets: thinking ? [thinking] : [],
 					tools: [...tools],
 				};
-				rows.push(current);
+				rows.push(row);
+				latestAssistantRow = row;
 				continue;
 			}
 
 			if (!thinking && tools.length === 0) continue;
-			if (!current) {
-				current = { main: msg, sourceIndex: i, thinkingSnippets: [], tools: [] };
-				rows.push(current);
+			if (!latestAssistantRow) {
+				latestAssistantRow = {
+					main: msg,
+					sourceIndex: i,
+					thinkingSnippets: [],
+					tools: [],
+				};
+				rows.push(latestAssistantRow);
 			}
-			if (thinking) current.thinkingSnippets.push(thinking);
-			if (tools.length > 0) current.tools.push(...tools);
+			if (thinking) latestAssistantRow.thinkingSnippets.push(thinking);
+			if (tools.length > 0) latestAssistantRow.tools.push(...tools);
 		}
 		return rows;
+	}
+
+	private forkRowKey(row: ForkTimelineRow): string {
+		const base = row.main.sessionEntryId ?? row.main.id;
+		return `${base}:${row.sourceIndex}`;
+	}
+
+	private toggleForkMessageExpanded(rowKey: string): void {
+		if (this.forkExpandedMessageRows.has(rowKey)) {
+			this.forkExpandedMessageRows.delete(rowKey);
+		} else {
+			this.forkExpandedMessageRows.add(rowKey);
+		}
+		this.render();
+	}
+
+	private toggleForkToolsExpanded(rowKey: string): void {
+		if (this.forkExpandedToolRows.has(rowKey)) {
+			this.forkExpandedToolRows.delete(rowKey);
+		} else {
+			this.forkExpandedToolRows.add(rowKey);
+		}
+		this.render();
+	}
+
+	private forkRowPreview(row: ForkTimelineRow): string {
+		const normalized = this.messagePreview(row.main).replace(/\s+/g, " ").trim();
+		if (normalized && normalized !== "(empty message)") return normalized;
+		if (row.main.role === "assistant" && (row.thinkingSnippets.length > 0 || row.tools.length > 0)) {
+			return "assistant activity";
+		}
+		return normalized || "(empty message)";
 	}
 
 	private resolveForkEntryId(messages: UiMessage[], index: number): string | null {
@@ -3672,11 +3718,20 @@ export class ChatView {
 								: forkMode
 									? filteredRows.map((row, idx) => {
 											const msg = row.main;
+											const rowKey = this.forkRowKey(row);
 											const forkEntryId = this.resolveForkEntryId(sourceMessages, row.sourceIndex);
+											const fullPreview = this.forkRowPreview(row);
+											const messageExpanded = this.forkExpandedMessageRows.has(rowKey);
+											const canExpandMessage = fullPreview.length > 220;
+											const previewText = messageExpanded ? fullPreview : truncate(fullPreview, 220);
 											const thinkingSnippets = row.thinkingSnippets
-												.map((snippet: string) => truncate(snippet.replace(/\s+/g, " ").trim(), 140))
-												.filter(Boolean);
+												.map((snippet: string) => snippet.replace(/\s+/g, " ").trim())
+												.filter(Boolean)
+												.map((snippet: string) => truncate(snippet, 140));
 											const tools = row.tools;
+											const toolsExpanded = this.forkExpandedToolRows.has(rowKey);
+											const visibleTools = toolsExpanded ? tools : tools.slice(0, 3);
+											const hiddenToolCount = Math.max(0, tools.length - visibleTools.length);
 											return html`
 												<div class="fork-history-item role-${msg.role}">
 													<div class="fork-history-rail" aria-hidden="true">
@@ -3688,18 +3743,25 @@ export class ChatView {
 															<span class="history-role role-${msg.role}">${msg.role}</span>
 															<span>#${idx + 1}</span>
 														</div>
-														<div class="history-preview">${truncate(this.messagePreview(msg).replace(/\s+/g, " "), 220)}</div>
+														<div class="history-preview ${messageExpanded ? "expanded" : ""}">${previewText}</div>
+														${canExpandMessage
+															? html`<button class="fork-inline-toggle" @click=${() => this.toggleForkMessageExpanded(rowKey)}>${messageExpanded ? "Show less" : "Show full message"}</button>`
+															: nothing}
 														${thinkingSnippets.length > 0 || tools.length > 0
 															? html`
 																<div class="fork-history-subentries">
 																	${thinkingSnippets.map(
 																		(snippet: string) => html`<div class="fork-history-subentry thinking"><span class="fork-subentry-label">thinking</span><span class="fork-subentry-preview">${snippet}</span></div>`,
 																	)}
-																	${tools.map((tc: ToolCallBlock) => {
+																	${visibleTools.map((tc: ToolCallBlock) => {
 																		const toolStatus = tc.isError ? "error" : tc.isRunning ? "running" : "done";
-																		const toolPreview = truncate((tc.result ?? tc.streamingOutput ?? "").replace(/\s+/g, " ").trim(), 96);
+																		const rawToolPreview = (tc.result ?? tc.streamingOutput ?? "").replace(/\s+/g, " ").trim();
+																		const toolPreview = toolsExpanded ? truncate(rawToolPreview, 240) : truncate(rawToolPreview, 96);
 																		return html`<div class="fork-history-subentry tool"><span class="fork-subentry-label">tool</span><span class="fork-subentry-name">${tc.name} · ${toolStatus}</span>${toolPreview ? html`<span class="fork-subentry-preview">${toolPreview}</span>` : nothing}</div>`;
 																	})}
+																	${tools.length > 3
+																		? html`<button class="fork-inline-toggle" @click=${() => this.toggleForkToolsExpanded(rowKey)}>${toolsExpanded ? "Show fewer tools" : `Show ${hiddenToolCount} more tools`}</button>`
+																		: nothing}
 																</div>
 															`
 															: nothing}

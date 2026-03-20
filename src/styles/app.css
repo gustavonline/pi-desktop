@@ -5092,6 +5092,21 @@ body.sidebar-resizing {
 	gap: 4px;
 }
 
+.fork-inline-toggle {
+	margin-top: 4px;
+	padding: 0;
+	border: none;
+	background: transparent;
+	color: var(--muted);
+	font-size: 10px;
+	cursor: pointer;
+	justify-self: start;
+}
+
+.fork-inline-toggle:hover {
+	color: var(--text);
+}
+
 .fork-history-subentry {
 	padding-left: 9px;
 	border-left: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
