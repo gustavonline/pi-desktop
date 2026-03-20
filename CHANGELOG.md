@@ -26,6 +26,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Thinking toggle interactions now preserve reading context better by storing/restoring scroll position and unlocking auto-follow on manual expand/collapse.
 - Fork browsing now opens in a tighter focused history mode that shows user + assistant context with a timeline-style list and minimal fork-only actions.
 - Fork timeline now keeps tool/thinking subentries scoped to assistant rows, collapses long tool lists behind an inline expand control, and lets you expand long message previews before choosing where to fork.
+- Fork actions now only appear on user entries and assistant entries with actual assistant text (tool-only assistant activity rows are no longer forkable).
 
 ## [0.1.5] - 2026-03-19
 

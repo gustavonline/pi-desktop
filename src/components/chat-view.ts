@@ -3720,6 +3720,7 @@ export class ChatView {
 											const msg = row.main;
 											const rowKey = this.forkRowKey(row);
 											const forkEntryId = this.resolveForkEntryId(sourceMessages, row.sourceIndex);
+											const rowCanFork = Boolean(forkEntryId) && (msg.role === "user" || msg.text.trim().length > 0);
 											const fullPreview = this.forkRowPreview(row);
 											const messageExpanded = this.forkExpandedMessageRows.has(rowKey);
 											const canExpandMessage = fullPreview.length > 220;
@@ -3767,7 +3768,7 @@ export class ChatView {
 															: nothing}
 													</div>
 													<div class="fork-history-actions">
-														${forkEntryId
+														${rowCanFork && forkEntryId
 															? html`<button class="message-action-btn" @click=${() => void this.forkFrom(forkEntryId)} title=${msg.role === "assistant" ? "Fork from preceding user message" : "Fork from this user message"}>Fork</button>`
 															: nothing}
 													</div>
