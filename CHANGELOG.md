@@ -6,6 +6,8 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-03-20
+
 ### Added
 - Chat now shows a “Latest” jump button when auto-follow is unlocked, so you can scroll up during streaming and relock to the live tail on demand.
 - Settings now include an auto-rename model picker that writes `~/.pi/agent/extensions/pi-session-auto-rename.json` from currently available authenticated models.
