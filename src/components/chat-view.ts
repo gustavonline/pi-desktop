@@ -69,6 +69,13 @@ interface ForkOption {
 	text: string;
 }
 
+interface ForkTimelineRow {
+	main: UiMessage;
+	sourceIndex: number;
+	thinkingSnippets: string[];
+	tools: ToolCallBlock[];
+}
+
 interface SessionStatsSummary {
 	tokens: number | null;
 	lifetimeTokens: number | null;
@@ -3535,6 +3542,44 @@ export class ChatView {
 		`;
 	}
 
+	private buildForkTimelineRows(source: UiMessage[]): ForkTimelineRow[] {
+		const rows: ForkTimelineRow[] = [];
+		let current: ForkTimelineRow | null = null;
+		for (let i = 0; i < source.length; i++) {
+			const msg = source[i];
+			if (!msg) continue;
+			if (msg.role === "user") {
+				current = { main: msg, sourceIndex: i, thinkingSnippets: [], tools: [] };
+				rows.push(current);
+				continue;
+			}
+			if (msg.role !== "assistant") continue;
+
+			const text = msg.text.trim();
+			const thinking = (msg.thinking ?? "").trim();
+			const tools = msg.toolCalls ?? [];
+			if (text) {
+				current = {
+					main: msg,
+					sourceIndex: i,
+					thinkingSnippets: thinking ? [thinking] : [],
+					tools: [...tools],
+				};
+				rows.push(current);
+				continue;
+			}
+
+			if (!thinking && tools.length === 0) continue;
+			if (!current) {
+				current = { main: msg, sourceIndex: i, thinkingSnippets: [], tools: [] };
+				rows.push(current);
+			}
+			if (thinking) current.thinkingSnippets.push(thinking);
+			if (tools.length > 0) current.tools.push(...tools);
+		}
+		return rows;
+	}
+
 	private resolveForkEntryId(messages: UiMessage[], index: number): string | null {
 		const current = messages[index];
 		if (!current) return null;
@@ -3555,22 +3600,29 @@ export class ChatView {
 
 		const forkMode = this.historyViewerMode === "fork";
 		const query = this.historyQuery.trim().toLowerCase();
-		const source = forkMode
+		const sourceMessages: UiMessage[] = forkMode
 			? this.messages.filter((msg) => msg.role === "user" || msg.role === "assistant")
 			: this.messages;
-		const filtered = source.filter((msg) => {
-			if (!forkMode && this.historyRoleFilter !== "all" && msg.role !== this.historyRoleFilter) return false;
-			if (!query) return true;
-			const haystack = `${msg.role} ${msg.label || ""} ${this.messagePreview(msg)}`.toLowerCase();
-			return haystack.includes(query);
-		});
-		const forkableEntryIds = new Set<string>();
-		for (let i = 0; i < filtered.length; i++) {
-			const id = this.resolveForkEntryId(filtered, i);
-			if (id) forkableEntryIds.add(id);
-		}
-		const forkableCount = forkableEntryIds.size;
-
+		const forkTimelineRows: ForkTimelineRow[] = forkMode ? this.buildForkTimelineRows(sourceMessages) : [];
+		const filteredRows: ForkTimelineRow[] = forkMode
+			? forkTimelineRows.filter((row) => {
+				if (!query) return true;
+				const toolsText = row.tools
+					.map((tc) => `${tc.name} ${(tc.result ?? tc.streamingOutput ?? "").toString()}`)
+					.join(" ");
+				const thinkingText = row.thinkingSnippets.join(" ");
+				const haystack = `${row.main.role} ${row.main.label || ""} ${this.messagePreview(row.main)} ${thinkingText} ${toolsText}`.toLowerCase();
+				return haystack.includes(query);
+			})
+			: [];
+		const filteredMessages: UiMessage[] = forkMode
+			? []
+			: sourceMessages.filter((msg) => {
+				if (this.historyRoleFilter !== "all" && msg.role !== this.historyRoleFilter) return false;
+				if (!query) return true;
+				const haystack = `${msg.role} ${msg.label || ""} ${this.messagePreview(msg)}`.toLowerCase();
+				return haystack.includes(query);
+			});
 		return html`
 			<div class="overlay" @click=${(e: Event) => e.target === e.currentTarget && this.closeHistoryViewer()}>
 				<div class="overlay-card history-card ${forkMode ? "fork-mode" : ""}">
@@ -3578,7 +3630,7 @@ export class ChatView {
 						<div>
 							<div>${forkMode ? "Fork from message" : "Session history"}</div>
 							${forkMode
-								? html`<div class="history-subtitle">${this.historyViewerSessionLabel || "Current session"} · ${forkableCount} fork points</div>`
+								? html`<div class="history-subtitle">${this.historyViewerSessionLabel || "Current session"}</div>`
 								: nothing}
 						</div>
 						<button @click=${() => this.closeHistoryViewer()}>✕</button>
@@ -3615,20 +3667,21 @@ export class ChatView {
 					<div class="overlay-body history-list ${forkMode ? "fork-history-list" : ""}">
 						${this.historyViewerLoading
 							? html`<div class="overlay-empty">Loading session history…</div>`
-							: filtered.length === 0
+							: (forkMode ? filteredRows.length === 0 : filteredMessages.length === 0)
 								? html`<div class="overlay-empty">${forkMode ? "No messages available for forking." : "No messages match your filters."}</div>`
 								: forkMode
-									? filtered.map((msg, idx) => {
-											const forkEntryId = this.resolveForkEntryId(filtered, idx);
-											const assistantThinking = msg.role === "assistant"
-												? truncate((msg.thinking ?? "").replace(/\s+/g, " ").trim(), 140)
-												: "";
-											const assistantTools = msg.role === "assistant" ? msg.toolCalls : [];
+									? filteredRows.map((row, idx) => {
+											const msg = row.main;
+											const forkEntryId = this.resolveForkEntryId(sourceMessages, row.sourceIndex);
+											const thinkingSnippets = row.thinkingSnippets
+												.map((snippet: string) => truncate(snippet.replace(/\s+/g, " ").trim(), 140))
+												.filter(Boolean);
+											const tools = row.tools;
 											return html`
 												<div class="fork-history-item role-${msg.role}">
 													<div class="fork-history-rail" aria-hidden="true">
 														<span class="fork-history-dot"></span>
-														${idx < filtered.length - 1 ? html`<span class="fork-history-line"></span>` : nothing}
+														${idx < filteredRows.length - 1 ? html`<span class="fork-history-line"></span>` : nothing}
 													</div>
 													<div class="fork-history-main">
 														<div class="history-meta">
@@ -3636,13 +3689,13 @@ export class ChatView {
 															<span>#${idx + 1}</span>
 														</div>
 														<div class="history-preview">${truncate(this.messagePreview(msg).replace(/\s+/g, " "), 220)}</div>
-														${msg.role === "assistant" && (assistantThinking || assistantTools.length > 0)
+														${thinkingSnippets.length > 0 || tools.length > 0
 															? html`
 																<div class="fork-history-subentries">
-																	${assistantThinking
-																		? html`<div class="fork-history-subentry thinking"><span class="fork-subentry-label">thinking</span><span class="fork-subentry-preview">${assistantThinking}</span></div>`
-																		: nothing}
-																	${assistantTools.map((tc) => {
+																	${thinkingSnippets.map(
+																		(snippet: string) => html`<div class="fork-history-subentry thinking"><span class="fork-subentry-label">thinking</span><span class="fork-subentry-preview">${snippet}</span></div>`,
+																	)}
+																	${tools.map((tc: ToolCallBlock) => {
 																		const toolStatus = tc.isError ? "error" : tc.isRunning ? "running" : "done";
 																		const toolPreview = truncate((tc.result ?? tc.streamingOutput ?? "").replace(/\s+/g, " ").trim(), 96);
 																		return html`<div class="fork-history-subentry tool"><span class="fork-subentry-label">tool</span><span class="fork-subentry-name">${tc.name} · ${toolStatus}</span>${toolPreview ? html`<span class="fork-subentry-preview">${toolPreview}</span>` : nothing}</div>`;
@@ -3659,8 +3712,8 @@ export class ChatView {
 												</div>
 											`;
 									  })
-									: filtered.map(
-											(msg, idx) => html`
+									: filteredMessages.map(
+											(msg: UiMessage, idx: number) => html`
 												<div class="history-item">
 													<button class="history-jump" @click=${() => this.revealMessage(msg.id)}>
 														<div class="history-meta">
