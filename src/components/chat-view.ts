@@ -1681,6 +1681,33 @@ export class ChatView {
 		return "";
 	}
 
+	private toRuntimeInlineLine(text: string): string {
+		const raw = text.trim();
+		if (!raw) return "";
+		if (/^error\b[:\s-]*/i.test(raw)) return raw;
+		const stripped = raw
+			.replace(/^runtime error(?:\s*\([^)]*\))?[:\s-]*/i, "")
+			.replace(/^extension error(?:\s*\([^)]*\))?[:\s-]*/i, "")
+			.replace(/^run failed[:\s-]*/i, "")
+			.replace(/^streaming error[:\s-]*/i, "")
+			.trim();
+		if (/^error\b[:\s-]*/i.test(stripped)) return stripped;
+		return `Error: ${stripped || raw}`;
+	}
+
+	private appendRuntimeSystemLine(text: string): void {
+		const line = text.trim();
+		if (!line) return;
+		this.messages.push({
+			id: uid("runtimeError"),
+			role: "system",
+			text: line,
+			toolCalls: [],
+		});
+		this.render();
+		this.scrollToBottom();
+	}
+
 	private pushRuntimeNotice(text: string, kind: Notice["kind"] = "error", dedupeMs = 2000): void {
 		const normalized = text.trim().toLowerCase();
 		if (!normalized) return;
@@ -1690,6 +1717,10 @@ export class ChatView {
 		}
 		this.lastRuntimeNoticeSignature = normalized;
 		this.lastRuntimeNoticeAt = now;
+		const inlineLine = this.toRuntimeInlineLine(text);
+		if (inlineLine) {
+			this.appendRuntimeSystemLine(inlineLine);
+		}
 		this.pushNotice(text, kind);
 	}
 
@@ -1959,8 +1990,13 @@ export class ChatView {
 			case "error": {
 				const errorMessage = this.extractRuntimeErrorMessage(event) || "Unknown runtime error";
 				const source = pickString(event, ["source", "phase", "stage", "provider", "code"]);
-				const prefix = source ? `Runtime error (${source})` : "Runtime error";
-				this.pushRuntimeNotice(`${prefix}: ${truncate(errorMessage, 180)}`, "error", 2600);
+				if (source === "stderr" || source === "stdout_text") {
+					const line = /^error\b[:\s-]*/i.test(errorMessage) ? errorMessage : `Error: ${errorMessage}`;
+					this.pushRuntimeNotice(truncate(line, 220), "error", 2600);
+				} else {
+					const prefix = source ? `Runtime error (${source})` : "Runtime error";
+					this.pushRuntimeNotice(`${prefix}: ${truncate(errorMessage, 180)}`, "error", 2600);
+				}
 				break;
 			}
 
