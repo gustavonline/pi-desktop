@@ -186,9 +186,22 @@ function shouldShowDebugOverlay(): boolean {
 function isCliMissingError(message: string | null | undefined): boolean {
 	const text = (message ?? "").toLowerCase();
 	if (!text) return false;
-	return text.includes("could not find the pi cli") ||
-		(text.includes("failed to spawn pi process") && (text.includes("no such file") || text.includes("not found"))) ||
-		text.includes("npm install -g @mariozechner/pi-coding-agent");
+	if (text.includes("could not find the pi cli") || text.includes("npm install -g @mariozechner/pi-coding-agent")) {
+		return true;
+	}
+	if (text.includes("'pi' is not recognized as an internal or external command")) {
+		return true;
+	}
+	if (text.includes("failed to spawn pi process")) {
+		return text.includes("no such file") ||
+			text.includes("not found") ||
+			text.includes("cannot find the file specified") ||
+			text.includes("the system cannot find the file specified") ||
+			text.includes("os error 2") ||
+			text.includes("createprocess") ||
+			text.includes("enoent");
+	}
+	return text.includes("enoent") && text.includes("pi");
 }
 
 async function copyCliInstallCommand(): Promise<void> {
@@ -1070,11 +1083,18 @@ function queueProjectTask(
 				recordDebugTrace(`stale ${label} v=${version}`);
 				return;
 			}
+			const message = err instanceof Error ? err.message : String(err);
 			if (version !== projectSwitchVersion) {
-				recordDebugTrace(`ignored-error ${label} v=${version}: ${err instanceof Error ? err.message : String(err)}`);
+				recordDebugTrace(`ignored-error ${label} v=${version}: ${message}`);
 				return;
 			}
-			recordDebugTrace(`error ${label} v=${version}: ${err instanceof Error ? err.message : String(err)}`);
+			if (isCliMissingError(message)) {
+				recordDebugTrace(`missing-cli ${label} v=${version}: ${message}`);
+				connectionError = message;
+				renderApp();
+				return;
+			}
+			recordDebugTrace(`error ${label} v=${version}: ${message}`);
 			onError?.(err);
 		});
 	return projectSwitchTask;
