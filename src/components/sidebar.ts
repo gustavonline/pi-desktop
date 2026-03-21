@@ -425,9 +425,6 @@ export class Sidebar {
 		if (this.workspaceRenameDraft && !next.some((workspace) => workspace.id === this.workspaceRenameDraft?.workspaceId)) {
 			this.workspaceRenameDraft = null;
 		}
-		this.workspaceSwipeAccumulatorX = 0;
-		this.workspaceSwipeLastInputAt = 0;
-		this.workspaceSwipeGestureConsumed = false;
 		this.render();
 		if (this.workspaceRenameDraft && this.workspaceRenameDraft.workspaceId === this.activeWorkspaceId) {
 			this.focusWorkspaceRenameInput(this.workspaceRenameDraft.workspaceId);
