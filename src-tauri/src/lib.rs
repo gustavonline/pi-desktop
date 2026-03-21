@@ -153,6 +153,59 @@ fn discover_sidecar(app: &AppHandle) -> Option<PathBuf> {
 fn discover_pi_from_common_locations() -> Option<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
 
+    if cfg!(target_os = "windows") {
+        if let Ok(app_data) = std::env::var("APPDATA") {
+            let app_data_dir = PathBuf::from(app_data);
+            candidates.push(app_data_dir.join("npm").join("pi.cmd"));
+            candidates.push(app_data_dir.join("npm").join("pi.exe"));
+            candidates.push(app_data_dir.join("npm").join("pi.bat"));
+            candidates.push(app_data_dir.join("npm").join("pi"));
+        }
+
+        if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+            let local_app_data_dir = PathBuf::from(local_app_data);
+            candidates.push(local_app_data_dir.join("npm").join("pi.cmd"));
+            candidates.push(local_app_data_dir.join("npm").join("pi.exe"));
+        }
+
+        if let Ok(user_profile) = std::env::var("USERPROFILE") {
+            let user_dir = PathBuf::from(user_profile);
+            candidates.push(
+                user_dir
+                    .join("AppData")
+                    .join("Roaming")
+                    .join("npm")
+                    .join("pi.cmd"),
+            );
+            candidates.push(
+                user_dir
+                    .join("AppData")
+                    .join("Roaming")
+                    .join("npm")
+                    .join("pi.exe"),
+            );
+            candidates.push(user_dir.join("scoop").join("shims").join("pi.cmd"));
+        }
+
+        if let Ok(program_files) = std::env::var("ProgramFiles") {
+            candidates.push(PathBuf::from(program_files).join("nodejs").join("pi.cmd"));
+        }
+
+        if let Ok(program_files_x86) = std::env::var("ProgramFiles(x86)") {
+            candidates.push(PathBuf::from(program_files_x86).join("nodejs").join("pi.cmd"));
+        }
+
+        if let Ok(nvm_home) = std::env::var("NVM_HOME") {
+            candidates.push(PathBuf::from(nvm_home).join("pi.cmd"));
+        }
+
+        if let Ok(nvm_symlink) = std::env::var("NVM_SYMLINK") {
+            candidates.push(PathBuf::from(nvm_symlink).join("pi.cmd"));
+        }
+
+        return candidates.into_iter().find(|candidate| candidate.is_file());
+    }
+
     if let Ok(home) = std::env::var("HOME") {
         let home_dir = PathBuf::from(home);
 
