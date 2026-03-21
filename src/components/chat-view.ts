@@ -278,6 +278,8 @@ export class ChatView {
 	private allThinkingExpanded = false;
 	private retryStatus = "";
 	private compactionStatus = "";
+	private lastRuntimeNoticeSignature = "";
+	private lastRuntimeNoticeAt = 0;
 	private pendingDeliveryMode: DeliveryMode = "prompt";
 	private openingForkPicker = false;
 	private forkPickerOpen = false;
@@ -1657,6 +1659,40 @@ export class ChatView {
 		`;
 	}
 
+	private extractRuntimeErrorMessage(event: Record<string, unknown> | null | undefined): string {
+		if (!event || typeof event !== "object") return "";
+		const direct = pickString(event, [
+			"errorMessage",
+			"error.message",
+			"error",
+			"message",
+			"reason",
+			"details.message",
+			"details.error",
+			"finalError",
+			"providerError.message",
+			"providerError.error",
+		]);
+		if (direct) return direct;
+		const nestedError = event.error;
+		if (nestedError && typeof nestedError === "object") {
+			return pickString(nestedError as Record<string, unknown>, ["message", "error", "detail", "reason"]) ?? "";
+		}
+		return "";
+	}
+
+	private pushRuntimeNotice(text: string, kind: Notice["kind"] = "error", dedupeMs = 2000): void {
+		const normalized = text.trim().toLowerCase();
+		if (!normalized) return;
+		const now = Date.now();
+		if (this.lastRuntimeNoticeSignature === normalized && now - this.lastRuntimeNoticeAt < dedupeMs) {
+			return;
+		}
+		this.lastRuntimeNoticeSignature = normalized;
+		this.lastRuntimeNoticeAt = now;
+		this.pushNotice(text, kind);
+	}
+
 	private handleEvent(event: Record<string, unknown>): void {
 		const type = event.type as string;
 		if (type === "response") return;
@@ -1685,6 +1721,10 @@ export class ChatView {
 				const last = this.messages[this.messages.length - 1];
 				if (last && last.role === "assistant") last.isStreaming = false;
 				this.retryStatus = "";
+				const runError = this.extractRuntimeErrorMessage(event);
+				if (runError) {
+					this.pushRuntimeNotice(`Run failed: ${truncate(runError, 180)}`, "error", 2600);
+				}
 				this.runHasAssistantText = false;
 				this.onRunStateChange?.(false);
 				rpcBridge
@@ -1762,6 +1802,19 @@ export class ChatView {
 				if (!assistantEvent) break;
 				const subtype = typeof assistantEvent.type === "string" ? assistantEvent.type : "";
 				const last = this.messages[this.messages.length - 1];
+
+				if (subtype === "error") {
+					if (last?.role === "assistant") {
+						last.isStreaming = false;
+					}
+					const streamError = this.extractRuntimeErrorMessage(assistantEvent);
+					if (streamError) {
+						this.pushRuntimeNotice(`Streaming error: ${truncate(streamError, 180)}`, "error", 2600);
+					}
+					this.render();
+					break;
+				}
+
 				if (!last || last.role !== "assistant") break;
 
 				if (subtype === "text_delta") {
@@ -1799,9 +1852,6 @@ export class ChatView {
 						}
 						this.render();
 					}
-				} else if (subtype === "error") {
-					last.isStreaming = false;
-					this.render();
 				}
 				break;
 			}
@@ -1878,9 +1928,9 @@ export class ChatView {
 			case "auto_compaction_end": {
 				this.compactionStatus = "";
 				const aborted = Boolean(event.aborted);
-				const errorMessage = typeof event.errorMessage === "string" ? event.errorMessage : "";
+				const errorMessage = this.extractRuntimeErrorMessage(event);
 				if (aborted) this.pushNotice("Auto-compaction aborted", "info");
-				else if (errorMessage) this.pushNotice(`Auto-compaction failed: ${truncate(errorMessage, 120)}`, "error");
+				else if (errorMessage) this.pushRuntimeNotice(`Auto-compaction failed: ${truncate(errorMessage, 180)}`, "error", 2600);
 				else this.pushNotice("Auto-compaction complete", "success");
 				this.render();
 				break;
@@ -1899,16 +1949,26 @@ export class ChatView {
 				const success = Boolean(event.success);
 				this.retryStatus = "";
 				if (!success) {
-					const finalError = typeof event.finalError === "string" ? event.finalError : "Unknown retry failure";
-					this.pushNotice(`Retry failed: ${truncate(finalError, 120)}`, "error");
+					const finalError = this.extractRuntimeErrorMessage(event) || "Unknown retry failure";
+					this.pushRuntimeNotice(`Retry failed: ${truncate(finalError, 180)}`, "error", 2600);
 				}
 				this.render();
 				break;
 			}
 
+			case "error": {
+				const errorMessage = this.extractRuntimeErrorMessage(event) || "Unknown runtime error";
+				const source = pickString(event, ["source", "phase", "stage", "provider", "code"]);
+				const prefix = source ? `Runtime error (${source})` : "Runtime error";
+				this.pushRuntimeNotice(`${prefix}: ${truncate(errorMessage, 180)}`, "error", 2600);
+				break;
+			}
+
 			case "extension_error": {
-				const error = typeof event.error === "string" ? event.error : "Unknown extension error";
-				this.pushNotice(`Extension error: ${truncate(error, 120)}`, "error");
+				const error = this.extractRuntimeErrorMessage(event) || "Unknown extension error";
+				const source = pickString(event, ["source", "callback", "method", "extension", "provider"]);
+				const prefix = source ? `Extension error (${source})` : "Extension error";
+				this.pushRuntimeNotice(`${prefix}: ${truncate(error, 180)}`, "error", 2600);
 				break;
 			}
 
