@@ -2682,7 +2682,7 @@ export class Sidebar {
 		event.preventDefault();
 		event.stopPropagation();
 
-		const direction: 1 | -1 = this.workspaceSwipeAccumulatorX > 0 ? -1 : 1;
+		const direction: 1 | -1 = this.workspaceSwipeAccumulatorX > 0 ? 1 : -1;
 		this.workspaceSwipeAccumulatorX = 0;
 		this.workspaceSwipeLastSwitchAt = now;
 		this.workspaceSwipeGestureConsumed = true;
