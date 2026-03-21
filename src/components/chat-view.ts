@@ -46,6 +46,7 @@ interface UiMessage {
 	thinkingExpanded?: boolean;
 	thinkingScrollTop?: number;
 	isStreaming?: boolean;
+	errorText?: string;
 	deliveryMode?: DeliveryMode;
 	label?: string;
 }
@@ -1681,6 +1682,24 @@ export class ChatView {
 		return "";
 	}
 
+	private extractAssistantMessageError(message: Record<string, unknown> | null | undefined): string {
+		if (!message || typeof message !== "object") return "";
+		const stopReason = pickString(message, ["stopReason", "stop_reason", "reason"])
+			?.trim()
+			.toLowerCase() ?? "";
+		const errorMessage = this.extractRuntimeErrorMessage(message).trim();
+		if (stopReason === "aborted") {
+			if (errorMessage && errorMessage.toLowerCase() !== "request was aborted") {
+				return errorMessage;
+			}
+			return "Operation aborted";
+		}
+		if (stopReason === "error") {
+			return errorMessage || "Unknown error";
+		}
+		return "";
+	}
+
 	private toRuntimeInlineLine(text: string): string {
 		const raw = text.trim();
 		if (!raw) return "";
@@ -1750,10 +1769,12 @@ export class ChatView {
 					this.onStateChange?.(this.state);
 				}
 				const last = this.messages[this.messages.length - 1];
-				if (last && last.role === "assistant") last.isStreaming = false;
+				if (last && last.role === "assistant") {
+					last.isStreaming = false;
+				}
 				this.retryStatus = "";
 				const runError = this.extractRuntimeErrorMessage(event);
-				if (runError) {
+				if (runError && !(last?.role === "assistant" && last.errorText)) {
 					this.pushRuntimeNotice(`Run failed: ${truncate(runError, 180)}`, "error", 2600);
 				}
 				this.runHasAssistantText = false;
@@ -1784,10 +1805,12 @@ export class ChatView {
 						break;
 					}
 					const initialText = this.extractText(msg.content);
+					const assistantError = this.extractAssistantMessageError(msg);
 					this.messages.push({
 						id: uid("assistant"),
 						role: "assistant",
 						text: initialText,
+						errorText: assistantError || undefined,
 						toolCalls: [],
 						isStreaming: true,
 						thinkingExpanded: this.allThinkingExpanded,
@@ -1837,10 +1860,10 @@ export class ChatView {
 				if (subtype === "error") {
 					if (last?.role === "assistant") {
 						last.isStreaming = false;
-					}
-					const streamError = this.extractRuntimeErrorMessage(assistantEvent);
-					if (streamError) {
-						this.pushRuntimeNotice(`Streaming error: ${truncate(streamError, 180)}`, "error", 2600);
+						const streamError = this.extractRuntimeErrorMessage(assistantEvent) || this.extractRuntimeErrorMessage(event);
+						if (streamError) {
+							last.errorText = streamError;
+						}
 					}
 					this.render();
 					break;
@@ -1887,10 +1910,31 @@ export class ChatView {
 				break;
 			}
 
+			case "turn_end": {
+				const turnMessage = event.message as Record<string, unknown> | undefined;
+				const turnRole = typeof turnMessage?.role === "string" ? turnMessage.role : "";
+				if (turnRole === "assistant") {
+					const last = this.messages[this.messages.length - 1];
+					if (last?.role === "assistant") {
+						const turnError = this.extractAssistantMessageError(turnMessage);
+						if (turnError) {
+							last.errorText = turnError;
+						}
+					}
+					this.render();
+				}
+				break;
+			}
+
 			case "message_end": {
 				const last = this.messages[this.messages.length - 1];
 				if (last?.role === "assistant") {
 					last.isStreaming = false;
+					const completed = event.message as Record<string, unknown> | undefined;
+					const completedError = this.extractAssistantMessageError(completed);
+					if (completedError) {
+						last.errorText = completedError;
+					}
 				}
 				this.scheduleStreamingUiReconcile(350);
 				this.render();
@@ -3041,7 +3085,16 @@ export class ChatView {
 	}
 
 	private renderAssistantMessage(msg: UiMessage): TemplateResult {
-		const canCopy = Boolean(msg.text.trim().length > 0 || msg.toolCalls.length > 0 || (msg.thinking ?? "").trim().length > 0);
+		const canCopy = Boolean(
+			msg.text.trim().length > 0 ||
+				msg.toolCalls.length > 0 ||
+				(msg.thinking ?? "").trim().length > 0 ||
+				(msg.errorText ?? "").trim().length > 0,
+		);
+		const errorLine = (msg.errorText ?? "").trim();
+		const formattedErrorLine = errorLine
+			? (/^error\b[:\s-]*/i.test(errorLine) ? errorLine : `Error: ${errorLine}`)
+			: "";
 		return html`
 			<div class="chat-row assistant-row" data-message-id=${msg.id}>
 				<div class="message-shell assistant-message-shell">
@@ -3054,6 +3107,7 @@ export class ChatView {
 								</div>
 							`
 							: nothing}
+						${formattedErrorLine ? html`<div class="assistant-error-line">${formattedErrorLine}</div>` : nothing}
 						${msg.toolCalls.map((tc) => this.renderToolCall(tc))}
 					</div>
 					<div class="message-actions">

@@ -3884,6 +3884,18 @@ body.sidebar-resizing {
 	display: block;
 }
 
+.assistant-error-line {
+	margin-top: 8px;
+	font-size: 13px;
+	line-height: 1.5;
+	color: color-mix(in srgb, var(--danger) 82%, var(--text));
+	white-space: pre-wrap;
+}
+
+:root.light .assistant-error-line {
+	color: color-mix(in srgb, var(--danger) 88%, #7f1d1d);
+}
+
 .working-row {
 	margin-top: 10px;
 	margin-bottom: 2px;
