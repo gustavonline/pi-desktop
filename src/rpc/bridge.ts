@@ -154,6 +154,60 @@ function sanitizeRpcLine(line: string): string {
 	return cleaned;
 }
 
+const ACTIONABLE_RUNTIME_ERROR_HINTS = [
+	"usage limit",
+	"rate limit",
+	"quota",
+	"insufficient_quota",
+	"too many requests",
+	"provider unavailable",
+	"service unavailable",
+	"model overloaded",
+	"invalid api key",
+	"authentication",
+	"unauthorized",
+	"forbidden",
+	"billing",
+	"credits",
+	"timed out",
+	"timeout",
+	"connection reset",
+	"context window",
+	"max tokens",
+	"compaction",
+] as const;
+
+function sanitizeRuntimeTextLine(line: string): string {
+	return line
+		.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
+		.replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g, "")
+		.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "")
+		.trim();
+}
+
+function extractRuntimeErrorFromTextLine(line: string): string | null {
+	const cleaned = sanitizeRuntimeTextLine(line);
+	if (!cleaned) return null;
+
+	const normalized = cleaned.toLowerCase();
+	if (/^error\b[:\s-]*/i.test(cleaned)) {
+		const withoutPrefix = cleaned.replace(/^error\b[:\s-]*/i, "").trim();
+		return withoutPrefix || cleaned;
+	}
+
+	const hasErrorWord = /\berror\b/i.test(cleaned);
+	const hasFailureWord = /\b(failed|failure|cannot|can't|denied|unavailable)\b/i.test(cleaned);
+	const hasActionableHint = ACTIONABLE_RUNTIME_ERROR_HINTS.some((hint) => normalized.includes(hint));
+
+	if (hasErrorWord && hasActionableHint) return cleaned;
+	if (hasFailureWord && hasActionableHint) return cleaned;
+	if (normalized.includes("429") && (normalized.includes("requests") || normalized.includes("rate limit"))) {
+		return cleaned;
+	}
+
+	return null;
+}
+
 export class RpcBridge {
 	private readonly instanceId: string;
 	private requestId = 0;
@@ -536,6 +590,15 @@ export class RpcBridge {
 					const line = typeof payload.line === "string" ? payload.line : "";
 					if (!line) return;
 					console.debug(`[pi stderr:${this.instanceId}]`, line);
+					const runtimeError = extractRuntimeErrorFromTextLine(line);
+					if (!runtimeError) return;
+					traceBridge(`stderr-error instance=${this.instanceId} message=${runtimeError.slice(0, 180)}`);
+					this.emitToListeners({
+						type: "error",
+						source: "stderr",
+						errorMessage: runtimeError,
+						rawLine: sanitizeRuntimeTextLine(line),
+					});
 				});
 
 				this.unlistenEvent = unlistenEventLocal;
@@ -566,6 +629,16 @@ export class RpcBridge {
 			this.parseFailureCount += 1;
 			if (this.parseFailureCount <= 5 || sanitized.includes("extension_ui_request") || sanitized.includes("notify")) {
 				traceBridge(`parse-failed instance=${this.instanceId} sample=${sanitized.slice(0, 180)}`);
+			}
+			const runtimeError = extractRuntimeErrorFromTextLine(line);
+			if (runtimeError) {
+				traceBridge(`stdout-text-error instance=${this.instanceId} message=${runtimeError.slice(0, 180)}`);
+				this.emitToListeners({
+					type: "error",
+					source: "stdout_text",
+					errorMessage: runtimeError,
+					rawLine: sanitizeRuntimeTextLine(line),
+				});
 			}
 			return;
 		}
