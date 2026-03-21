@@ -76,9 +76,9 @@ const LEGACY_STORAGE_KEY = "pi-desktop.projects.v1";
 const WORKSPACE_STORAGE_KEY_PREFIX = "pi-desktop.workspace-projects.v1";
 const SIDEBAR_COLLAPSED_KEY = "pi-desktop.sidebar.collapsed.v1";
 const WORKSPACE_DRAG_THRESHOLD_PX = 5;
-const WORKSPACE_SWIPE_THRESHOLD_PX = 68;
-const WORKSPACE_SWIPE_IDLE_MS = 240;
-const WORKSPACE_SWIPE_COOLDOWN_MS = 220;
+const WORKSPACE_SWIPE_THRESHOLD_PX = 34;
+const WORKSPACE_SWIPE_IDLE_MS = 420;
+const WORKSPACE_SWIPE_COOLDOWN_MS = 180;
 
 function uid(prefix = "id"): string {
 	return `${prefix}_${Math.random().toString(36).slice(2, 8)}_${Date.now().toString(36)}`;
@@ -2585,7 +2585,6 @@ export class Sidebar {
 		if (this.workspaceCreateDialogOpen || this.contextMenu || this.emojiPickerWorkspaceId || this.projectEmojiPickerProjectId) {
 			return false;
 		}
-		if (target.closest(".sidebar-panel-body")) return false;
 		if (target.closest("button, input, textarea, select, a, [contenteditable='true']")) return false;
 		if (target.closest(".sidebar-context-menu, .workspace-emoji-picker, .sidebar-space-dialog, .sidebar-mode-filter-menu")) return false;
 		return Boolean(target.closest(".sidebar-single"));
