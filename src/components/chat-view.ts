@@ -1996,6 +1996,7 @@ export class ChatView {
 
 			case "auto_compaction_start": {
 				this.compactionStatus = "Compacting context…";
+				this.appendRuntimeSystemLine("Compacting context…");
 				this.render();
 				break;
 			}
@@ -2004,9 +2005,15 @@ export class ChatView {
 				this.compactionStatus = "";
 				const aborted = Boolean(event.aborted);
 				const errorMessage = this.extractRuntimeErrorMessage(event);
-				if (aborted) this.pushNotice("Auto-compaction aborted", "info");
-				else if (errorMessage) this.pushRuntimeNotice(`Auto-compaction failed: ${truncate(errorMessage, 180)}`, "error", 2600);
-				else this.pushNotice("Auto-compaction complete", "success");
+				if (aborted) {
+					this.appendRuntimeSystemLine("Auto-compaction aborted");
+					this.pushNotice("Auto-compaction aborted", "info");
+				} else if (errorMessage) {
+					this.pushRuntimeNotice(`Auto-compaction failed: ${truncate(errorMessage, 180)}`, "error", 2600);
+				} else {
+					this.appendRuntimeSystemLine("Auto-compaction complete");
+					this.pushNotice("Auto-compaction complete", "success");
+				}
 				this.render();
 				break;
 			}
@@ -2015,17 +2022,25 @@ export class ChatView {
 				const attempt = typeof event.attempt === "number" ? event.attempt : 1;
 				const maxAttempts = typeof event.maxAttempts === "number" ? event.maxAttempts : 1;
 				const delayMs = typeof event.delayMs === "number" ? event.delayMs : 0;
+				const errorMessage = this.extractRuntimeErrorMessage(event);
 				this.retryStatus = `Retry ${attempt}/${maxAttempts} in ${(delayMs / 1000).toFixed(1)}s`;
+				const retryLine = errorMessage
+					? `Retry ${attempt}/${maxAttempts} in ${(delayMs / 1000).toFixed(1)}s · ${truncate(errorMessage, 150)}`
+					: `Retry ${attempt}/${maxAttempts} in ${(delayMs / 1000).toFixed(1)}s`;
+				this.appendRuntimeSystemLine(retryLine);
 				this.render();
 				break;
 			}
 
 			case "auto_retry_end": {
 				const success = Boolean(event.success);
+				const attempt = typeof event.attempt === "number" ? event.attempt : null;
 				this.retryStatus = "";
 				if (!success) {
 					const finalError = this.extractRuntimeErrorMessage(event) || "Unknown retry failure";
 					this.pushRuntimeNotice(`Retry failed: ${truncate(finalError, 180)}`, "error", 2600);
+				} else {
+					this.appendRuntimeSystemLine(attempt ? `Retry succeeded on attempt ${attempt}` : "Retry succeeded");
 				}
 				this.render();
 				break;
