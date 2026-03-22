@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" fill="none">
+  <rect width="1024" height="1024" rx="232" fill="#000000"/>
+
+  <!-- Official Pi logo geometry from https://pi.dev/logo.svg (black/white only) -->
+  <g fill="#FFFFFF" transform="scale(1.2)">
+    <path fill-rule="evenodd" d="M165.29 165.29 H517.36 V400 H400 V517.36 H282.65 V634.72 H165.29 Z M282.65 282.65 V400 H400 V282.65 Z"/>
+    <path d="M517.36 400 H634.72 V634.72 H517.36 Z"/>
+  </g>
+
+  <!-- Pixel D badge (Desktop), larger with uniform pixel blocks -->
+  <g fill="#FFFFFF" shape-rendering="crispEdges">
+    <rect x="780" y="740" width="28" height="28"/>
+    <rect x="814" y="740" width="28" height="28"/>
+    <rect x="848" y="740" width="28" height="28"/>
+
+    <rect x="780" y="774" width="28" height="28"/>
+    <rect x="882" y="774" width="28" height="28"/>
+
+    <rect x="780" y="808" width="28" height="28"/>
+    <rect x="882" y="808" width="28" height="28"/>
+
+    <rect x="780" y="842" width="28" height="28"/>
+    <rect x="882" y="842" width="28" height="28"/>
+
+    <rect x="780" y="876" width="28" height="28"/>
+    <rect x="882" y="876" width="28" height="28"/>
+
+    <rect x="780" y="910" width="28" height="28"/>
+    <rect x="882" y="910" width="28" height="28"/>
+
+    <rect x="780" y="944" width="28" height="28"/>
+    <rect x="814" y="944" width="28" height="28"/>
+    <rect x="848" y="944" width="28" height="28"/>
+  </g>
+</svg>

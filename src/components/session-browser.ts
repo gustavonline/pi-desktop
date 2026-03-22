@@ -72,6 +72,10 @@ export class SessionBrowser {
 		this.onClose?.();
 	}
 
+	isVisible(): boolean {
+		return this.isOpen;
+	}
+
 	setOnClose(callback: () => void): void {
 		this.onClose = callback;
 	}

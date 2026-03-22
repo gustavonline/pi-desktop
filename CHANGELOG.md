@@ -6,6 +6,26 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-03-22
+
+### Added
+- Packages now expose a per-installed-package **settings gear** that opens a modal configuration overlay.
+- Package settings actions use UX-native **Save/Apply** controls (instead of raw slash-command labels), while still executing via runtime command flow.
+- Added `docs/PACKAGE_CAPABILITY_TEMPLATE.md` playbook for extension/package UX implementation, and added the same checklist to `.github/pull_request_template.md`.
+- Added icon workflow documentation at `docs/ICONS.md` (source of truth + regeneration + validation checklist).
+- Session context menu now includes **Mark unread** to re-flag a previously read session tab.
+
+### Fixed
+- Provider/runtime callback errors now surface inline in the chat timeline (CLI parity), including assistant `stopReason: "error"` + `errorMessage` mapping and stderr/stdout fallback parsing.
+- Windows missing-CLI onboarding now catches more spawn/ENOENT/CreateProcess patterns and checks common install locations (AppData npm, Program Files nodejs, NVM vars, Scoop shims).
+- Session/workspace switching flow includes preload/cache and stale-load guards to reduce wrong-content flashes during rapid switching.
+
+### Changed
+- Package-specific config was removed from global Settings and moved into the Packages capability surface.
+- Package configuration UX is now command/capability-driven and package-agnostic, with no package-name hardcoding in desktop core.
+- Switched icon source to official Pi geometry from `https://pi.dev/logo.svg` with a larger uniform pixel-`D` desktop badge and regenerated all platform icon assets in `src-tauri/icons/**`.
+- Native traffic-light controls now reveal `× / − / +` glyphs only on hover/focus to keep default titlebar noise low while preserving affordance.
+
 ## [0.1.6] - 2026-03-20
 
 ### Added

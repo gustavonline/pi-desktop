@@ -67,6 +67,10 @@ export class CommandPalette {
 		this.onClose?.();
 	}
 
+	isVisible(): boolean {
+		return this.isOpen;
+	}
+
 	private async loadCommands(): Promise<void> {
 		let rpcCommands: RpcCommand[] = [];
 		try {

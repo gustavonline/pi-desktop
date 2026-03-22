@@ -76,6 +76,9 @@ const LEGACY_STORAGE_KEY = "pi-desktop.projects.v1";
 const WORKSPACE_STORAGE_KEY_PREFIX = "pi-desktop.workspace-projects.v1";
 const SIDEBAR_COLLAPSED_KEY = "pi-desktop.sidebar.collapsed.v1";
 const WORKSPACE_DRAG_THRESHOLD_PX = 5;
+const WORKSPACE_SWIPE_THRESHOLD_PX = 34;
+const WORKSPACE_SWIPE_IDLE_MS = 420;
+const WORKSPACE_SWIPE_COOLDOWN_MS = 180;
 
 function uid(prefix = "id"): string {
 	return `${prefix}_${Math.random().toString(36).slice(2, 8)}_${Date.now().toString(36)}`;
@@ -179,6 +182,12 @@ export class Sidebar {
 	private workspaces: SidebarWorkspaceItem[] = [];
 	private activeWorkspaceId: string | null = null;
 	private workspaceMenuOpen = false;
+	private workspaceRenameDraft: { workspaceId: string; value: string } | null = null;
+	private workspaceCreateDialogOpen = false;
+	private workspaceCreateName = "";
+	private workspaceCreateEmoji = "✨";
+	private workspaceCreateEmojiPickerOpen = false;
+	private workspaceCreateEmojiQuery = "";
 	private emojiPickerWorkspaceId: string | null = null;
 	private emojiPickerX = 0;
 	private emojiPickerY = 0;
@@ -187,8 +196,14 @@ export class Sidebar {
 	private draggingWorkspaceId: string | null = null;
 	private workspaceDragOverId: string | null = null;
 	private workspaceDragPointerId: number | null = null;
+	private workspaceDragStartX = 0;
 	private workspaceDragStartY = 0;
 	private workspaceDragSuppressClickUntil = 0;
+	private workspaceSwipeAccumulatorX = 0;
+	private workspaceSwipeLastInputAt = 0;
+	private workspaceSwipeLastSwitchAt = 0;
+	private workspaceSwipeGestureConsumed = false;
+	private workspaceHydrationToken = 0;
 	private projectEmojiPickerProjectId: string | null = null;
 	private projectEmojiPickerX = 0;
 	private projectEmojiPickerY = 0;
@@ -230,10 +245,9 @@ export class Sidebar {
 	private onOpenSettings: (() => void) | null = null;
 	private onTogglePackages: (() => void) | null = null;
 	private onWorkspaceSelect: ((workspaceId: string) => void) | null = null;
-	private onWorkspaceCreate: (() => void) | null = null;
+	private onWorkspaceCreate: ((workspace?: { title?: string; emoji?: string | null }) => void) | null = null;
 	private onWorkspaceEmoji: ((workspaceId: string, emoji: string | null) => void) | null = null;
 	private onWorkspaceReorder: ((orderedIds: string[]) => void) | null = null;
-	private onWorkspacePin: ((workspaceId: string, pinned: boolean) => void) | null = null;
 	private onWorkspaceRename: ((workspaceId: string, nextTitle: string) => void) | null = null;
 	private onWorkspaceDelete: ((workspaceId: string) => void) | null = null;
 	private onProjectSelect: ((project: { id: string; name: string; path: string } | null) => void) | null = null;
@@ -241,6 +255,7 @@ export class Sidebar {
 	private onSessionRename: ((projectId: string, sessionPath: string, currentName: string, nextName: string) => void) | null = null;
 	private onSessionDelete: ((projectId: string, sessionPath: string) => void) | null = null;
 	private onSessionFork: ((projectId: string, sessionPath: string, sessionName?: string) => void) | null = null;
+	private onSessionMarkUnread: ((projectId: string, sessionPath: string, sessionName?: string) => void) | null = null;
 	private onNewSessionInProject: ((project: { id: string; name: string; path: string }) => void) | null = null;
 	private onNewFileInProject: ((project: { id: string; name: string; path: string }) => void) | null = null;
 	private onFileOpen: ((projectId: string, filePath: string) => void) | null = null;
@@ -253,7 +268,8 @@ export class Sidebar {
 		this.loadSidebarState();
 		this.loadPersistedProjects();
 		this.render();
-		void this.hydrateProjects();
+		this.workspaceHydrationToken += 1;
+		void this.hydrateProjects(this.workspaceHydrationToken);
 	}
 
 	private loadSidebarState(): void {
@@ -276,6 +292,9 @@ export class Sidebar {
 		const nextKey = workspaceStorageKey(workspaceId);
 		if (this.storageKey === nextKey) return;
 
+		this.workspaceHydrationToken += 1;
+		const hydrationToken = this.workspaceHydrationToken;
+
 		this.storageKey = nextKey;
 		this.query = "";
 		this.projects = [];
@@ -287,11 +306,20 @@ export class Sidebar {
 		this.fileTrees.clear();
 		this.fileTreeErrors.clear();
 		this.loadingFileTreeForProject.clear();
+		this.sessionLoadsInFlight.clear();
+		this.sessionReloadQueued.clear();
 		this.openProjectMenuId = null;
 		this.modeFilterMenuOpen = false;
 		this.workspaceMenuOpen = false;
+		this.workspaceRenameDraft = null;
+		this.workspaceCreateDialogOpen = false;
+		this.workspaceCreateName = "";
+		this.workspaceCreateEmoji = "✨";
+		this.workspaceCreateEmojiPickerOpen = false;
+		this.workspaceCreateEmojiQuery = "";
 		this.cancelWorkspacePointerDrag(false);
 		this.cancelProjectPointerDrag(false);
+		this.closeWorkspaceEmojiPicker(false);
 		this.closeProjectEmojiPicker(false);
 		this.transientSessionDraft = null;
 		this.suppressedSessionPaths.clear();
@@ -300,7 +328,7 @@ export class Sidebar {
 
 		this.loadPersistedProjects();
 		this.render();
-		await this.hydrateProjects();
+		void this.hydrateProjects(hydrationToken);
 	}
 
 	toggleCollapsed(): void {
@@ -331,7 +359,7 @@ export class Sidebar {
 		this.onWorkspaceSelect = cb;
 	}
 
-	setOnWorkspaceCreate(cb: () => void): void {
+	setOnWorkspaceCreate(cb: (workspace?: { title?: string; emoji?: string | null }) => void): void {
 		this.onWorkspaceCreate = cb;
 	}
 
@@ -341,10 +369,6 @@ export class Sidebar {
 
 	setOnWorkspaceReorder(cb: (orderedIds: string[]) => void): void {
 		this.onWorkspaceReorder = cb;
-	}
-
-	setOnWorkspacePin(cb: (workspaceId: string, pinned: boolean) => void): void {
-		this.onWorkspacePin = cb;
 	}
 
 	setOnWorkspaceRename(cb: (workspaceId: string, nextTitle: string) => void): void {
@@ -399,7 +423,13 @@ export class Sidebar {
 			this.emojiPickerWorkspaceId = null;
 			this.emojiSearchQuery = "";
 		}
+		if (this.workspaceRenameDraft && !next.some((workspace) => workspace.id === this.workspaceRenameDraft?.workspaceId)) {
+			this.workspaceRenameDraft = null;
+		}
 		this.render();
+		if (this.workspaceRenameDraft && this.workspaceRenameDraft.workspaceId === this.activeWorkspaceId) {
+			this.focusWorkspaceRenameInput(this.workspaceRenameDraft.workspaceId);
+		}
 	}
 
 	setPackagesOpen(open: boolean): void {
@@ -442,6 +472,10 @@ export class Sidebar {
 
 	setOnSessionFork(cb: (projectId: string, sessionPath: string, sessionName?: string) => void): void {
 		this.onSessionFork = cb;
+	}
+
+	setOnSessionMarkUnread(cb: (projectId: string, sessionPath: string, sessionName?: string) => void): void {
+		this.onSessionMarkUnread = cb;
 	}
 
 	setOnNewSessionInProject(cb: (project: { id: string; name: string; path: string }) => void): void {
@@ -487,7 +521,7 @@ export class Sidebar {
 		e.preventDefault();
 		e.stopPropagation();
 		const menuWidth = 170;
-		const menuHeight = target.kind === "workspace" ? 116 : target.kind === "session" ? 132 : 92;
+		const menuHeight = target.kind === "workspace" ? 92 : target.kind === "session" ? 164 : 92;
 		const padding = 8;
 		const x = Math.max(padding, Math.min(e.clientX, window.innerWidth - menuWidth - padding));
 		const y = Math.max(padding, Math.min(e.clientY, window.innerHeight - menuHeight - padding));
@@ -1037,7 +1071,7 @@ export class Sidebar {
 		this.openContextMenu(e, { kind: "workspace", workspaceId });
 	}
 
-	private runSessionContextAction(action: "rename" | "delete" | "fork"): void {
+	private runSessionContextAction(action: "rename" | "delete" | "fork" | "markUnread"): void {
 		const target = this.contextMenu?.target;
 		if (!target || target.kind !== "session") return;
 		this.closeContextMenu(false);
@@ -1052,6 +1086,10 @@ export class Sidebar {
 		}
 		if (action === "fork") {
 			this.onSessionFork?.(found.project.id, found.session.path, found.session.name);
+			return;
+		}
+		if (action === "markUnread") {
+			this.onSessionMarkUnread?.(found.project.id, found.session.path, found.session.name);
 			return;
 		}
 		void this.deleteSession(found.project, found.session);
@@ -1073,7 +1111,7 @@ export class Sidebar {
 		void this.deleteFileNode(target.projectId, node);
 	}
 
-	private runWorkspaceContextAction(action: "pin" | "rename" | "delete"): void {
+	private runWorkspaceContextAction(action: "rename" | "delete"): void {
 		const target = this.contextMenu?.target;
 		if (!target || target.kind !== "workspace") return;
 		this.closeContextMenu(false);
@@ -1083,18 +1121,8 @@ export class Sidebar {
 			return;
 		}
 
-		if (action === "pin") {
-			this.onWorkspacePin?.(workspace.id, !Boolean(workspace.pinned));
-			return;
-		}
-
 		if (action === "rename") {
-			const nextTitle = window.prompt("Rename workspace", workspace.title)?.trim();
-			if (!nextTitle || nextTitle === workspace.title) {
-				this.render();
-				return;
-			}
-			this.onWorkspaceRename?.(workspace.id, nextTitle);
+			this.startWorkspaceRename(workspace.id);
 			return;
 		}
 
@@ -1116,6 +1144,7 @@ export class Sidebar {
 			menuContent = html`
 				<div class="sidebar-context-menu" style=${`left:${menu.x}px;top:${menu.y}px`} @click=${(e: Event) => e.stopPropagation()}>
 					<button @click=${() => this.runSessionContextAction("fork")}>Fork from message…</button>
+					<button @click=${() => this.runSessionContextAction("markUnread")}>Mark unread</button>
 					<div class="sidebar-context-menu-divider"></div>
 					<button @click=${() => this.runSessionContextAction("rename")}>Rename session</button>
 					<button class="danger" @click=${() => this.runSessionContextAction("delete")}>Delete session</button>
@@ -1129,14 +1158,9 @@ export class Sidebar {
 				</div>
 			`;
 		} else {
-			const workspace = this.workspaces.find((entry) => entry.id === target.workspaceId) ?? null;
 			const canDeleteWorkspace = this.workspaces.length > 1;
 			menuContent = html`
 				<div class="sidebar-context-menu" style=${`left:${menu.x}px;top:${menu.y}px`} @click=${(e: Event) => e.stopPropagation()}>
-					<button @click=${() => this.runWorkspaceContextAction("pin")}>
-						${workspace?.pinned ? "Unpin workspace" : "Pin workspace"}
-					</button>
-					<div class="sidebar-context-menu-divider"></div>
 					<button @click=${() => this.runWorkspaceContextAction("rename")}>Rename workspace</button>
 					<button
 						class="danger"
@@ -1285,12 +1309,18 @@ export class Sidebar {
 		`;
 	}
 
-	private async hydrateProjects(): Promise<void> {
-		await Promise.all(this.projects.map((project) => this.refreshProjectPathStatus(project.id)));
+	private isWorkspaceHydrationCurrent(hydrationToken?: number): boolean {
+		return typeof hydrationToken !== "number" || hydrationToken === this.workspaceHydrationToken;
+	}
+
+	private async hydrateProjects(hydrationToken = this.workspaceHydrationToken): Promise<void> {
+		if (!this.isWorkspaceHydrationCurrent(hydrationToken)) return;
+		await Promise.all(this.projects.map((project) => this.refreshProjectPathStatus(project.id, hydrationToken)));
+		if (!this.isWorkspaceHydrationCurrent(hydrationToken)) return;
 		if (this.activeProjectId) {
-			void this.loadSessionsForProject(this.activeProjectId);
+			void this.loadSessionsForProject(this.activeProjectId, { hydrationToken });
 		}
-		if (this.mode === "files") {
+		if (this.mode === "files" && this.isWorkspaceHydrationCurrent(hydrationToken)) {
 			void this.ensureFileTreeForActiveProject();
 		}
 	}
@@ -1334,7 +1364,8 @@ export class Sidebar {
 		this.render();
 	}
 
-	private async refreshProjectPathStatus(projectId: string): Promise<void> {
+	private async refreshProjectPathStatus(projectId: string, hydrationToken?: number): Promise<void> {
+		if (!this.isWorkspaceHydrationCurrent(hydrationToken)) return;
 		const project = this.projects.find((p) => p.id === projectId);
 		if (!project) return;
 		project.checkingPath = true;
@@ -1342,11 +1373,21 @@ export class Sidebar {
 
 		try {
 			const { exists } = await import("@tauri-apps/plugin-fs");
-			project.pathExists = await exists(project.path);
+			const pathExists = await exists(project.path);
+			if (!this.isWorkspaceHydrationCurrent(hydrationToken) || !this.projects.includes(project)) {
+				return;
+			}
+			project.pathExists = pathExists;
 		} catch (err) {
+			if (!this.isWorkspaceHydrationCurrent(hydrationToken) || !this.projects.includes(project)) {
+				return;
+			}
 			console.warn("Failed to verify project path:", err);
 			project.pathExists = null;
 		} finally {
+			if (!this.isWorkspaceHydrationCurrent(hydrationToken) || !this.projects.includes(project)) {
+				return;
+			}
 			project.checkingPath = false;
 			this.render();
 		}
@@ -1394,7 +1435,10 @@ export class Sidebar {
 		}
 	}
 
-	private async loadSessionsForProject(projectId: string, options?: { silent?: boolean }): Promise<void> {
+	private async loadSessionsForProject(projectId: string, options?: { silent?: boolean; hydrationToken?: number }): Promise<void> {
+		const hydrationToken = options?.hydrationToken;
+		if (!this.isWorkspaceHydrationCurrent(hydrationToken)) return;
+
 		const existingLoad = this.sessionLoadsInFlight.get(projectId);
 		if (existingLoad) {
 			this.sessionReloadQueued.add(projectId);
@@ -1402,8 +1446,10 @@ export class Sidebar {
 		}
 
 		const run = (async () => {
+			if (!this.isWorkspaceHydrationCurrent(hydrationToken)) return;
 			const project = this.projects.find((p) => p.id === projectId);
 			if (!project) return;
+			const isStale = () => !this.isWorkspaceHydrationCurrent(hydrationToken) || !this.projects.includes(project);
 			const silent = options?.silent === true;
 			const now = Date.now();
 			if (silent && project.sessionsLoaded && now - project.lastSessionsLoadedAt < 2200) {
@@ -1412,7 +1458,9 @@ export class Sidebar {
 			const loadingBefore = project.loadingSessions;
 			if (!silent) {
 				project.loadingSessions = true;
-				this.render();
+				if (!isStale()) {
+					this.render();
+				}
 			}
 
 			const hadLoadedSessions = project.sessionsLoaded;
@@ -1428,6 +1476,7 @@ export class Sidebar {
 					tokens: number;
 					cost: number;
 				}>>("list_sessions");
+				if (isStale()) return;
 
 				const projectPath = normalizePath(project.path);
 				const byProject = sessions.filter((s) => {
@@ -1465,10 +1514,12 @@ export class Sidebar {
 					scannedByPath.set(normalizePath(entry.path), entry);
 				}
 
+				if (isStale()) return;
 				project.sessions = [...scannedByPath.values()];
 				project.sessionsLoaded = true;
 				project.lastSessionsLoadedAt = Date.now();
 			} catch (err) {
+				if (isStale()) return;
 				console.error("Failed to load sessions:", err);
 				if (!silent) {
 					project.sessions = [];
@@ -1478,6 +1529,7 @@ export class Sidebar {
 					project.lastSessionsLoadedAt = 0;
 				}
 			} finally {
+				if (isStale()) return;
 				project.loadingSessions = silent ? loadingBefore : false;
 				this.render();
 			}
@@ -1488,11 +1540,14 @@ export class Sidebar {
 			await run;
 		} finally {
 			this.sessionLoadsInFlight.delete(projectId);
-			if (this.sessionReloadQueued.has(projectId)) {
+			if (this.sessionReloadQueued.has(projectId) && this.isWorkspaceHydrationCurrent(hydrationToken)) {
 				this.sessionReloadQueued.delete(projectId);
 				queueMicrotask(() => {
-					void this.loadSessionsForProject(projectId, { silent: true });
+					if (!this.isWorkspaceHydrationCurrent(hydrationToken)) return;
+					void this.loadSessionsForProject(projectId, { silent: true, hydrationToken });
 				});
+			} else {
+				this.sessionReloadQueued.delete(projectId);
 			}
 		}
 	}
@@ -2239,6 +2294,101 @@ export class Sidebar {
 		return this.workspaces[0] ?? null;
 	}
 
+	private focusWorkspaceRenameInput(workspaceId: string): void {
+		requestAnimationFrame(() => {
+			const input = this.container.querySelector<HTMLInputElement>(`.sidebar-workspace-title-input[data-workspace-id="${workspaceId}"]`);
+			input?.focus();
+			input?.select();
+		});
+	}
+
+	private startWorkspaceRename(workspaceId: string): void {
+		const workspace = this.workspaces.find((entry) => entry.id === workspaceId) ?? null;
+		if (!workspace) return;
+		this.workspaceCreateDialogOpen = false;
+		this.workspaceCreateEmojiPickerOpen = false;
+		this.workspaceCreateEmojiQuery = "";
+		this.workspaceRenameDraft = { workspaceId, value: workspace.title };
+		if (this.activeWorkspaceId !== workspaceId) {
+			this.onWorkspaceSelect?.(workspaceId);
+		}
+		this.workspaceMenuOpen = false;
+		this.render();
+		this.focusWorkspaceRenameInput(workspaceId);
+	}
+
+	private commitWorkspaceRename(): void {
+		const draft = this.workspaceRenameDraft;
+		if (!draft) return;
+		const workspace = this.workspaces.find((entry) => entry.id === draft.workspaceId) ?? null;
+		const nextTitle = draft.value.trim();
+		this.workspaceRenameDraft = null;
+		if (workspace && nextTitle && nextTitle !== workspace.title) {
+			this.onWorkspaceRename?.(workspace.id, nextTitle);
+			return;
+		}
+		this.render();
+	}
+
+	private cancelWorkspaceRename(): void {
+		if (!this.workspaceRenameDraft) return;
+		this.workspaceRenameDraft = null;
+		this.render();
+	}
+
+	private nextWorkspaceDraftName(): string {
+		const used = new Set<number>();
+		for (const workspace of this.workspaces) {
+			const match = /^Workspace\s+(\d+)$/i.exec(workspace.title.trim());
+			if (match) {
+				used.add(Number(match[1]));
+			}
+		}
+		let idx = 1;
+		while (used.has(idx)) idx += 1;
+		return `Workspace ${idx}`;
+	}
+
+	private openWorkspaceCreateDialog(): void {
+		this.workspaceRenameDraft = null;
+		this.workspaceCreateDialogOpen = true;
+		this.workspaceCreateName = this.nextWorkspaceDraftName();
+		this.workspaceCreateEmoji = "✨";
+		this.workspaceCreateEmojiPickerOpen = false;
+		this.workspaceCreateEmojiQuery = "";
+		this.workspaceMenuOpen = false;
+		this.closeWorkspaceEmojiPicker(false);
+		this.closeContextMenu(false);
+		this.render();
+		requestAnimationFrame(() => {
+			const input = this.container.querySelector<HTMLInputElement>(".sidebar-space-name-input");
+			input?.focus();
+			input?.select();
+		});
+	}
+
+	private closeWorkspaceCreateDialog(shouldRender = true): void {
+		if (!this.workspaceCreateDialogOpen) return;
+		this.workspaceCreateDialogOpen = false;
+		this.workspaceCreateEmojiPickerOpen = false;
+		this.workspaceCreateEmojiQuery = "";
+		if (shouldRender) this.render();
+	}
+
+	private filteredWorkspaceCreateEmojis(): typeof EMOJI_CATALOG {
+		const query = this.workspaceCreateEmojiQuery.trim().toLowerCase();
+		if (!query) return EMOJI_CATALOG;
+		return EMOJI_CATALOG.filter((entry) => entry.search.includes(query));
+	}
+
+	private createWorkspaceFromDialog(): void {
+		const title = this.workspaceCreateName.trim() || this.nextWorkspaceDraftName();
+		const emoji = this.workspaceCreateEmoji.trim() || "✨";
+		this.closeWorkspaceCreateDialog(false);
+		this.onWorkspaceCreate?.({ title, emoji });
+		this.render();
+	}
+
 	private toggleWorkspaceMenu(nextOpen?: boolean): void {
 		const open = typeof nextOpen === "boolean" ? nextOpen : !this.workspaceMenuOpen;
 		if (this.workspaceMenuOpen === open) return;
@@ -2297,14 +2447,24 @@ export class Sidebar {
 		if (event.pointerId !== this.workspaceDragPointerId) return;
 		if (!this.pendingWorkspaceDragId) return;
 
-		event.preventDefault();
-
+		let startedDrag = false;
 		if (!this.draggingWorkspaceId) {
-			if (Math.abs(event.clientY - this.workspaceDragStartY) < WORKSPACE_DRAG_THRESHOLD_PX) {
+			const distance = Math.hypot(event.clientX - this.workspaceDragStartX, event.clientY - this.workspaceDragStartY);
+			if (distance < WORKSPACE_DRAG_THRESHOLD_PX) {
 				return;
 			}
 			this.draggingWorkspaceId = this.pendingWorkspaceDragId;
 			this.workspaceDragOverId = this.pendingWorkspaceDragId;
+			startedDrag = true;
+		}
+
+		event.preventDefault();
+		if (!this.draggingWorkspaceId) return;
+		if (this.workspaceCreateDialogOpen) {
+			this.workspaceCreateDialogOpen = false;
+			this.workspaceCreateEmojiPickerOpen = false;
+		}
+		if (startedDrag) {
 			this.render();
 		}
 
@@ -2324,10 +2484,9 @@ export class Sidebar {
 
 	private beginWorkspacePointerDrag(event: PointerEvent, workspaceId: string): void {
 		if (event.button !== 0) return;
-		event.preventDefault();
-		event.stopPropagation();
 		this.pendingWorkspaceDragId = workspaceId;
 		this.workspaceDragPointerId = event.pointerId;
+		this.workspaceDragStartX = event.clientX;
 		this.workspaceDragStartY = event.clientY;
 		this.workspaceDragOverId = workspaceId;
 		window.addEventListener("pointermove", this.onWorkspaceDragPointerMove, true);
@@ -2338,46 +2497,45 @@ export class Sidebar {
 	private isCompatibleWorkspaceDropTarget(draggedWorkspaceId: string, targetWorkspaceId: string): boolean {
 		const dragged = this.workspaces.find((workspace) => workspace.id === draggedWorkspaceId) ?? null;
 		const target = this.workspaces.find((workspace) => workspace.id === targetWorkspaceId) ?? null;
-		if (!dragged || !target) return false;
-		return Boolean(dragged.pinned) === Boolean(target.pinned);
+		return Boolean(dragged && target);
 	}
 
 	private resolveWorkspaceIdFromPoint(clientX: number, clientY: number, draggedWorkspaceId: string): string | null {
 		const target = document.elementFromPoint(clientX, clientY) as HTMLElement | null;
-		const directRow = target?.closest<HTMLElement>(".sidebar-workspace-row[data-workspace-id]");
-		if (directRow?.dataset.workspaceId) {
-			return this.isCompatibleWorkspaceDropTarget(draggedWorkspaceId, directRow.dataset.workspaceId)
-				? directRow.dataset.workspaceId
+		const directPill = target?.closest<HTMLElement>(".sidebar-workspace-pill[data-workspace-id]");
+		if (directPill?.dataset.workspaceId) {
+			return this.isCompatibleWorkspaceDropTarget(draggedWorkspaceId, directPill.dataset.workspaceId)
+				? directPill.dataset.workspaceId
 				: null;
 		}
 
-		const list = this.container.querySelector<HTMLElement>(".sidebar-workspace-list");
+		const list = this.container.querySelector<HTMLElement>(".sidebar-workspace-dock-list");
 		if (!list) return null;
-		const rows = [...list.querySelectorAll<HTMLElement>(".sidebar-workspace-row[data-workspace-id]")];
-		if (rows.length === 0) return null;
-		const compatibleRows = rows.filter((row) => {
-			const workspaceId = row.dataset.workspaceId;
+		const pills = [...list.querySelectorAll<HTMLElement>(".sidebar-workspace-pill[data-workspace-id]")];
+		if (pills.length === 0) return null;
+		const compatiblePills = pills.filter((pill) => {
+			const workspaceId = pill.dataset.workspaceId;
 			if (!workspaceId) return false;
 			return this.isCompatibleWorkspaceDropTarget(draggedWorkspaceId, workspaceId);
 		});
-		if (compatibleRows.length === 0) return null;
+		if (compatiblePills.length === 0) return null;
 		const listRect = list.getBoundingClientRect();
-		if (clientY < listRect.top) {
-			return compatibleRows[0]?.dataset.workspaceId ?? null;
+		if (clientX < listRect.left) {
+			return compatiblePills[0]?.dataset.workspaceId ?? null;
 		}
-		if (clientY > listRect.bottom) {
-			return compatibleRows[compatibleRows.length - 1]?.dataset.workspaceId ?? null;
+		if (clientX > listRect.right) {
+			return compatiblePills[compatiblePills.length - 1]?.dataset.workspaceId ?? null;
 		}
 
 		let nearestWorkspaceId: string | null = null;
 		let nearestDistance = Number.POSITIVE_INFINITY;
-		for (const row of compatibleRows) {
-			const rowRect = row.getBoundingClientRect();
-			const center = rowRect.top + rowRect.height / 2;
-			const distance = Math.abs(clientY - center);
+		for (const pill of compatiblePills) {
+			const pillRect = pill.getBoundingClientRect();
+			const center = pillRect.left + pillRect.width / 2;
+			const distance = Math.abs(clientX - center);
 			if (distance < nearestDistance) {
 				nearestDistance = distance;
-				nearestWorkspaceId = row.dataset.workspaceId ?? null;
+				nearestWorkspaceId = pill.dataset.workspaceId ?? null;
 			}
 		}
 		return nearestWorkspaceId;
@@ -2428,6 +2586,7 @@ export class Sidebar {
 
 		this.pendingWorkspaceDragId = null;
 		this.workspaceDragPointerId = null;
+		this.workspaceDragStartX = 0;
 		this.workspaceDragStartY = 0;
 
 		if (commitReorder && draggedWorkspaceId && targetWorkspaceId && draggedWorkspaceId !== targetWorkspaceId) {
@@ -2452,6 +2611,7 @@ export class Sidebar {
 		window.removeEventListener("pointercancel", this.onWorkspaceDragPointerEnd, true);
 		this.pendingWorkspaceDragId = null;
 		this.workspaceDragPointerId = null;
+		this.workspaceDragStartX = 0;
 		this.workspaceDragStartY = 0;
 		this.draggingWorkspaceId = null;
 		this.workspaceDragOverId = null;
@@ -2465,6 +2625,86 @@ export class Sidebar {
 			return true;
 		}
 		return false;
+	}
+
+	private shouldHandleWorkspaceSwipe(target: HTMLElement | null): boolean {
+		if (!target) return false;
+		if (this.workspaceCreateDialogOpen || this.contextMenu || this.emojiPickerWorkspaceId || this.projectEmojiPickerProjectId) {
+			return false;
+		}
+		if (target.closest("button, input, textarea, select, a, [contenteditable='true']")) return false;
+		if (target.closest(".sidebar-context-menu, .workspace-emoji-picker, .sidebar-space-dialog, .sidebar-mode-filter-menu")) return false;
+		if (target.closest(".sidebar-window-row, .sidebar-topbar, .sidebar-mode-row, .sidebar-footer, .sidebar-workspace-dock")) return false;
+
+		const panelBody = target.closest(".sidebar-panel-body");
+		if (!panelBody) return false;
+		if (
+			target.closest(
+				".sidebar-project-list, .sidebar-chrono-list, .sidebar-files-tree, .sidebar-project-row, .sidebar-project-head, .sidebar-project-sessions, .sidebar-project-files, .sidebar-session-row, .sidebar-file-row, .sidebar-warning",
+			)
+		) {
+			return false;
+		}
+		return true;
+	}
+
+	private switchWorkspaceByOffset(offset: 1 | -1): void {
+		if (this.workspaces.length <= 1) return;
+		const activeIndex = this.workspaces.findIndex((workspace) => workspace.id === this.activeWorkspaceId);
+		if (activeIndex === -1) return;
+		const nextIndex = activeIndex + offset;
+		if (nextIndex < 0 || nextIndex >= this.workspaces.length) return;
+		const nextWorkspace = this.workspaces[nextIndex] ?? null;
+		if (!nextWorkspace || nextWorkspace.id === this.activeWorkspaceId) return;
+		this.onWorkspaceSelect?.(nextWorkspace.id);
+	}
+
+	private handleSidebarWheel(event: WheelEvent): void {
+		if (event.defaultPrevented) return;
+		if (this.workspaces.length <= 1) return;
+		if (this.pendingWorkspaceDragId || this.draggingWorkspaceId) return;
+
+		const now = Date.now();
+		if (now - this.workspaceSwipeLastInputAt > WORKSPACE_SWIPE_IDLE_MS) {
+			this.workspaceSwipeAccumulatorX = 0;
+			this.workspaceSwipeGestureConsumed = false;
+		}
+
+		if (!this.shouldHandleWorkspaceSwipe(event.target as HTMLElement | null)) {
+			this.workspaceSwipeAccumulatorX = 0;
+			return;
+		}
+
+		const deltaX = event.deltaX;
+		const deltaY = event.deltaY;
+		if (Math.abs(deltaX) < Math.max(10, Math.abs(deltaY) * 1.1)) {
+			return;
+		}
+
+		this.workspaceSwipeLastInputAt = now;
+
+		if (this.workspaceSwipeGestureConsumed) {
+			event.preventDefault();
+			event.stopPropagation();
+			return;
+		}
+
+		this.workspaceSwipeAccumulatorX += deltaX;
+		if (Math.abs(this.workspaceSwipeAccumulatorX) < WORKSPACE_SWIPE_THRESHOLD_PX) {
+			return;
+		}
+		if (now - this.workspaceSwipeLastSwitchAt < WORKSPACE_SWIPE_COOLDOWN_MS) {
+			return;
+		}
+
+		event.preventDefault();
+		event.stopPropagation();
+
+		const direction: 1 | -1 = this.workspaceSwipeAccumulatorX > 0 ? 1 : -1;
+		this.workspaceSwipeAccumulatorX = 0;
+		this.workspaceSwipeLastSwitchAt = now;
+		this.workspaceSwipeGestureConsumed = true;
+		this.switchWorkspaceByOffset(direction);
 	}
 
 	private async invokeWindowControl(action: "close" | "minimize" | "maximize"): Promise<void> {
@@ -2561,7 +2801,6 @@ export class Sidebar {
 										<div
 											class="sidebar-workspace-row ${active ? "active" : ""} ${dragOver ? "drag-over" : ""} ${workspace.id === this.draggingWorkspaceId ? "dragging" : ""}"
 											data-workspace-id=${workspace.id}
-											data-pinned=${workspace.pinned ? "1" : "0"}
 											@contextmenu=${(e: MouseEvent) => this.handleWorkspaceContextMenu(e, workspace.id)}
 										>
 											<span
@@ -2641,6 +2880,268 @@ export class Sidebar {
 						</div>
 					`
 					: nothing}
+			</div>
+		`;
+	}
+
+	private renderWorkspaceWindowRow(): TemplateResult {
+		return html`
+			<div class="sidebar-window-row" data-tauri-drag-region>
+				<div class="sidebar-window-controls" @click=${(e: Event) => e.stopPropagation()}>
+					<button class="sidebar-window-dot red" title="Close" @click=${(e: Event) => {
+						e.stopPropagation();
+						void this.invokeWindowControl("close");
+					}}></button>
+					<button class="sidebar-window-dot yellow" title="Minimize" @click=${(e: Event) => {
+						e.stopPropagation();
+						void this.invokeWindowControl("minimize");
+					}}></button>
+					<button class="sidebar-window-dot green" title="Maximize" @click=${(e: Event) => {
+						e.stopPropagation();
+						void this.invokeWindowControl("maximize");
+					}}></button>
+				</div>
+				<button
+					class="workspace-sidebar-toggle"
+					title="Collapse sidebar"
+					@click=${(e: Event) => {
+						e.stopPropagation();
+						this.toggleCollapsed();
+					}}
+				>
+					<svg viewBox="0 0 16 16" aria-hidden="true">
+						<path d="M3 3.5h10v9H3z" />
+						<path d="M6 3.5v9" />
+					</svg>
+				</button>
+			</div>
+		`;
+	}
+
+	private renderWorkspaceHeader(): TemplateResult | typeof nothing {
+		const activeWorkspace = this.getActiveWorkspaceItem();
+		if (!activeWorkspace) return nothing;
+		const isRenaming = this.workspaceRenameDraft?.workspaceId === activeWorkspace.id;
+		return html`
+			<div
+				class="sidebar-workspace-header"
+				@contextmenu=${(e: MouseEvent) => this.handleWorkspaceContextMenu(e, activeWorkspace.id)}
+			>
+				<button
+					class="sidebar-workspace-header-emoji"
+					title="Change workspace emoji"
+					@click=${(e: MouseEvent) => this.openWorkspaceEmojiPicker(activeWorkspace.id, e)}
+				>
+					<span class="sidebar-workspace-avatar">${activeWorkspace.emoji || "💼"}</span>
+				</button>
+				<div class="sidebar-workspace-header-main">
+					${isRenaming
+						? html`
+							<input
+								class="sidebar-workspace-title-input"
+								data-workspace-id=${activeWorkspace.id}
+								.value=${this.workspaceRenameDraft?.value ?? activeWorkspace.title}
+								@input=${(event: Event) => {
+									if (!this.workspaceRenameDraft) return;
+									this.workspaceRenameDraft = {
+										...this.workspaceRenameDraft,
+										value: (event.target as HTMLInputElement).value,
+									};
+								}}
+								@keydown=${(event: KeyboardEvent) => {
+									if (event.key === "Enter") {
+										event.preventDefault();
+										this.commitWorkspaceRename();
+										return;
+									}
+									if (event.key === "Escape") {
+										event.preventDefault();
+										this.cancelWorkspaceRename();
+									}
+								}}
+								@blur=${() => this.commitWorkspaceRename()}
+							/>
+						`
+						: html`<div class="sidebar-workspace-header-title">${activeWorkspace.title}</div>`}
+				</div>
+			</div>
+		`;
+	}
+
+	private renderWorkspaceDock(): TemplateResult {
+		return html`
+			<div class="sidebar-workspace-dock" data-tauri-drag-region>
+				<button
+					class="sidebar-settings-icon-btn"
+					title="Settings"
+					@click=${(e: Event) => {
+						e.preventDefault();
+						e.stopPropagation();
+						this.onOpenSettings?.();
+					}}
+				>
+					<svg class="sidebar-icon-svg" viewBox="0 0 16 16" aria-hidden="true">
+						<path d="M2.8 4h10.4" />
+						<path d="M2.8 8h10.4" />
+						<path d="M2.8 12h10.4" />
+						<circle cx="6" cy="4" r="1.1" />
+						<circle cx="10" cy="8" r="1.1" />
+						<circle cx="7" cy="12" r="1.1" />
+					</svg>
+				</button>
+				<div class="sidebar-workspace-dock-list" @click=${(e: Event) => e.stopPropagation()}>
+					${this.workspaces.map((workspace) => {
+						const active = workspace.id === this.activeWorkspaceId;
+						const dragOver = workspace.id === this.workspaceDragOverId && this.draggingWorkspaceId !== workspace.id;
+						return html`
+							<button
+								class="sidebar-workspace-pill ${active ? "active" : ""} ${dragOver ? "drag-over" : ""} ${workspace.id === this.draggingWorkspaceId ? "dragging" : ""}"
+								data-workspace-id=${workspace.id}
+								title=${workspace.title}
+								@contextmenu=${(e: MouseEvent) => this.handleWorkspaceContextMenu(e, workspace.id)}
+								@pointerdown=${(e: PointerEvent) => this.beginWorkspacePointerDrag(e, workspace.id)}
+								@click=${() => {
+									if (this.shouldSuppressWorkspaceRowClick()) return;
+									if (!active) this.onWorkspaceSelect?.(workspace.id);
+								}}
+							>
+								<span class="sidebar-workspace-pill-emoji">${workspace.emoji || "💼"}</span>
+							</button>
+						`;
+					})}
+				</div>
+				<button
+					class="sidebar-workspace-dock-add"
+					title="Create space"
+					@click=${(e: Event) => {
+						e.stopPropagation();
+						this.openWorkspaceCreateDialog();
+					}}
+				>
+					＋
+				</button>
+			</div>
+		`;
+	}
+
+	private renderWorkspaceEmojiPicker(): TemplateResult | typeof nothing {
+		if (!this.emojiPickerWorkspaceId) return nothing;
+		const emojiPickerWorkspace = this.workspaces.find((workspace) => workspace.id === this.emojiPickerWorkspaceId) ?? null;
+		const filteredEmojis = this.filteredWorkspaceEmojis();
+		return html`
+			<div class="workspace-emoji-picker" style=${`left:${this.emojiPickerX}px;top:${this.emojiPickerY}px`} @click=${(event: Event) => event.stopPropagation()}>
+				<input
+					class="workspace-emoji-search"
+					data-workspace-id=${this.emojiPickerWorkspaceId}
+					type="text"
+					placeholder="Search emojis"
+					.value=${this.emojiSearchQuery}
+					@input=${(event: Event) => {
+						this.emojiSearchQuery = (event.target as HTMLInputElement).value;
+						this.render();
+					}}
+					@keydown=${(event: KeyboardEvent) => {
+						if (event.key === "Escape") {
+							event.preventDefault();
+							this.closeWorkspaceEmojiPicker();
+						}
+					}}
+				/>
+				<div class="workspace-emoji-scroll">
+					<div class="workspace-emoji-grid">
+						${filteredEmojis.length > 0
+							? filteredEmojis.map((entry) => html`
+								<button
+									class="workspace-emoji-swatch ${emojiPickerWorkspace?.emoji === entry.emoji ? "selected" : ""}"
+									title=${entry.name}
+									@click=${() => this.applyWorkspaceEmoji(this.emojiPickerWorkspaceId!, entry.emoji)}
+								>${entry.emoji}</button>
+							`)
+							: html`<div class="workspace-emoji-empty">No emojis found</div>`}
+					</div>
+				</div>
+			</div>
+		`;
+	}
+
+	private renderWorkspaceCreateDialog(): TemplateResult | typeof nothing {
+		if (!this.workspaceCreateDialogOpen) return nothing;
+		const filteredEmojis = this.filteredWorkspaceCreateEmojis();
+		return html`
+			<div class="sidebar-space-dialog-backdrop" @click=${() => this.closeWorkspaceCreateDialog()}>
+				<div class="sidebar-space-dialog" @click=${(event: Event) => event.stopPropagation()}>
+					<div class="sidebar-space-dialog-title">Create a Space</div>
+					<div class="sidebar-space-dialog-copy">Spaces are used to organize your tabs and sessions.</div>
+					<div class="sidebar-space-name-row">
+						<button
+							class="sidebar-space-emoji-trigger"
+							title="Choose emoji"
+							@click=${(event: Event) => {
+								event.stopPropagation();
+								this.workspaceCreateEmojiPickerOpen = !this.workspaceCreateEmojiPickerOpen;
+								this.render();
+							}}
+						>
+							${this.workspaceCreateEmoji || "✨"}
+						</button>
+						<input
+							class="sidebar-space-name-input"
+							type="text"
+							placeholder="Space Name"
+							.value=${this.workspaceCreateName}
+							@input=${(event: Event) => {
+								this.workspaceCreateName = (event.target as HTMLInputElement).value;
+							}}
+							@keydown=${(event: KeyboardEvent) => {
+								if (event.key === "Enter") {
+									event.preventDefault();
+									this.createWorkspaceFromDialog();
+									return;
+								}
+								if (event.key === "Escape") {
+									event.preventDefault();
+									this.closeWorkspaceCreateDialog();
+								}
+							}}
+						/>
+					</div>
+					${this.workspaceCreateEmojiPickerOpen
+						? html`
+							<div class="sidebar-space-emoji-picker">
+								<input
+									class="sidebar-space-emoji-search"
+									type="text"
+									placeholder="Search emojis"
+									.value=${this.workspaceCreateEmojiQuery}
+									@input=${(event: Event) => {
+										this.workspaceCreateEmojiQuery = (event.target as HTMLInputElement).value;
+										this.render();
+									}}
+								/>
+								<div class="sidebar-space-emoji-grid">
+									${filteredEmojis.length > 0
+										? filteredEmojis.slice(0, 120).map((entry) => html`
+											<button
+												class="sidebar-space-emoji-option ${this.workspaceCreateEmoji === entry.emoji ? "selected" : ""}"
+												title=${entry.name}
+												@click=${() => {
+													this.workspaceCreateEmoji = entry.emoji;
+													this.workspaceCreateEmojiPickerOpen = false;
+													this.workspaceCreateEmojiQuery = "";
+													this.render();
+												}}
+											>${entry.emoji}</button>
+										`)
+										: html`<div class="workspace-emoji-empty">No emojis found</div>`}
+								</div>
+							</div>
+						`
+						: nothing}
+					<div class="sidebar-space-dialog-actions">
+						<button class="sidebar-space-create-btn" @click=${() => this.createWorkspaceFromDialog()}>Create Space</button>
+						<button class="sidebar-space-cancel-btn" @click=${() => this.closeWorkspaceCreateDialog()}>Cancel</button>
+					</div>
+				</div>
 			</div>
 		`;
 	}
@@ -3109,6 +3610,7 @@ export class Sidebar {
 		const template = html`
 			<div
 				class="sidebar-single"
+				@wheel=${(e: WheelEvent) => this.handleSidebarWheel(e)}
 				@click=${(e: Event) => {
 					const target = e.target as HTMLElement;
 					let changed = false;
@@ -3123,22 +3625,47 @@ export class Sidebar {
 						changed = true;
 					}
 
-					if (this.workspaceMenuOpen && !target.closest(".sidebar-workspace-switcher")) {
-						this.workspaceMenuOpen = false;
+					if ((this.pendingProjectDragId || this.draggingProjectId) && !target.closest(".sidebar-project-list")) {
+						this.cancelProjectPointerDrag(false);
+						changed = true;
+					}
+
+					if ((this.pendingWorkspaceDragId || this.draggingWorkspaceId) && !target.closest(".sidebar-workspace-dock")) {
 						this.cancelWorkspacePointerDrag(false);
 						changed = true;
 					}
 
-					if ((this.pendingProjectDragId || this.draggingProjectId) && !target.closest(".sidebar-project-list")) {
-						this.cancelProjectPointerDrag(false);
+					if (
+						this.workspaceRenameDraft &&
+						!target.closest(".sidebar-workspace-title-input")
+					) {
+						this.commitWorkspaceRename();
+						return;
+					}
+
+					if (
+						this.workspaceCreateDialogOpen &&
+						!target.closest(".sidebar-space-dialog") &&
+						!target.closest(".sidebar-workspace-dock-add")
+					) {
+						this.closeWorkspaceCreateDialog(false);
+						changed = true;
+					}
+
+					if (
+						this.workspaceCreateEmojiPickerOpen &&
+						!target.closest(".sidebar-space-emoji-picker") &&
+						!target.closest(".sidebar-space-emoji-trigger")
+					) {
+						this.workspaceCreateEmojiPickerOpen = false;
+						this.workspaceCreateEmojiQuery = "";
 						changed = true;
 					}
 
 					if (
 						this.emojiPickerWorkspaceId &&
 						!target.closest(".workspace-emoji-picker") &&
-						!target.closest(".sidebar-workspace-avatar-btn") &&
-						!target.closest(".sidebar-workspace-trigger-emoji")
+						!target.closest(".sidebar-workspace-header-emoji")
 					) {
 						this.closeWorkspaceEmojiPicker(false);
 						changed = true;
@@ -3160,9 +3687,10 @@ export class Sidebar {
 					if (changed) this.render();
 				}}
 			>
-				${this.renderWorkspaceSwitcher()}
+				${this.renderWorkspaceWindowRow()}
 
 				<div class="sidebar-topbar" data-tauri-drag-region>
+					${this.renderWorkspaceHeader()}
 					${this.desktopUpdateAvailable
 						? html`
 							<button class="sidebar-cli-update-banner sidebar-desktop-update-banner" @click=${() => this.onOpenSettings?.()}>
@@ -3227,23 +3755,11 @@ export class Sidebar {
 				</div>
 
 				<div class="sidebar-footer">
-					<button
-						class="sidebar-footer-btn"
-						type="button"
-						@click=${(e: Event) => {
-							e.preventDefault();
-							e.stopPropagation();
-							this.onOpenSettings?.();
-						}}
-					>
-						<svg class="sidebar-icon-svg" viewBox="0 0 16 16" aria-hidden="true">
-							<circle cx="8" cy="8" r="2.2" />
-							<path d="M8 1.8v1.3M8 12.9v1.3M1.8 8h1.3M12.9 8h1.3M3.4 3.4l.9.9M11.7 11.7l.9.9M12.6 3.4l-.9.9M4.3 11.7l-.9.9" />
-						</svg>
-						<span>Settings</span>
-					</button>
+					${this.renderWorkspaceDock()}
 				</div>
 
+				${this.renderWorkspaceCreateDialog()}
+				${this.renderWorkspaceEmojiPicker()}
 				${this.renderProjectEmojiPicker()}
 				${this.renderContextMenu()}
 			</div>

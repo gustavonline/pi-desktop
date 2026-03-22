@@ -8,6 +8,10 @@ A native-feeling desktop shell for the **Pi Coding Agent** CLI (`pi --mode rpc`)
   <a href="./LICENSE"><img alt="MIT" src="https://img.shields.io/badge/license-MIT-6b7280?style=for-the-badge" /></a>
 </p>
 
+<p align="left">
+  <img src="./assets/branding/pi-desktop-icon.svg" alt="Pi Desktop app icon" width="88" />
+</p>
+
 Pi Desktop is intentionally **minimal** and **extension-first**:
 - the desktop app is the host/shell,
 - the `pi` CLI is the runtime,
@@ -40,6 +44,15 @@ Pi Desktop gives you a stable desktop UX for Pi without hardcoding product logic
 - **Hardcoding rule:** avoid embedding project-specific automation/policy logic in app core.
 - **Architecture intent:** Pi Desktop is a capability host for extensions, not a monolithic workflow engine.
 
+### Recent highlights (post-0.1.6)
+
+- Package-specific config moved out of global Settings and into a **Packages modal settings flow** (capability-driven, package-agnostic).
+- Provider/runtime failures are now shown **inline in chat timeline** (CLI parity), including `stopReason: "error"` assistant failures.
+- Windows missing-CLI onboarding/path discovery was expanded for common install paths and spawn error patterns.
+- Session context menu now supports **Mark unread**.
+- Native traffic-light controls now reveal `× / − / +` glyphs on hover/focus.
+- App icon set was refreshed from official Pi logo geometry with desktop-specific badge treatment.
+
 ---
 
 ## Features
@@ -52,7 +65,10 @@ Pi Desktop gives you a stable desktop UX for Pi without hardcoding product logic
 - Command palette + shortcuts panel
 - Package manager pane (`pi install/remove/update/list`)
 - Recommended package catalog
+- **Package settings modal** with Save/Apply UX driven by discovered package capabilities
 - Settings panel with simplified IA and diagnostics
+- Inline runtime/provider error visibility in chat timeline (CLI-like error surfacing)
+- Session context action to **Mark unread**
 - First-run CLI onboarding when `pi` is missing
 - In-app CLI update checks + update action
 - Native notifications via extension UI boundary (`ctx.ui.notify`)
@@ -165,6 +181,10 @@ Tauri capabilities currently include filesystem and shell permissions needed to 
 ## Releases
 
 See: **[`docs/RELEASES.md`](./docs/RELEASES.md)**
+
+Release-related docs:
+- [`docs/RELEASES.md`](./docs/RELEASES.md)
+- [`docs/ICONS.md`](./docs/ICONS.md) (icon source + regeneration + validation)
 
 GitHub Actions workflows are set up for:
 - CI validation

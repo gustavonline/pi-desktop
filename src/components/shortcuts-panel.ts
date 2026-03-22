@@ -53,6 +53,10 @@ export class ShortcutsPanel {
 		this.onClose?.();
 	}
 
+	isVisible(): boolean {
+		return this.isOpen;
+	}
+
 	setOnClose(callback: () => void): void {
 		this.onClose = callback;
 	}

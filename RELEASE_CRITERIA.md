@@ -54,6 +54,7 @@ Promote `dev` to `main` only when:
 - [ ] Tag release candidate (`v0.x.y-rcX`) then stable (`v0.x.y`)
 - [ ] Publish release notes with known limitations
   - [ ] If macOS build is unsigned, include: `xattr -cr /Applications/Pi\ Desktop.app`
+- [ ] If icons changed, regenerate/validate using `docs/ICONS.md`
 - [ ] Verify GitHub release artifacts:
   - [ ] macOS (`.dmg` / `.app.tar.gz`)
   - [ ] Windows (`.msi` / `nsis`)

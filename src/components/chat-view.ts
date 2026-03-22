@@ -46,6 +46,7 @@ interface UiMessage {
 	thinkingExpanded?: boolean;
 	thinkingScrollTop?: number;
 	isStreaming?: boolean;
+	errorText?: string;
 	deliveryMode?: DeliveryMode;
 	label?: string;
 }
@@ -278,6 +279,8 @@ export class ChatView {
 	private allThinkingExpanded = false;
 	private retryStatus = "";
 	private compactionStatus = "";
+	private lastRuntimeNoticeSignature = "";
+	private lastRuntimeNoticeAt = 0;
 	private pendingDeliveryMode: DeliveryMode = "prompt";
 	private openingForkPicker = false;
 	private forkPickerOpen = false;
@@ -1657,6 +1660,89 @@ export class ChatView {
 		`;
 	}
 
+	private extractRuntimeErrorMessage(event: Record<string, unknown> | null | undefined): string {
+		if (!event || typeof event !== "object") return "";
+		const direct = pickString(event, [
+			"errorMessage",
+			"error.message",
+			"error",
+			"message",
+			"reason",
+			"details.message",
+			"details.error",
+			"finalError",
+			"providerError.message",
+			"providerError.error",
+		]);
+		if (direct) return direct;
+		const nestedError = event.error;
+		if (nestedError && typeof nestedError === "object") {
+			return pickString(nestedError as Record<string, unknown>, ["message", "error", "detail", "reason"]) ?? "";
+		}
+		return "";
+	}
+
+	private extractAssistantMessageError(message: Record<string, unknown> | null | undefined): string {
+		if (!message || typeof message !== "object") return "";
+		const stopReason = pickString(message, ["stopReason", "stop_reason", "reason"])
+			?.trim()
+			.toLowerCase() ?? "";
+		const errorMessage = this.extractRuntimeErrorMessage(message).trim();
+		if (stopReason === "aborted") {
+			if (errorMessage && errorMessage.toLowerCase() !== "request was aborted") {
+				return errorMessage;
+			}
+			return "Operation aborted";
+		}
+		if (stopReason === "error") {
+			return errorMessage || "Unknown error";
+		}
+		return "";
+	}
+
+	private toRuntimeInlineLine(text: string): string {
+		const raw = text.trim();
+		if (!raw) return "";
+		if (/^error\b[:\s-]*/i.test(raw)) return raw;
+		const stripped = raw
+			.replace(/^runtime error(?:\s*\([^)]*\))?[:\s-]*/i, "")
+			.replace(/^extension error(?:\s*\([^)]*\))?[:\s-]*/i, "")
+			.replace(/^run failed[:\s-]*/i, "")
+			.replace(/^streaming error[:\s-]*/i, "")
+			.trim();
+		if (/^error\b[:\s-]*/i.test(stripped)) return stripped;
+		return `Error: ${stripped || raw}`;
+	}
+
+	private appendRuntimeSystemLine(text: string): void {
+		const line = text.trim();
+		if (!line) return;
+		this.messages.push({
+			id: uid("runtimeError"),
+			role: "system",
+			text: line,
+			toolCalls: [],
+		});
+		this.render();
+		this.scrollToBottom();
+	}
+
+	private pushRuntimeNotice(text: string, kind: Notice["kind"] = "error", dedupeMs = 2000): void {
+		const normalized = text.trim().toLowerCase();
+		if (!normalized) return;
+		const now = Date.now();
+		if (this.lastRuntimeNoticeSignature === normalized && now - this.lastRuntimeNoticeAt < dedupeMs) {
+			return;
+		}
+		this.lastRuntimeNoticeSignature = normalized;
+		this.lastRuntimeNoticeAt = now;
+		const inlineLine = this.toRuntimeInlineLine(text);
+		if (inlineLine) {
+			this.appendRuntimeSystemLine(inlineLine);
+		}
+		this.pushNotice(text, kind);
+	}
+
 	private handleEvent(event: Record<string, unknown>): void {
 		const type = event.type as string;
 		if (type === "response") return;
@@ -1683,8 +1769,14 @@ export class ChatView {
 					this.onStateChange?.(this.state);
 				}
 				const last = this.messages[this.messages.length - 1];
-				if (last && last.role === "assistant") last.isStreaming = false;
+				if (last && last.role === "assistant") {
+					last.isStreaming = false;
+				}
 				this.retryStatus = "";
+				const runError = this.extractRuntimeErrorMessage(event);
+				if (runError && !(last?.role === "assistant" && last.errorText)) {
+					this.pushRuntimeNotice(`Run failed: ${truncate(runError, 180)}`, "error", 2600);
+				}
 				this.runHasAssistantText = false;
 				this.onRunStateChange?.(false);
 				rpcBridge
@@ -1713,10 +1805,12 @@ export class ChatView {
 						break;
 					}
 					const initialText = this.extractText(msg.content);
+					const assistantError = this.extractAssistantMessageError(msg);
 					this.messages.push({
 						id: uid("assistant"),
 						role: "assistant",
 						text: initialText,
+						errorText: assistantError || undefined,
 						toolCalls: [],
 						isStreaming: true,
 						thinkingExpanded: this.allThinkingExpanded,
@@ -1762,6 +1856,19 @@ export class ChatView {
 				if (!assistantEvent) break;
 				const subtype = typeof assistantEvent.type === "string" ? assistantEvent.type : "";
 				const last = this.messages[this.messages.length - 1];
+
+				if (subtype === "error") {
+					if (last?.role === "assistant") {
+						last.isStreaming = false;
+						const streamError = this.extractRuntimeErrorMessage(assistantEvent) || this.extractRuntimeErrorMessage(event);
+						if (streamError) {
+							last.errorText = streamError;
+						}
+					}
+					this.render();
+					break;
+				}
+
 				if (!last || last.role !== "assistant") break;
 
 				if (subtype === "text_delta") {
@@ -1799,8 +1906,21 @@ export class ChatView {
 						}
 						this.render();
 					}
-				} else if (subtype === "error") {
-					last.isStreaming = false;
+				}
+				break;
+			}
+
+			case "turn_end": {
+				const turnMessage = event.message as Record<string, unknown> | undefined;
+				const turnRole = typeof turnMessage?.role === "string" ? turnMessage.role : "";
+				if (turnRole === "assistant") {
+					const last = this.messages[this.messages.length - 1];
+					if (last?.role === "assistant") {
+						const turnError = this.extractAssistantMessageError(turnMessage);
+						if (turnError) {
+							last.errorText = turnError;
+						}
+					}
 					this.render();
 				}
 				break;
@@ -1810,6 +1930,11 @@ export class ChatView {
 				const last = this.messages[this.messages.length - 1];
 				if (last?.role === "assistant") {
 					last.isStreaming = false;
+					const completed = event.message as Record<string, unknown> | undefined;
+					const completedError = this.extractAssistantMessageError(completed);
+					if (completedError) {
+						last.errorText = completedError;
+					}
 				}
 				this.scheduleStreamingUiReconcile(350);
 				this.render();
@@ -1871,6 +1996,7 @@ export class ChatView {
 
 			case "auto_compaction_start": {
 				this.compactionStatus = "Compacting context…";
+				this.appendRuntimeSystemLine("Compacting context…");
 				this.render();
 				break;
 			}
@@ -1878,10 +2004,16 @@ export class ChatView {
 			case "auto_compaction_end": {
 				this.compactionStatus = "";
 				const aborted = Boolean(event.aborted);
-				const errorMessage = typeof event.errorMessage === "string" ? event.errorMessage : "";
-				if (aborted) this.pushNotice("Auto-compaction aborted", "info");
-				else if (errorMessage) this.pushNotice(`Auto-compaction failed: ${truncate(errorMessage, 120)}`, "error");
-				else this.pushNotice("Auto-compaction complete", "success");
+				const errorMessage = this.extractRuntimeErrorMessage(event);
+				if (aborted) {
+					this.appendRuntimeSystemLine("Auto-compaction aborted");
+					this.pushNotice("Auto-compaction aborted", "info");
+				} else if (errorMessage) {
+					this.pushRuntimeNotice(`Auto-compaction failed: ${truncate(errorMessage, 180)}`, "error", 2600);
+				} else {
+					this.appendRuntimeSystemLine("Auto-compaction complete");
+					this.pushNotice("Auto-compaction complete", "success");
+				}
 				this.render();
 				break;
 			}
@@ -1890,25 +2022,48 @@ export class ChatView {
 				const attempt = typeof event.attempt === "number" ? event.attempt : 1;
 				const maxAttempts = typeof event.maxAttempts === "number" ? event.maxAttempts : 1;
 				const delayMs = typeof event.delayMs === "number" ? event.delayMs : 0;
+				const errorMessage = this.extractRuntimeErrorMessage(event);
 				this.retryStatus = `Retry ${attempt}/${maxAttempts} in ${(delayMs / 1000).toFixed(1)}s`;
+				const retryLine = errorMessage
+					? `Retry ${attempt}/${maxAttempts} in ${(delayMs / 1000).toFixed(1)}s · ${truncate(errorMessage, 150)}`
+					: `Retry ${attempt}/${maxAttempts} in ${(delayMs / 1000).toFixed(1)}s`;
+				this.appendRuntimeSystemLine(retryLine);
 				this.render();
 				break;
 			}
 
 			case "auto_retry_end": {
 				const success = Boolean(event.success);
+				const attempt = typeof event.attempt === "number" ? event.attempt : null;
 				this.retryStatus = "";
 				if (!success) {
-					const finalError = typeof event.finalError === "string" ? event.finalError : "Unknown retry failure";
-					this.pushNotice(`Retry failed: ${truncate(finalError, 120)}`, "error");
+					const finalError = this.extractRuntimeErrorMessage(event) || "Unknown retry failure";
+					this.pushRuntimeNotice(`Retry failed: ${truncate(finalError, 180)}`, "error", 2600);
+				} else {
+					this.appendRuntimeSystemLine(attempt ? `Retry succeeded on attempt ${attempt}` : "Retry succeeded");
 				}
 				this.render();
 				break;
 			}
 
+			case "error": {
+				const errorMessage = this.extractRuntimeErrorMessage(event) || "Unknown runtime error";
+				const source = pickString(event, ["source", "phase", "stage", "provider", "code"]);
+				if (source === "stderr" || source === "stdout_text") {
+					const line = /^error\b[:\s-]*/i.test(errorMessage) ? errorMessage : `Error: ${errorMessage}`;
+					this.pushRuntimeNotice(truncate(line, 220), "error", 2600);
+				} else {
+					const prefix = source ? `Runtime error (${source})` : "Runtime error";
+					this.pushRuntimeNotice(`${prefix}: ${truncate(errorMessage, 180)}`, "error", 2600);
+				}
+				break;
+			}
+
 			case "extension_error": {
-				const error = typeof event.error === "string" ? event.error : "Unknown extension error";
-				this.pushNotice(`Extension error: ${truncate(error, 120)}`, "error");
+				const error = this.extractRuntimeErrorMessage(event) || "Unknown extension error";
+				const source = pickString(event, ["source", "callback", "method", "extension", "provider"]);
+				const prefix = source ? `Extension error (${source})` : "Extension error";
+				this.pushRuntimeNotice(`${prefix}: ${truncate(error, 180)}`, "error", 2600);
 				break;
 			}
 
@@ -2945,7 +3100,16 @@ export class ChatView {
 	}
 
 	private renderAssistantMessage(msg: UiMessage): TemplateResult {
-		const canCopy = Boolean(msg.text.trim().length > 0 || msg.toolCalls.length > 0 || (msg.thinking ?? "").trim().length > 0);
+		const canCopy = Boolean(
+			msg.text.trim().length > 0 ||
+				msg.toolCalls.length > 0 ||
+				(msg.thinking ?? "").trim().length > 0 ||
+				(msg.errorText ?? "").trim().length > 0,
+		);
+		const errorLine = (msg.errorText ?? "").trim();
+		const formattedErrorLine = errorLine
+			? (/^error\b[:\s-]*/i.test(errorLine) ? errorLine : `Error: ${errorLine}`)
+			: "";
 		return html`
 			<div class="chat-row assistant-row" data-message-id=${msg.id}>
 				<div class="message-shell assistant-message-shell">
@@ -2958,6 +3122,7 @@ export class ChatView {
 								</div>
 							`
 							: nothing}
+						${formattedErrorLine ? html`<div class="assistant-error-line">${formattedErrorLine}</div>` : nothing}
 						${msg.toolCalls.map((tc) => this.renderToolCall(tc))}
 					</div>
 					<div class="message-actions">
