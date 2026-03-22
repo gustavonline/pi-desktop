@@ -99,7 +99,21 @@ Implemented:
 Relevant commits:
 - `d5e9db3`
 
+## #23 — Desktop app icon finalization
+
+Status: **In progress**
+
+Implemented so far:
+- Added new source artwork at `assets/branding/pi-desktop-icon.svg`.
+- Regenerated Tauri platform icon outputs under `src-tauri/icons/**`.
+- Added icon workflow/playbook doc at `docs/ICONS.md`.
+- Added release-checklist reference to icon workflow in `RELEASE_CRITERIA.md`.
+
+Remaining:
+- Final icon concept approval.
+- Platform shell screenshot validation (macOS Dock/Finder, Windows taskbar/start, Linux launcher).
+
 ## Next queued issues
 
 After this cycle, planned follow-up targets:
-- #23 — desktop app icon finalization
+- #23 — desktop app icon finalization (approval + cross-platform screenshot sign-off)
