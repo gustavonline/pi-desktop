@@ -25,14 +25,6 @@ interface InstalledDisplayItem extends InstalledPackageItem {
 	openUrl: string | null;
 }
 
-interface ModelOption {
-	provider: string;
-	id: string;
-	label: string;
-}
-
-type PackageConfigKind = "autoRename" | "desktopNotify";
-
 type UiIcon =
 	| "package"
 	| "extension"
@@ -40,14 +32,11 @@ type UiIcon =
 	| "theme"
 	| "prompt"
 	| "open"
-	| "settings"
 	| "plus"
 	| "remove";
 
 const PACKAGES_CATALOG_URL = "https://shittycodingagent.ai/packages";
 const PACKAGES_SEARCH_URL = "https://registry.npmjs.org/-/v1/search?text=keywords:pi-package&size=250";
-const AUTO_RENAME_PACKAGE_SOURCE = normalizeRecommendedSource("npm:pi-session-auto-rename");
-const DESKTOP_NOTIFY_PACKAGE_SOURCE = normalizeRecommendedSource("npm:pi-desktop-notify");
 
 function uniqueBy<T>(items: T[], getKey: (item: T) => string): T[] {
 	const seen = new Set<string>();
@@ -121,8 +110,6 @@ function icon(name: UiIcon): TemplateResult {
 			return html`<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.1 2.8h5.4l2.4 2.4V13H4.1z"></path><path d="M9.5 2.8v2.4h2.4"></path><path d="M5.8 8h4.4"></path><path d="M5.8 10.2h3.4"></path></svg>`;
 		case "open":
 			return html`<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3h7v7"></path><path d="M13 3L5.4 10.6"></path><path d="M12.5 9v3a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h3"></path></svg>`;
-		case "settings":
-			return html`<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2.1"></circle><path d="M8 2.6v1.2"></path><path d="M8 12.2v1.2"></path><path d="M3.8 4.2l.9.9"></path><path d="M11.3 11.7l.9.9"></path><path d="M2.6 8h1.2"></path><path d="M12.2 8h1.2"></path><path d="M3.8 11.8l.9-.9"></path><path d="M11.3 4.3l.9-.9"></path></svg>`;
 		case "plus":
 			return html`<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.4v9.2"></path><path d="M3.4 8h9.2"></path></svg>`;
 		case "remove":
@@ -162,15 +149,6 @@ export class PackagesView {
 	private query = "";
 	private currentProjectPath: string | null = null;
 	private onBack: (() => void) | null = null;
-	private activeConfigPackageSource: string | null = null;
-	private activeConfigPackageLabel = "";
-	private activeConfigKind: PackageConfigKind | null = null;
-	private configLoading = false;
-	private configSaving = false;
-	private configStatus = "";
-	private configModels: ModelOption[] = [];
-	private configModelValue = "";
-	private configPath: string | null = null;
 
 	constructor(container: HTMLElement) {
 		this.container = container;
@@ -292,191 +270,10 @@ export class PackagesView {
 
 			this.installedUser = uniqueBy([...parsedUser.user, ...parsedProject.user], (item) => item.source);
 			this.installedProject = uniqueBy([...parsedUser.project, ...parsedProject.project], (item) => item.source);
-
-			if (this.activeConfigPackageSource && !this.isNormalizedSourceInstalled(this.activeConfigPackageSource)) {
-				this.closePackageConfig("Configured package is no longer installed.");
-			}
 		} catch (err) {
 			this.configError = err instanceof Error ? err.message : String(err);
 		} finally {
 			this.loadingConfig = false;
-			this.render();
-		}
-	}
-
-	private joinPath(base: string, child: string): string {
-		const sep = base.includes("\\") ? "\\" : "/";
-		return `${base.replace(/[\\/]+$/, "")}${sep}${child}`;
-	}
-
-	private modelOptionValue(provider: string, id: string): string {
-		return `${provider}::${id}`;
-	}
-
-	private splitModelOptionValue(value: string): { provider: string; id: string } | null {
-		const [provider, ...rest] = value.split("::");
-		const id = rest.join("::");
-		if (!provider || !id) return null;
-		return { provider, id };
-	}
-
-	private mapModelOptions(models: Array<Record<string, unknown>>): ModelOption[] {
-		const mapped: ModelOption[] = [];
-		const seen = new Set<string>();
-		for (const raw of models) {
-			const provider = typeof raw.provider === "string"
-				? raw.provider.trim()
-				: typeof raw.providerId === "string"
-					? raw.providerId.trim()
-					: typeof raw.provider_id === "string"
-						? raw.provider_id.trim()
-						: "";
-			const id = typeof raw.id === "string"
-				? raw.id.trim()
-				: typeof raw.modelId === "string"
-					? raw.modelId.trim()
-					: typeof raw.model_id === "string"
-						? raw.model_id.trim()
-						: typeof raw.model === "string"
-							? raw.model.trim()
-							: "";
-			if (!provider || !id) continue;
-			const key = `${provider}::${id}`;
-			if (seen.has(key)) continue;
-			seen.add(key);
-			mapped.push({ provider, id, label: `${provider}/${id}` });
-		}
-		return mapped;
-	}
-
-	private getPackageConfigKind(source: string): PackageConfigKind | null {
-		const normalized = normalizeRecommendedSource(source);
-		if (normalized === AUTO_RENAME_PACKAGE_SOURCE) return "autoRename";
-		if (normalized === DESKTOP_NOTIFY_PACKAGE_SOURCE) return "desktopNotify";
-		return null;
-	}
-
-	private isNormalizedSourceInstalled(normalizedSource: string): boolean {
-		return [...this.installedUser, ...this.installedProject]
-			.some((item) => normalizeRecommendedSource(item.source) === normalizedSource);
-	}
-
-	private async resolveAutoRenameConfigPath(): Promise<string> {
-		if (this.configPath) return this.configPath;
-		const { homeDir } = await import("@tauri-apps/api/path");
-		const home = await homeDir();
-		const agentRoot = this.joinPath(this.joinPath(home, ".pi"), "agent");
-		const extensionsRoot = this.joinPath(agentRoot, "extensions");
-		this.configPath = this.joinPath(extensionsRoot, "pi-session-auto-rename.json");
-		return this.configPath;
-	}
-
-	private closePackageConfig(status?: string): void {
-		this.activeConfigPackageSource = null;
-		this.activeConfigPackageLabel = "";
-		this.activeConfigKind = null;
-		this.configLoading = false;
-		this.configSaving = false;
-		this.configModels = [];
-		this.configModelValue = "";
-		this.configPath = null;
-		if (status) {
-			this.configStatus = status;
-		}
-		this.render();
-	}
-
-	private async openPackageConfig(item: InstalledDisplayItem): Promise<void> {
-		const kind = this.getPackageConfigKind(item.source);
-		if (!kind) return;
-
-		this.activeConfigPackageSource = normalizeRecommendedSource(item.source);
-		this.activeConfigPackageLabel = item.displayName;
-		this.activeConfigKind = kind;
-		this.configStatus = "";
-		this.configModels = [];
-		this.configModelValue = "";
-		this.configPath = null;
-		await this.refreshActivePackageConfig();
-	}
-
-	private async refreshActivePackageConfig(): Promise<void> {
-		if (!this.activeConfigKind) return;
-		this.configLoading = true;
-		this.configStatus = "";
-		this.render();
-
-		try {
-			if (this.activeConfigKind === "desktopNotify") {
-				this.configStatus = "pi-desktop-notify has no model/provider config. Use notification tests and OS notification settings.";
-				return;
-			}
-
-			const [models, path] = await Promise.all([
-				rpcBridge.getAvailableModels().catch(() => []),
-				this.resolveAutoRenameConfigPath(),
-			]);
-			this.configModels = this.mapModelOptions(models as Array<Record<string, unknown>>);
-
-			const { exists, readTextFile } = await import("@tauri-apps/plugin-fs");
-			const hasConfig = await exists(path);
-			if (hasConfig) {
-				const raw = await readTextFile(path);
-				const parsed = JSON.parse(raw) as Record<string, unknown>;
-				const provider = typeof parsed.provider === "string" ? parsed.provider.trim() : "";
-				const id = typeof parsed.id === "string"
-					? parsed.id.trim()
-					: typeof parsed.model === "string"
-						? parsed.model.trim()
-						: typeof parsed.modelId === "string"
-							? parsed.modelId.trim()
-							: "";
-				if (provider && id) {
-					this.configModelValue = this.modelOptionValue(provider, id);
-				}
-			} else if (!this.configModelValue) {
-				const active = await rpcBridge.getState().catch(() => null);
-				if (active?.model?.provider && active?.model?.id) {
-					this.configModelValue = this.modelOptionValue(active.model.provider, active.model.id);
-				} else if (this.configModels[0]) {
-					const fallback = this.configModels[0];
-					this.configModelValue = this.modelOptionValue(fallback.provider, fallback.id);
-				}
-			}
-
-			if (
-				this.configModelValue &&
-				!this.configModels.some((m) => this.modelOptionValue(m.provider, m.id) === this.configModelValue)
-			) {
-				const display = this.configModelValue.replace("::", "/");
-				this.configStatus = `Configured model ${display} is unavailable. Pick an available model and save.`;
-			}
-		} catch (err) {
-			this.configStatus = err instanceof Error ? err.message : "Failed to load package configuration.";
-		} finally {
-			this.configLoading = false;
-			this.render();
-		}
-	}
-
-	private async saveAutoRenameConfigModel(value: string): Promise<void> {
-		if (this.configSaving || this.activeConfigKind !== "autoRename") return;
-		const parsed = this.splitModelOptionValue(value);
-		if (!parsed) return;
-		this.configSaving = true;
-		this.configStatus = "Saving auto-rename model…";
-		this.render();
-		try {
-			const path = await this.resolveAutoRenameConfigPath();
-			const { writeTextFile } = await import("@tauri-apps/plugin-fs");
-			const content = JSON.stringify({ provider: parsed.provider, id: parsed.id }, null, 2);
-			await writeTextFile(path, content);
-			this.configModelValue = value;
-			this.configStatus = `Saved auto-rename model: ${parsed.provider}/${parsed.id}`;
-		} catch (err) {
-			this.configStatus = err instanceof Error ? err.message : "Failed to save auto-rename model.";
-		} finally {
-			this.configSaving = false;
 			this.render();
 		}
 	}
@@ -797,72 +594,6 @@ export class PackagesView {
 		`;
 	}
 
-	private renderActivePackageConfigSection(): TemplateResult | typeof nothing {
-		if (!this.activeConfigKind || !this.activeConfigPackageSource) return nothing;
-
-		if (this.activeConfigKind === "desktopNotify") {
-			return html`
-				<section class="packages-section">
-					<div class="packages-section-head">
-						<div>
-							<div class="packages-section-title">Package settings · ${this.activeConfigPackageLabel}</div>
-							<div class="packages-section-submeta">Desktop notifications and callback routing.</div>
-						</div>
-						<div class="settings-actions">
-							<button class="ghost-btn" ?disabled=${this.configLoading} @click=${() => this.closePackageConfig()}>Close</button>
-						</div>
-					</div>
-					<div class="packages-empty">No model/provider config required for this package.</div>
-					<div class="settings-actions">
-						<button class="ghost-btn" ?disabled=${this.runningCommand} @click=${() => void this.runDesktopNotificationSmokeTest()}>Test desktop notify</button>
-						<button class="ghost-btn" ?disabled=${this.configLoading} @click=${() => void this.refreshActivePackageConfig()}>Refresh package config</button>
-					</div>
-					${this.configStatus ? html`<div class="settings-desc">${this.configStatus}</div>` : nothing}
-				</section>
-			`;
-		}
-
-		return html`
-			<section class="packages-section">
-				<div class="packages-section-head">
-					<div>
-						<div class="packages-section-title">Package settings · ${this.activeConfigPackageLabel}</div>
-						<div class="packages-section-submeta">Configure auto-rename provider/model for this package.</div>
-					</div>
-					<div class="settings-actions">
-						<button class="ghost-btn" ?disabled=${this.configLoading || this.configSaving} @click=${() => this.closePackageConfig()}>Close</button>
-					</div>
-				</div>
-				<div class="settings-row">
-					<div>
-						<div class="settings-label">Provider/model</div>
-						<div class="settings-desc">Used by pi-session-auto-rename when naming sessions.</div>
-					</div>
-					<select
-						class="settings-select"
-						.value=${this.configModelValue}
-						?disabled=${this.configLoading || this.configSaving || this.configModels.length === 0}
-						@change=${(e: Event) => void this.saveAutoRenameConfigModel((e.target as HTMLSelectElement).value)}
-					>
-						${this.configLoading ? html`<option value="">Loading models…</option>` : nothing}
-						${!this.configLoading && this.configModels.length === 0 ? html`<option value="">No models available</option>` : nothing}
-						${!this.configLoading && this.configModelValue && !this.configModels.some((m) => this.modelOptionValue(m.provider, m.id) === this.configModelValue)
-							? html`<option value=${this.configModelValue}>${this.configModelValue.replace("::", "/")}</option>`
-							: nothing}
-						${this.configModels.map((m) => html`<option value=${this.modelOptionValue(m.provider, m.id)}>${m.label}</option>`)}
-					</select>
-				</div>
-				<div class="settings-actions">
-					<button class="ghost-btn" ?disabled=${this.configLoading || this.configSaving} @click=${() => void this.refreshActivePackageConfig()}>
-						${this.configLoading ? "Refreshing…" : "Refresh package config"}
-					</button>
-				</div>
-				${this.configPath ? html`<div class="settings-desc">Config: <code>${this.configPath}</code></div>` : nothing}
-				${this.configStatus ? html`<div class="settings-desc">${this.configStatus}</div>` : nothing}
-			</section>
-		`;
-	}
-
 	render(): void {
 		const installedItems = this.getInstalledItems();
 		const catalogItems = this.filteredCatalogItems();
@@ -958,9 +689,6 @@ export class PackagesView {
 												${item.openUrl
 													? html`<button class="packages-card-action" title="Open package page" @click=${() => void this.openInstalledItem(item)}>${icon("open")}</button>`
 													: nothing}
-											${this.getPackageConfigKind(item.source)
-												? html`<button class="packages-card-action" title="Configure package" @click=${() => void this.openPackageConfig(item)}>${icon("settings")}</button>`
-												: nothing}
 												<button
 													class="packages-card-action danger"
 													?disabled=${this.runningCommand}
@@ -976,8 +704,6 @@ export class PackagesView {
 								</div>
 							`}
 					</section>
-
-					${this.renderActivePackageConfigSection()}
 
 					<section class="packages-section">
 						<div class="packages-section-head">

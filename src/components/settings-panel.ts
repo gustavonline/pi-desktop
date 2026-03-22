@@ -139,6 +139,7 @@ export class SettingsPanel {
 			this.refreshDesktopStatus(),
 			this.refreshCliStatus(),
 			this.refreshCompatibilityStatus(),
+			this.refreshAutoRenameSettings(),
 		]);
 	}
 
@@ -554,9 +555,33 @@ export class SettingsPanel {
 					</div>
 
 					<div class="settings-section">
-						<div class="settings-section-title">Package settings</div>
-						<div class="settings-desc">Configure extension/package-specific options from the Packages pane.</div>
-						<div class="settings-desc">Example: auto-rename provider/model and desktop-notify checks are managed per package there.</div>
+						<div class="settings-section-title">Auto-rename extension</div>
+						<div class="settings-row">
+							<div>
+								<div class="settings-label">Provider/model for auto title generation</div>
+								<div class="settings-desc">Pick from your currently available authenticated models.</div>
+							</div>
+							<select
+								class="settings-select"
+								.value=${this.autoRenameModelValue}
+								?disabled=${this.autoRenameLoading || this.autoRenameSaving || this.autoRenameModels.length === 0}
+								@change=${(e: Event) => void this.setAutoRenameModel((e.target as HTMLSelectElement).value)}
+							>
+								${this.autoRenameLoading ? html`<option value="">Loading models…</option>` : null}
+								${!this.autoRenameLoading && this.autoRenameModels.length === 0 ? html`<option value="">No models available</option>` : null}
+								${!this.autoRenameLoading && this.autoRenameModelValue && !this.autoRenameModels.some((m) => this.modelOptionValue(m.provider, m.id) === this.autoRenameModelValue)
+									? html`<option value=${this.autoRenameModelValue}>${this.autoRenameModelValue.replace("::", "/")}</option>`
+									: null}
+								${this.autoRenameModels.map((m) => html`<option value=${this.modelOptionValue(m.provider, m.id)}>${m.label}</option>`)}
+							</select>
+						</div>
+						<div class="settings-actions">
+							<button class="ghost-btn" ?disabled=${this.autoRenameLoading || this.autoRenameSaving} @click=${() => this.refreshAutoRenameSettings()}>
+								${this.autoRenameLoading ? "Refreshing…" : "Refresh models/config"}
+							</button>
+						</div>
+						${this.autoRenamePath ? html`<div class="settings-desc">Config: <code>${this.autoRenamePath}</code></div>` : null}
+						${this.autoRenameStatusMessage ? html`<div class="settings-desc">${this.autoRenameStatusMessage}</div>` : null}
 					</div>
 
 					<div class="settings-section">
