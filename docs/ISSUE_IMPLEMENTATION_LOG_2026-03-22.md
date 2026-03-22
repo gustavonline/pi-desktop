@@ -101,20 +101,21 @@ Relevant commits:
 
 ## #23 — Desktop app icon finalization
 
-Status: **In progress**
+Status: **Closed**
 
-Implemented so far:
-- Added source artwork at `assets/branding/pi-desktop-icon.svg` using official Pi geometry from `https://pi.dev/logo.svg`.
-- Added a subtle pixel-`D` badge variant for desktop identity in the source icon.
+Implemented:
+- Added source artwork at `assets/branding/pi-desktop-icon.svg`.
+- Switched icon to official Pi geometry from `https://pi.dev/logo.svg`.
+- Refined icon to black/white only with larger uniform pixel `D` desktop badge.
 - Regenerated Tauri platform icon outputs under `src-tauri/icons/**`.
 - Added icon workflow/playbook doc at `docs/ICONS.md`.
 - Added release-checklist reference to icon workflow in `RELEASE_CRITERIA.md`.
 
-Remaining:
-- Final icon concept approval.
-- Platform shell screenshot validation (macOS Dock/Finder, Windows taskbar/start, Linux launcher).
+Relevant commits:
+- `9a3b994`, `4663f74`, `2bca6ae`
 
 ## Next queued issues
 
 After this cycle, planned follow-up targets:
-- #23 — desktop app icon finalization (approval + cross-platform screenshot sign-off)
+- #37 — tree-style session navigation + sidebar fork lineage
+- #32 — desktop self-updater step 2 (download/install/relaunch)
