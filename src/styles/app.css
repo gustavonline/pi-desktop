@@ -1894,6 +1894,105 @@ body.sidebar-resizing {
 	color: var(--muted);
 }
 
+.packages-config-modal {
+	width: min(860px, calc(100vw - 40px));
+}
+
+.packages-config-modal .overlay-header {
+	align-items: flex-start;
+	gap: 10px;
+	padding-top: 12px;
+	padding-bottom: 12px;
+}
+
+.packages-config-modal-title {
+	font-size: 13px;
+	font-weight: 600;
+	color: var(--text);
+}
+
+.packages-config-modal-sub {
+	margin-top: 2px;
+	font-size: 11px;
+	color: var(--muted);
+}
+
+.packages-config-modal-body {
+	padding: 14px 16px 16px;
+	display: grid;
+	gap: 12px;
+}
+
+.packages-config-command-card {
+	display: grid;
+	gap: 8px;
+	padding: 10px;
+	border-radius: 12px;
+	border: 1px solid color-mix(in srgb, var(--border) 76%, transparent);
+	background: color-mix(in srgb, var(--bg-soft) 48%, transparent);
+}
+
+.packages-config-command-name {
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--text);
+}
+
+.packages-config-command-desc {
+	font-size: 11px;
+	color: var(--muted);
+	line-height: 1.45;
+}
+
+.packages-config-field {
+	display: grid;
+	gap: 6px;
+}
+
+.packages-config-field-label {
+	font-size: 11px;
+	color: var(--muted);
+}
+
+.packages-config-select,
+.packages-config-input {
+	height: 34px;
+	border-radius: 10px;
+	border: 1px solid var(--border);
+	background: var(--bg-muted);
+	color: var(--text);
+	font-size: 12px;
+}
+
+.packages-config-select {
+	padding: 0 8px;
+}
+
+.packages-config-input {
+	padding: 0 10px;
+}
+
+.packages-config-select:disabled,
+.packages-config-input:disabled {
+	opacity: 0.78;
+}
+
+.packages-config-command-actions,
+.packages-config-modal-actions {
+	display: flex;
+	gap: 8px;
+	flex-wrap: wrap;
+}
+
+.packages-config-modal-actions {
+	margin-top: 2px;
+}
+
+.packages-config-inline-error {
+	font-size: 11px;
+	color: var(--danger);
+}
+
 .packages-diagnostics {
 	border-radius: 12px;
 	border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);

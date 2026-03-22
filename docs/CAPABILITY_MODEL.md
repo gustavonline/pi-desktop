@@ -49,3 +49,4 @@ When adding features:
   - reliability
   - native host quality
 - Avoid embedding extension-specific business logic directly in app core.
+- For package settings UX in Desktop, follow [`docs/PACKAGE_CAPABILITY_TEMPLATE.md`](./PACKAGE_CAPABILITY_TEMPLATE.md).
