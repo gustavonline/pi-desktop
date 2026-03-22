@@ -9,22 +9,33 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 ## [0.1.7] - 2026-03-22
 
 ### Added
-- Packages now expose a per-installed-package **settings gear** that opens a modal configuration overlay.
-- Package settings actions use UX-native **Save/Apply** controls (instead of raw slash-command labels), while still executing via runtime command flow.
-- Added `docs/PACKAGE_CAPABILITY_TEMPLATE.md` playbook for extension/package UX implementation, and added the same checklist to `.github/pull_request_template.md`.
+- Moved the workspace switcher from top chrome to the sidebar near global controls/settings (Zen/Arc-style IA direction).
+- Expanded sidebar-first workspace management, including rename support and reorder flows in the redesigned workspace surface.
+- Added two-finger workspace swipe navigation in empty sidebar areas.
+- Packages now expose a per-installed-package **settings gear** with a modal configuration overlay.
+- Package settings actions use UX-native **Save/Apply** controls while still executing through runtime command flow.
+- Added `docs/PACKAGE_CAPABILITY_TEMPLATE.md` playbook for extension/package UX implementation and added the same checklist to `.github/pull_request_template.md`.
+- Added `docs/ISSUE_IMPLEMENTATION_LOG_2026-03-22.md` for consolidated release-cycle implementation tracking.
 - Added icon workflow documentation at `docs/ICONS.md` (source of truth + regeneration + validation checklist).
 - Session context menu now includes **Mark unread** to re-flag a previously read session tab.
 
 ### Fixed
+- Hardened workspace swipe gestures (direction, overshoot, stale-load cancellation, and gesture-lock consistency).
+- Improved rapid workspace/session switching stability by decoupling hydration and guarding stale switch work.
 - Provider/runtime callback errors now surface inline in the chat timeline (CLI parity), including assistant `stopReason: "error"` + `errorMessage` mapping and stderr/stdout fallback parsing.
-- Windows missing-CLI onboarding now catches more spawn/ENOENT/CreateProcess patterns and checks common install locations (AppData npm, Program Files nodejs, NVM vars, Scoop shims).
-- Session/workspace switching flow includes preload/cache and stale-load guards to reduce wrong-content flashes during rapid switching.
+- Expanded Windows missing-CLI discovery/onboarding handling for common npm/node/nvm/scoop install locations and spawn error patterns.
+- Session/workspace switching flow now includes preload/cache + stale-load guards to reduce wrong-content flashes during rapid switching.
 
 ### Changed
 - Package-specific config was removed from global Settings and moved into the Packages capability surface.
-- Package configuration UX is now command/capability-driven and package-agnostic, with no package-name hardcoding in desktop core.
-- Switched icon source to official Pi geometry from `https://pi.dev/logo.svg` with a larger uniform pixel-`D` desktop badge and regenerated all platform icon assets in `src-tauri/icons/**`.
-- Native traffic-light controls now reveal `× / − / +` glyphs only on hover/focus to keep default titlebar noise low while preserving affordance.
+- Package configuration UX is command/capability-driven and package-agnostic, with no package-name hardcoding in desktop core.
+- Native traffic-light controls now reveal `× / − / +` glyphs on hover/focus with a calmer default state.
+- Icon source switched to official Pi geometry from `https://pi.dev/logo.svg`; final icon is black/white-only with a larger uniform pixel-`D` desktop badge.
+- Regenerated all platform icon assets in `src-tauri/icons/**`.
+
+### Notes
+- Windows follow-up issue #44 remains open for real Windows first-run onboarding smoke validation.
+- macOS unsigned workaround (if needed): `xattr -cr /Applications/Pi\ Desktop.app`
 
 ## [0.1.6] - 2026-03-20
 
