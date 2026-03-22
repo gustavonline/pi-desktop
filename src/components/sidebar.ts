@@ -1144,7 +1144,7 @@ export class Sidebar {
 			menuContent = html`
 				<div class="sidebar-context-menu" style=${`left:${menu.x}px;top:${menu.y}px`} @click=${(e: Event) => e.stopPropagation()}>
 					<button @click=${() => this.runSessionContextAction("fork")}>Fork from message…</button>
-					<button @click=${() => this.runSessionContextAction("markUnread")}>Mark unread again</button>
+					<button @click=${() => this.runSessionContextAction("markUnread")}>Mark unread</button>
 					<div class="sidebar-context-menu-divider"></div>
 					<button @click=${() => this.runSessionContextAction("rename")}>Rename session</button>
 					<button class="danger" @click=${() => this.runSessionContextAction("delete")}>Delete session</button>
