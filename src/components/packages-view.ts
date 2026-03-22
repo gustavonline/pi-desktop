@@ -25,6 +25,18 @@ interface InstalledDisplayItem extends InstalledPackageItem {
 	openUrl: string | null;
 }
 
+interface PackageConfigCommand {
+	name: string;
+	description: string;
+	path: string;
+}
+
+interface ModelOption {
+	provider: string;
+	id: string;
+	label: string;
+}
+
 type UiIcon =
 	| "package"
 	| "extension"
@@ -32,6 +44,7 @@ type UiIcon =
 	| "theme"
 	| "prompt"
 	| "open"
+	| "settings"
 	| "plus"
 	| "remove";
 
@@ -96,6 +109,39 @@ function parsePiListOutput(output: string): { user: InstalledPackageItem[]; proj
 	return { user, project };
 }
 
+function normalizeFsPath(path: string | null | undefined): string {
+	if (!path) return "";
+	return path.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+}
+
+function isLikelyConfigCommand(name: string, description: string): boolean {
+	const haystack = `${name} ${description}`.toLowerCase();
+	return /(^|[-_\s])config(?:$|[-_\s])/.test(haystack) ||
+		/(^|\b)(configure|settings|setup)(\b|$)/.test(haystack);
+}
+
+function npmPackageNameFromSource(source: string): string {
+	if (!source) return "";
+	if (source.startsWith("npm:")) return source.slice(4).trim().toLowerCase();
+	if (/^[@a-z0-9][\w./-]*$/i.test(source) && !source.includes(":")) return source.trim().toLowerCase();
+	return "";
+}
+
+function pathMatchesNpmPackage(normalizedPath: string, source: string): boolean {
+	const packageName = npmPackageNameFromSource(source);
+	if (!packageName) return false;
+	return normalizedPath.includes(`/node_modules/${packageName}/`) || normalizedPath.endsWith(`/node_modules/${packageName}`);
+}
+
+function commandLikelyNeedsModelArg(command: PackageConfigCommand): boolean {
+	const haystack = `${command.name} ${command.description}`.toLowerCase();
+	return /(^|\b)(model|provider)(\b|$)/.test(haystack) || haystack.includes("provider/model");
+}
+
+function modelRef(provider: string, id: string): string {
+	return `${provider}/${id}`;
+}
+
 function icon(name: UiIcon): TemplateResult {
 	switch (name) {
 		case "package":
@@ -110,6 +156,8 @@ function icon(name: UiIcon): TemplateResult {
 			return html`<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.1 2.8h5.4l2.4 2.4V13H4.1z"></path><path d="M9.5 2.8v2.4h2.4"></path><path d="M5.8 8h4.4"></path><path d="M5.8 10.2h3.4"></path></svg>`;
 		case "open":
 			return html`<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3h7v7"></path><path d="M13 3L5.4 10.6"></path><path d="M12.5 9v3a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h3"></path></svg>`;
+		case "settings":
+			return html`<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.8 4h4.5"></path><path d="M9.8 4h3.4"></path><circle cx="8.3" cy="4" r="1.3"></circle><path d="M2.8 8h2.3"></path><path d="M7.2 8h6"></path><circle cx="6" cy="8" r="1.3"></circle><path d="M2.8 12h5.7"></path><path d="M10.5 12h2.7"></path><circle cx="9.1" cy="12" r="1.3"></circle></svg>`;
 		case "plus":
 			return html`<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.4v9.2"></path><path d="M3.4 8h9.2"></path></svg>`;
 		case "remove":
@@ -149,6 +197,16 @@ export class PackagesView {
 	private query = "";
 	private currentProjectPath: string | null = null;
 	private onBack: (() => void) | null = null;
+	private packageConfigCommands = new Map<string, PackageConfigCommand[]>();
+	private activePackageConfigSource: string | null = null;
+	private activePackageConfigLabel = "";
+	private runningConfigCommand = false;
+	private packageConfigStatus = "";
+	private packageConfigCommandArgs = new Map<string, string>();
+	private configModels: ModelOption[] = [];
+	private configModelsLoading = false;
+	private configModelsLoaded = false;
+	private configModelsError = "";
 
 	constructor(container: HTMLElement) {
 		this.container = container;
@@ -270,12 +328,329 @@ export class PackagesView {
 
 			this.installedUser = uniqueBy([...parsedUser.user, ...parsedProject.user], (item) => item.source);
 			this.installedProject = uniqueBy([...parsedUser.project, ...parsedProject.project], (item) => item.source);
+			await this.refreshPackageConfigCommands();
+			if (this.activePackageConfigSource && !this.isNormalizedSourceInstalled(this.activePackageConfigSource)) {
+				this.closeActivePackageConfig();
+			}
 		} catch (err) {
 			this.configError = err instanceof Error ? err.message : String(err);
 		} finally {
 			this.loadingConfig = false;
 			this.render();
 		}
+	}
+
+	private async refreshPackageConfigCommands(): Promise<void> {
+		const installedItems = this.getInstalledItems(false);
+		if (installedItems.length === 0) {
+			this.packageConfigCommands = new Map();
+			return;
+		}
+
+		let commands: Array<Record<string, unknown>> = [];
+		try {
+			commands = await rpcBridge.getCommands();
+		} catch {
+			this.packageConfigCommands = new Map();
+			return;
+		}
+
+		const bySource = new Map<string, PackageConfigCommand[]>();
+		for (const item of installedItems) {
+			const key = normalizeRecommendedSource(item.source);
+			if (!bySource.has(key)) bySource.set(key, []);
+		}
+
+		for (const raw of commands) {
+			const source = typeof raw.source === "string" ? raw.source : "";
+			const name = typeof raw.name === "string" ? raw.name.trim() : "";
+			const description = typeof raw.description === "string" ? raw.description.trim() : "";
+			const path = typeof raw.path === "string" ? raw.path : "";
+
+			if (source !== "extension" || !name || !path) continue;
+			if (!isLikelyConfigCommand(name, description)) continue;
+
+			const normalizedPath = normalizeFsPath(path);
+			if (!normalizedPath) continue;
+
+			for (const item of installedItems) {
+				const normalizedSource = normalizeRecommendedSource(item.source);
+				const list = bySource.get(normalizedSource);
+				if (!list) continue;
+
+				const normalizedLocation = normalizeFsPath(item.location);
+				const locationMatches = normalizedLocation
+					? normalizedPath === normalizedLocation || normalizedPath.startsWith(`${normalizedLocation}/`)
+					: false;
+				const npmFallbackMatches = !locationMatches && pathMatchesNpmPackage(normalizedPath, item.source);
+				if (!locationMatches && !npmFallbackMatches) continue;
+
+				if (list.some((command) => command.name === name)) continue;
+				list.push({ name, description, path });
+			}
+		}
+
+		for (const list of bySource.values()) {
+			list.sort((a, b) => a.name.localeCompare(b.name));
+		}
+
+		this.packageConfigCommands = bySource;
+	}
+
+	private packageConfigCommandKey(source: string, commandName: string): string {
+		return `${normalizeRecommendedSource(source)}::${commandName.trim().toLowerCase()}`;
+	}
+
+	private getPackageConfigCommandArg(source: string, commandName: string): string {
+		const key = this.packageConfigCommandKey(source, commandName);
+		return this.packageConfigCommandArgs.get(key) ?? "";
+	}
+
+	private setPackageConfigCommandArg(source: string, commandName: string, value: string): void {
+		const key = this.packageConfigCommandKey(source, commandName);
+		if (!value) {
+			this.packageConfigCommandArgs.delete(key);
+			return;
+		}
+		this.packageConfigCommandArgs.set(key, value);
+	}
+
+	private mapModelOptions(models: Array<Record<string, unknown>>): ModelOption[] {
+		const mapped: ModelOption[] = [];
+		const seen = new Set<string>();
+		for (const raw of models) {
+			const provider = typeof raw.provider === "string"
+				? raw.provider.trim()
+				: typeof raw.providerId === "string"
+					? raw.providerId.trim()
+					: typeof raw.provider_id === "string"
+						? raw.provider_id.trim()
+						: "";
+			const id = typeof raw.id === "string"
+				? raw.id.trim()
+				: typeof raw.modelId === "string"
+					? raw.modelId.trim()
+					: typeof raw.model_id === "string"
+						? raw.model_id.trim()
+						: typeof raw.model === "string"
+							? raw.model.trim()
+							: "";
+			if (!provider || !id) continue;
+			const ref = modelRef(provider, id);
+			if (seen.has(ref)) continue;
+			seen.add(ref);
+			mapped.push({ provider, id, label: ref });
+		}
+		return mapped.sort((a, b) => a.label.localeCompare(b.label));
+	}
+
+	private seedModelArgsForSource(source: string, commands: PackageConfigCommand[]): void {
+		if (this.configModels.length === 0) return;
+		const fallback = modelRef(this.configModels[0].provider, this.configModels[0].id);
+		for (const command of commands) {
+			if (!commandLikelyNeedsModelArg(command)) continue;
+			const currentArg = this.getPackageConfigCommandArg(source, command.name);
+			if (currentArg) continue;
+			this.setPackageConfigCommandArg(source, command.name, fallback);
+		}
+	}
+
+	private async ensureConfigModelsLoaded(force = false): Promise<void> {
+		if (this.configModelsLoading) return;
+		if (this.configModelsLoaded && !force) return;
+
+		this.configModelsLoading = true;
+		this.configModelsError = "";
+		this.render();
+		try {
+			const models = await rpcBridge.getAvailableModels().catch(() => []);
+			this.configModels = this.mapModelOptions(models as Array<Record<string, unknown>>);
+			this.configModelsLoaded = true;
+
+			if (this.activePackageConfigSource) {
+				const commands = this.packageConfigCommands.get(this.activePackageConfigSource) ?? [];
+				this.seedModelArgsForSource(this.activePackageConfigSource, commands);
+			}
+		} catch (err) {
+			this.configModels = [];
+			this.configModelsLoaded = true;
+			this.configModelsError = err instanceof Error ? err.message : String(err);
+		} finally {
+			this.configModelsLoading = false;
+			this.render();
+		}
+	}
+
+	private getConfigCommandsForItem(item: InstalledDisplayItem): PackageConfigCommand[] {
+		const normalizedSource = normalizeRecommendedSource(item.source);
+		return this.packageConfigCommands.get(normalizedSource) ?? [];
+	}
+
+	private isNormalizedSourceInstalled(normalizedSource: string): boolean {
+		return this.getInstalledItems(false).some((item) => normalizeRecommendedSource(item.source) === normalizedSource);
+	}
+
+	private openPackageConfig(item: InstalledDisplayItem): void {
+		const source = normalizeRecommendedSource(item.source);
+		const commands = this.getConfigCommandsForItem(item);
+		this.activePackageConfigSource = source;
+		this.activePackageConfigLabel = item.displayName;
+		this.packageConfigStatus = "";
+		if (this.configModelsLoaded) {
+			this.seedModelArgsForSource(source, commands);
+		}
+		if (commands.some((command) => commandLikelyNeedsModelArg(command))) {
+			void this.ensureConfigModelsLoaded();
+		}
+		this.render();
+	}
+
+	private closeActivePackageConfig(): void {
+		this.activePackageConfigSource = null;
+		this.activePackageConfigLabel = "";
+		this.packageConfigStatus = "";
+		this.render();
+	}
+
+	private async runPackageConfigCommand(command: PackageConfigCommand, args = ""): Promise<void> {
+		if (this.runningConfigCommand || this.runningCommand) return;
+		this.runningConfigCommand = true;
+		const slashCommand = command.name.startsWith("/") ? command.name : `/${command.name}`;
+		const trimmedArgs = args.trim();
+		const promptText = trimmedArgs ? `${slashCommand} ${trimmedArgs}` : slashCommand;
+		const supportsModelPicker = commandLikelyNeedsModelArg(command);
+		const actionVerb = supportsModelPicker ? "save" : "apply";
+		const actionVerbPast = supportsModelPicker ? "Saved" : "Applied";
+		this.packageConfigStatus = `${actionVerb[0].toUpperCase()}${actionVerb.slice(1)} package setting…`;
+		this.render();
+		try {
+			await rpcBridge.prompt(promptText);
+			this.packageConfigStatus = `${actionVerbPast} package setting.`;
+			this.commandStatus = `${actionVerbPast} package setting for ${this.activePackageConfigLabel || "package"}.`;
+			this.commandOutput += `${this.commandOutput ? "\n" : ""}[package-config] ${promptText}\n`;
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			this.packageConfigStatus = `Failed to ${actionVerb} package setting: ${message}`;
+			this.commandStatus = `Config command failed: ${message}`;
+		}
+		this.runningConfigCommand = false;
+		this.render();
+	}
+
+	private renderPackageConfigCommandEditor(source: string, command: PackageConfigCommand): TemplateResult {
+		const currentArgs = this.getPackageConfigCommandArg(source, command.name);
+		const supportsModelPicker = commandLikelyNeedsModelArg(command);
+		const selectedModel = this.configModels.some((model) => modelRef(model.provider, model.id) === currentArgs) ? currentArgs : "";
+		const modelSelectValue = selectedModel || currentArgs || "";
+		const title = command.description?.trim() || "Package setting";
+		const buttonLabel = supportsModelPicker ? "Save" : "Apply";
+		const buttonBusyLabel = supportsModelPicker ? "Saving…" : "Applying…";
+
+		return html`
+			<div class="packages-config-command-card">
+				<div class="packages-config-command-name">${title}</div>
+				<div class="packages-config-command-desc">${supportsModelPicker ? "Choose model and save." : "Apply command arguments."}</div>
+
+				${supportsModelPicker
+					? html`
+						<div class="packages-config-field">
+							<label class="packages-config-field-label">Model</label>
+							<select
+								class="packages-config-select"
+								.value=${modelSelectValue}
+								?disabled=${this.configModelsLoading || this.runningConfigCommand || this.runningCommand}
+								@change=${(event: Event) => {
+									const value = (event.target as HTMLSelectElement).value;
+									this.setPackageConfigCommandArg(source, command.name, value);
+									this.render();
+								}}
+							>
+								${this.configModelsLoading ? html`<option value="">Loading models…</option>` : nothing}
+								${!this.configModelsLoading ? html`<option value="">Use package default</option>` : nothing}
+								${!this.configModelsLoading && currentArgs && !selectedModel ? html`<option value=${currentArgs}>${currentArgs}</option>` : nothing}
+								${this.configModels.map((model) => {
+									const ref = modelRef(model.provider, model.id);
+									return html`<option value=${ref}>${model.label}</option>`;
+								})}
+							</select>
+						</div>
+					`
+					: html`
+						<div class="packages-config-field">
+							<label class="packages-config-field-label">Arguments</label>
+							<input
+								class="packages-config-input"
+								type="text"
+								placeholder="Optional command arguments"
+								.value=${currentArgs}
+								?disabled=${this.runningConfigCommand || this.runningCommand}
+								@input=${(event: Event) => {
+									const value = (event.target as HTMLInputElement).value;
+									this.setPackageConfigCommandArg(source, command.name, value);
+									this.render();
+								}}
+							/>
+						</div>
+					`}
+
+				<div class="packages-config-command-actions">
+					<button
+						class="ghost-btn"
+						?disabled=${this.runningConfigCommand || this.runningCommand}
+						@click=${() => void this.runPackageConfigCommand(command, this.getPackageConfigCommandArg(source, command.name))}
+					>
+						${this.runningConfigCommand ? buttonBusyLabel : buttonLabel}
+					</button>
+				</div>
+			</div>
+		`;
+	}
+
+	private renderPackageConfigModal(): TemplateResult | typeof nothing {
+		if (!this.activePackageConfigSource) return nothing;
+		const source = this.activePackageConfigSource;
+		const commands = this.packageConfigCommands.get(source) ?? [];
+		const hasModelCommand = commands.some((command) => commandLikelyNeedsModelArg(command));
+
+		return html`
+			<div class="overlay" @click=${(event: Event) => event.target === event.currentTarget && this.closeActivePackageConfig()}>
+				<div class="overlay-card packages-config-modal">
+					<div class="overlay-header">
+						<div>
+							<div class="packages-config-modal-title">Package settings · ${this.activePackageConfigLabel}</div>
+							<div class="packages-config-modal-sub">Configure package capabilities directly from Packages.</div>
+						</div>
+						<button @click=${() => this.closeActivePackageConfig()}>✕</button>
+					</div>
+					<div class="overlay-body packages-config-modal-body">
+						${commands.length === 0
+							? html`
+								<div class="packages-empty">
+									No package config commands were discovered. This package appears to only add runtime capabilities.
+								</div>
+							`
+							: commands.map((command) => this.renderPackageConfigCommandEditor(source, command))}
+
+						<div class="packages-config-modal-actions">
+							<button class="ghost-btn" ?disabled=${this.loadingConfig || this.runningCommand} @click=${() => void this.refreshPackages(false)}>
+								Refresh package commands
+							</button>
+							${hasModelCommand
+								? html`
+									<button class="ghost-btn" ?disabled=${this.configModelsLoading || this.runningConfigCommand} @click=${() => void this.ensureConfigModelsLoaded(true)}>
+										${this.configModelsLoading ? "Refreshing models…" : "Refresh models"}
+									</button>
+								`
+								: nothing}
+							<button class="ghost-btn" @click=${() => this.closeActivePackageConfig()}>Close</button>
+						</div>
+
+						${this.configModelsError ? html`<div class="packages-config-inline-error">Model lookup failed: ${this.configModelsError}</div>` : nothing}
+						${this.packageConfigStatus ? html`<div class="packages-section-submeta">${this.packageConfigStatus}</div>` : nothing}
+					</div>
+				</div>
+			</div>
+		`;
 	}
 
 	private getDisplayName(source: string): string {
@@ -314,7 +689,7 @@ export class PackagesView {
 		};
 	}
 
-	private getInstalledItems(): InstalledDisplayItem[] {
+	private getInstalledItems(applyQuery = true): InstalledDisplayItem[] {
 		const combined = [
 			...this.installedProject.map((item) => ({ ...item, scope: "project" as const })),
 			...this.installedUser.map((item) => ({ ...item, scope: "user" as const })),
@@ -331,6 +706,7 @@ export class PackagesView {
 			)
 			.sort((a, b) => a.displayName.localeCompare(b.displayName));
 
+		if (!applyQuery) return unique;
 		const q = this.normalizeQuery();
 		if (!q) return unique;
 		return unique.filter((item) => `${item.displayName} ${item.source} ${item.location}`.toLowerCase().includes(q));
@@ -690,6 +1066,14 @@ export class PackagesView {
 													? html`<button class="packages-card-action" title="Open package page" @click=${() => void this.openInstalledItem(item)}>${icon("open")}</button>`
 													: nothing}
 												<button
+													class="packages-card-action"
+													?disabled=${this.runningCommand || this.runningConfigCommand}
+													title="Package settings"
+													@click=${() => this.openPackageConfig(item)}
+												>
+													${icon("settings")}
+												</button>
+												<button
 													class="packages-card-action danger"
 													?disabled=${this.runningCommand}
 													title="Uninstall"
@@ -795,7 +1179,7 @@ export class PackagesView {
 								<div class="packages-diagnostics-actions">
 									<button class="ghost-btn" ?disabled=${this.runningCommand} @click=${() => void this.updatePackages()}>Update target</button>
 									<button class="ghost-btn" ?disabled=${this.runningCommand} @click=${() => void this.listPackages()}>List target</button>
-									<button class="ghost-btn" ?disabled=${this.runningCommand} @click=${() => void this.runDesktopNotificationSmokeTest()}>Test desktop notify</button>
+									<button class="ghost-btn" ?disabled=${this.runningCommand} @click=${() => void this.runDesktopNotificationSmokeTest()}>Test desktop notifications</button>
 									<button class="ghost-btn" ?disabled=${this.runningCommand} @click=${() => this.render()}>Refresh logs</button>
 								</div>
 								<pre class="tool-output packages-command-log">${this.commandOutput || "No package command run yet."}</pre>
@@ -805,6 +1189,7 @@ export class PackagesView {
 						: nothing}
 				</div>
 			</div>
+			${this.renderPackageConfigModal()}
 		`;
 
 		render(template, this.container);

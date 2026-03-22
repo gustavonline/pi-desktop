@@ -61,6 +61,8 @@ This keeps the desktop shell generic and maintainable.
 
 For an explicit host contract and capability list, see [`docs/CAPABILITY_MODEL.md`](./CAPABILITY_MODEL.md).
 
+When implementing package/extension-specific desktop affordances, follow [`docs/PACKAGE_CAPABILITY_TEMPLATE.md`](./PACKAGE_CAPABILITY_TEMPLATE.md).
+
 ---
 
 ## Runtime/session design

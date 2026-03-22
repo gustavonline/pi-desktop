@@ -3366,6 +3366,24 @@ function renderApp(): void {
 		});
 	});
 
+	sidebar.setOnSessionMarkUnread((_projectId, sessionPath, _sessionName) => {
+		const workspace = getActiveWorkspace();
+		if (!workspace) return;
+		ensureWorkspaceContentState(workspace);
+		const normalizedTarget = normalizeSessionPath(sessionPath);
+		const targetTab = workspace.sessionTabs.find((tab) => normalizeSessionPath(tab.sessionPath) === normalizedTarget) ?? null;
+		if (!targetTab) {
+			chatView?.notify("Open this session before marking unread", "info");
+			return;
+		}
+		targetTab.needsAttention = true;
+		targetTab.attentionMessage = pickSessionAttentionMessage(targetTab.attentionMessage);
+		persistWorkspaces();
+		syncContentTabsBar(workspace);
+		syncSidebarSelectionFromWorkspace(workspace);
+		chatView?.notify("Marked session as unread", "info");
+	});
+
 	sidebar.setOnSessionRename((projectId, sessionPath, _currentName, nextName) => {
 		const workspace = getActiveWorkspace();
 		const project = sidebar?.getProjectById(projectId);

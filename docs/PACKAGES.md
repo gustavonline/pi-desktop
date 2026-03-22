@@ -54,6 +54,8 @@ When building packages/extensions for desktop compatibility:
 - keep status text concise and desktop-safe
 - expose behavior as optional, user-installable modules
 
+For Desktop-side implementation rules (modal settings flow, dynamic command discovery, Save/Apply UX labels), follow [`docs/PACKAGE_CAPABILITY_TEMPLATE.md`](./PACKAGE_CAPABILITY_TEMPLATE.md).
+
 ---
 
 ## Recommended package model

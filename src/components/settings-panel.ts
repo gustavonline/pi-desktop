@@ -20,12 +20,6 @@ interface SettingsState {
 	followUpMode: QueueMode;
 }
 
-interface ModelOption {
-	provider: string;
-	id: string;
-	label: string;
-}
-
 export class SettingsPanel {
 	private container: HTMLElement;
 	private isOpen = false;
@@ -52,12 +46,6 @@ export class SettingsPanel {
 	private onCliStatusChange: ((status: CliUpdateStatus | null) => void) | null = null;
 	private compatibilityReport: RpcCompatibilityReport | null = null;
 	private compatibilityLoading = false;
-	private autoRenameModels: ModelOption[] = [];
-	private autoRenameLoading = false;
-	private autoRenameSaving = false;
-	private autoRenameModelValue = "";
-	private autoRenamePath: string | null = null;
-	private autoRenameStatusMessage = "";
 
 	constructor(container: HTMLElement) {
 		this.container = container;
@@ -139,7 +127,6 @@ export class SettingsPanel {
 			this.refreshDesktopStatus(),
 			this.refreshCliStatus(),
 			this.refreshCompatibilityStatus(),
-			this.refreshAutoRenameSettings(),
 		]);
 	}
 
@@ -221,126 +208,6 @@ export class SettingsPanel {
 		}
 	}
 
-	private joinPath(base: string, child: string): string {
-		const sep = base.includes("\\") ? "\\" : "/";
-		return `${base.replace(/[\\/]+$/, "")}${sep}${child}`;
-	}
-
-	private modelOptionValue(provider: string, id: string): string {
-		return `${provider}::${id}`;
-	}
-
-	private splitModelOptionValue(value: string): { provider: string; id: string } | null {
-		const [provider, ...rest] = value.split("::");
-		const id = rest.join("::");
-		if (!provider || !id) return null;
-		return { provider, id };
-	}
-
-	private mapModelOptions(models: Array<Record<string, unknown>>): ModelOption[] {
-		const mapped: ModelOption[] = [];
-		const seen = new Set<string>();
-		for (const raw of models) {
-			const provider = typeof raw.provider === "string"
-				? raw.provider.trim()
-				: typeof raw.providerId === "string"
-					? raw.providerId.trim()
-					: typeof raw.provider_id === "string"
-						? raw.provider_id.trim()
-						: "";
-			const id = typeof raw.id === "string"
-				? raw.id.trim()
-				: typeof raw.modelId === "string"
-					? raw.modelId.trim()
-					: typeof raw.model_id === "string"
-						? raw.model_id.trim()
-						: typeof raw.model === "string"
-							? raw.model.trim()
-							: "";
-			if (!provider || !id) continue;
-			const key = `${provider}::${id}`;
-			if (seen.has(key)) continue;
-			seen.add(key);
-			mapped.push({ provider, id, label: `${provider}/${id}` });
-		}
-		return mapped;
-	}
-
-	private async resolveAutoRenamePath(): Promise<string> {
-		if (this.autoRenamePath) return this.autoRenamePath;
-		const { homeDir } = await import("@tauri-apps/api/path");
-		const home = await homeDir();
-		const agentRoot = this.joinPath(this.joinPath(home, ".pi"), "agent");
-		const extensionsRoot = this.joinPath(agentRoot, "extensions");
-		this.autoRenamePath = this.joinPath(extensionsRoot, "pi-session-auto-rename.json");
-		return this.autoRenamePath;
-	}
-
-	private async refreshAutoRenameSettings(): Promise<void> {
-		this.autoRenameLoading = true;
-		this.autoRenameStatusMessage = "";
-		this.render();
-		try {
-			const [models, path] = await Promise.all([
-				rpcBridge.getAvailableModels().catch(() => []),
-				this.resolveAutoRenamePath(),
-			]);
-			this.autoRenameModels = this.mapModelOptions(models as Array<Record<string, unknown>>);
-
-			const { exists, readTextFile } = await import("@tauri-apps/plugin-fs");
-			const hasConfig = await exists(path);
-			if (hasConfig) {
-				const raw = await readTextFile(path);
-				const parsed = JSON.parse(raw) as Record<string, unknown>;
-				const provider = typeof parsed.provider === "string" ? parsed.provider.trim() : "";
-				const id = typeof parsed.id === "string"
-					? parsed.id.trim()
-					: typeof parsed.model === "string"
-						? parsed.model.trim()
-						: typeof parsed.modelId === "string"
-							? parsed.modelId.trim()
-							: "";
-				if (provider && id) {
-					this.autoRenameModelValue = this.modelOptionValue(provider, id);
-				}
-			} else if (!this.autoRenameModelValue) {
-				const active = await rpcBridge.getState().catch(() => null);
-				if (active?.model?.provider && active?.model?.id) {
-					this.autoRenameModelValue = this.modelOptionValue(active.model.provider, active.model.id);
-				} else if (this.autoRenameModels[0]) {
-					const fallback = this.autoRenameModels[0];
-					this.autoRenameModelValue = this.modelOptionValue(fallback.provider, fallback.id);
-				}
-			}
-		} catch (err) {
-			this.autoRenameStatusMessage = err instanceof Error ? err.message : "Failed to load auto-rename settings.";
-		} finally {
-			this.autoRenameLoading = false;
-			this.render();
-		}
-	}
-
-	private async setAutoRenameModel(value: string): Promise<void> {
-		if (this.autoRenameSaving) return;
-		const parsed = this.splitModelOptionValue(value);
-		if (!parsed) return;
-		this.autoRenameSaving = true;
-		this.autoRenameStatusMessage = "Saving auto-rename model…";
-		this.render();
-		try {
-			const path = await this.resolveAutoRenamePath();
-			const { writeTextFile } = await import("@tauri-apps/plugin-fs");
-			const content = JSON.stringify({ provider: parsed.provider, id: parsed.id }, null, 2);
-			await writeTextFile(path, content);
-			this.autoRenameModelValue = value;
-			this.autoRenameStatusMessage = `Auto-rename model set to ${parsed.provider}/${parsed.id}.`;
-		} catch (err) {
-			this.autoRenameStatusMessage = err instanceof Error ? err.message : "Failed to save auto-rename model.";
-		} finally {
-			this.autoRenameSaving = false;
-			this.render();
-		}
-	}
 
 	private async updateCliNow(): Promise<void> {
 		if (this.cliUpdating) return;
@@ -555,33 +422,13 @@ export class SettingsPanel {
 					</div>
 
 					<div class="settings-section">
-						<div class="settings-section-title">Auto-rename extension</div>
-						<div class="settings-row">
-							<div>
-								<div class="settings-label">Provider/model for auto title generation</div>
-								<div class="settings-desc">Pick from your currently available authenticated models.</div>
-							</div>
-							<select
-								class="settings-select"
-								.value=${this.autoRenameModelValue}
-								?disabled=${this.autoRenameLoading || this.autoRenameSaving || this.autoRenameModels.length === 0}
-								@change=${(e: Event) => void this.setAutoRenameModel((e.target as HTMLSelectElement).value)}
-							>
-								${this.autoRenameLoading ? html`<option value="">Loading models…</option>` : null}
-								${!this.autoRenameLoading && this.autoRenameModels.length === 0 ? html`<option value="">No models available</option>` : null}
-								${!this.autoRenameLoading && this.autoRenameModelValue && !this.autoRenameModels.some((m) => this.modelOptionValue(m.provider, m.id) === this.autoRenameModelValue)
-									? html`<option value=${this.autoRenameModelValue}>${this.autoRenameModelValue.replace("::", "/")}</option>`
-									: null}
-								${this.autoRenameModels.map((m) => html`<option value=${this.modelOptionValue(m.provider, m.id)}>${m.label}</option>`)}
-							</select>
+						<div class="settings-section-title">Package configuration</div>
+						<div class="settings-desc">
+							Package-specific settings are managed in <strong>Packages</strong> (gear icon on installed packages).
 						</div>
-						<div class="settings-actions">
-							<button class="ghost-btn" ?disabled=${this.autoRenameLoading || this.autoRenameSaving} @click=${() => this.refreshAutoRenameSettings()}>
-								${this.autoRenameLoading ? "Refreshing…" : "Refresh models/config"}
-							</button>
+						<div class="settings-desc">
+							Desktop stays capability-driven: packages can expose config commands, and those run via the normal chat/runtime flow.
 						</div>
-						${this.autoRenamePath ? html`<div class="settings-desc">Config: <code>${this.autoRenamePath}</code></div>` : null}
-						${this.autoRenameStatusMessage ? html`<div class="settings-desc">${this.autoRenameStatusMessage}</div>` : null}
 					</div>
 
 					<div class="settings-section">
