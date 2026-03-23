@@ -1,6 +1,6 @@
 [package]
 name = "pi-desktop"
-version = "0.1.7"
+version = "0.1.8"
 description = "Pi Desktop - A minimal coding agent desktop app"
 authors = ["Pi Desktop contributors"]
 edition = "2021"

@@ -9,7 +9,7 @@ A native-feeling desktop shell for the **Pi Coding Agent** CLI (`pi --mode rpc`)
 </p>
 
 <p align="left">
-  <img src="./assets/branding/pi-desktop-icon.svg" alt="Pi Desktop app icon" width="88" />
+  <img src="./assets/branding/pi-desktop-icon.svg" alt="Pi DESK app icon" width="120" />
 </p>
 
 Pi Desktop is intentionally **minimal** and **extension-first**:
@@ -44,14 +44,14 @@ Pi Desktop gives you a stable desktop UX for Pi without hardcoding product logic
 - **Hardcoding rule:** avoid embedding project-specific automation/policy logic in app core.
 - **Architecture intent:** Pi Desktop is a capability host for extensions, not a monolithic workflow engine.
 
-### Recent highlights (post-0.1.6)
+### Recent highlights (post-0.1.7)
 
 - Package-specific config moved out of global Settings and into a **Packages modal settings flow** (capability-driven, package-agnostic).
 - Provider/runtime failures are now shown **inline in chat timeline** (CLI parity), including `stopReason: "error"` assistant failures.
 - Windows missing-CLI onboarding/path discovery was expanded for common install paths and spawn error patterns.
 - Session context menu now supports **Mark unread**.
 - Native traffic-light controls now reveal `× / − / +` glyphs on hover/focus.
-- App icon set was refreshed from official Pi logo geometry with desktop-specific badge treatment.
+- Full icon set is now rebranded to the new **Pi DESK** mark (Pi monogram + pixel DESK wordmark), regenerated across all desktop/mobile bundle targets.
 
 ---
 

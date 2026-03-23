@@ -6,6 +6,13 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-03-23
+
+### Changed
+- Rebranded the app icon to the new **Pi DESK** mark (Pi monogram + pixel `DESK` wordmark) with a handcrafted SVG source.
+- Regenerated all bundle icon artifacts from the new source across macOS, Windows, Linux, iOS, and Android targets (`src-tauri/icons/**`).
+- Updated branding references in README and icon workflow documentation (`docs/ICONS.md`).
+
 ## [0.1.7] - 2026-03-22
 
 ### Added

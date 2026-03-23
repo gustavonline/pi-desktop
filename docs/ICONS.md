@@ -6,11 +6,12 @@ This document defines how Pi Desktop app icons are maintained and regenerated.
 
 - Primary source artwork: `assets/branding/pi-desktop-icon.svg`
 
-Current source uses:
-- official Pi geometry from `https://pi.dev/logo.svg`
-- a subtle pixel `D` badge for desktop branding
+Current source uses a handcrafted **Pi DESK** mark:
+- Pi monogram in high-contrast white on near-black background
+- Pixel `DESK` wordmark drawn from a fixed grid (no runtime/system font dependency)
+- Square composition optimized for app launcher readability
 
-Keep this file square and minimal. Prefer high-contrast, low-detail shapes that remain readable at small sizes.
+Keep this file square, simple, and high-contrast. Avoid thin strokes, gradients, and micro-details that disappear at 32px.
 
 ## Regenerate platform icon set
 
@@ -45,5 +46,5 @@ After regenerating icons:
 
 ## Notes
 
-- Avoid tiny details, soft gradients, or thin strokes that collapse below 32px.
-- If icon concept changes significantly, update issue #23 with before/after screenshots and approval notes.
+- The source icon should stay deterministic and editable as plain SVG.
+- If icon concept changes significantly, document rationale in changelog/release notes.
