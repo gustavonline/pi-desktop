@@ -110,6 +110,20 @@ interface WelcomeDashboardSummary {
 	updatedAt: number;
 }
 
+interface ComposerSkillDraft {
+	name: string;
+	commandText: string;
+	scope: string | null;
+}
+
+interface SlashPaletteItem {
+	id: string;
+	section: "Actions" | "Skills";
+	label: string;
+	hint: string;
+	skillName?: string;
+}
+
 function uid(prefix = "id"): string {
 	return `${prefix}_${Math.random().toString(36).slice(2, 8)}_${Date.now().toString(36)}`;
 }
@@ -295,8 +309,14 @@ export class ChatView {
 	private forkExpandedToolRows = new Set<string>();
 	private historyQuery = "";
 	private historyRoleFilter: UiRole | "all" = "all";
-	private quickActionsOpen = false;
 	private autoFollowChat = true;
+	private selectedSkillDraft: ComposerSkillDraft | null = null;
+	private slashPaletteOpen = false;
+	private slashPaletteQuery = "";
+	private slashPaletteIndex = 0;
+	private slashSkills: string[] = [];
+	private slashSkillsLoading = false;
+	private slashSkillsUpdatedAt = 0;
 	private runHasAssistantText = false;
 	private readonly workingStatusPhrases = [
 		"starting",
@@ -403,8 +423,12 @@ export class ChatView {
 			__PI_DESKTOP_PUSH_TRACE__?: (message: string) => void;
 		}).__PI_DESKTOP_PUSH_TRACE__;
 		push?.(`chat:setProjectPath ${previous ?? "-"} -> ${path ?? "-"}`);
-		this.quickActionsOpen = false;
 		this.gitMenuOpen = false;
+		this.selectedSkillDraft = null;
+		this.slashPaletteOpen = false;
+		this.slashPaletteQuery = "";
+		this.slashPaletteIndex = 0;
+		this.slashSkillsUpdatedAt = 0;
 		if (!path) {
 			this.bindingStatusText = null;
 			this.modelLoadRequestSeq += 1;
@@ -427,6 +451,10 @@ export class ChatView {
 		this.lastBackendSessionFile = null;
 		this.lastBackendRefreshError = null;
 		this.pendingDeliveryMode = "prompt";
+		this.selectedSkillDraft = null;
+		this.slashPaletteOpen = false;
+		this.slashPaletteQuery = "";
+		this.slashPaletteIndex = 0;
 		this.runHasAssistantText = false;
 		this.clearWorkingStatusTimer(true);
 		this.bindingStatusText = projectPath ? (statusText ?? "Loading session…") : null;
@@ -439,6 +467,7 @@ export class ChatView {
 
 	setInputText(text: string): void {
 		this.inputText = text;
+		this.updateSlashPaletteStateFromInput();
 		this.render();
 		requestAnimationFrame(() => {
 			const textarea = this.container.querySelector("#chat-input") as HTMLTextAreaElement | null;
@@ -448,6 +477,242 @@ export class ChatView {
 			textarea.style.height = `${Math.min(textarea.scrollHeight, 200)}px`;
 			textarea.focus();
 		});
+	}
+
+	stageComposerCommand(commandText: string): void {
+		const draft = this.parseComposerSkillDraftFromCommand(commandText);
+		if (draft) {
+			this.selectedSkillDraft = draft;
+			this.inputText = "";
+			this.updateSlashPaletteStateFromInput();
+			this.render();
+			requestAnimationFrame(() => {
+				const textarea = this.container.querySelector("#chat-input") as HTMLTextAreaElement | null;
+				textarea?.focus();
+			});
+			return;
+		}
+		this.selectedSkillDraft = null;
+		this.inputText = commandText;
+		this.closeSlashPalette();
+		this.render();
+		requestAnimationFrame(() => {
+			const textarea = this.container.querySelector("#chat-input") as HTMLTextAreaElement | null;
+			if (!textarea) return;
+			textarea.value = commandText;
+			textarea.style.height = "auto";
+			textarea.style.height = `${Math.min(textarea.scrollHeight, 200)}px`;
+			textarea.focus();
+		});
+	}
+
+	private parseComposerSkillDraftFromCommand(commandText: string): ComposerSkillDraft | null {
+		const trimmed = commandText.trim();
+		const match = trimmed.match(/^\/skill:([a-zA-Z0-9._-]+)\b([\s\S]*)$/);
+		if (!match) return null;
+		const name = match[1] || "";
+		const suffix = (match[2] || "").trim();
+		if (!suffix) {
+			return { name, commandText: `/skill:${name}`, scope: null };
+		}
+		if (!suffix.startsWith("{")) {
+			return { name, commandText: `/skill:${name} ${suffix}`, scope: null };
+		}
+		try {
+			const payload = JSON.parse(suffix) as { scope?: unknown };
+			return {
+				name,
+				commandText: `/skill:${name} ${suffix}`,
+				scope: typeof payload.scope === "string" && payload.scope.trim().length > 0 ? payload.scope.trim() : null,
+			};
+		} catch {
+			return { name, commandText: `/skill:${name} ${suffix}`, scope: null };
+		}
+	}
+
+	private removeComposerSkillDraft(): void {
+		this.selectedSkillDraft = null;
+		this.render();
+		requestAnimationFrame(() => {
+			const textarea = this.container.querySelector("#chat-input") as HTMLTextAreaElement | null;
+			textarea?.focus();
+		});
+	}
+
+	private slashQueryFromInput(): string | null {
+		const raw = this.inputText;
+		if (!raw.startsWith("/")) return null;
+		if (raw.includes("\n")) return null;
+		return raw.slice(1).trimStart();
+	}
+
+	private updateSlashPaletteStateFromInput(): void {
+		const query = this.slashQueryFromInput();
+		if (query === null) {
+			this.slashPaletteOpen = false;
+			this.slashPaletteQuery = "";
+			this.slashPaletteIndex = 0;
+			return;
+		}
+		const normalized = query.toLowerCase();
+		if (!this.slashPaletteOpen || normalized !== this.slashPaletteQuery) {
+			this.slashPaletteIndex = 0;
+		}
+		this.slashPaletteOpen = true;
+		this.slashPaletteQuery = normalized;
+		void this.ensureSlashSkillsLoaded();
+	}
+
+	private closeSlashPalette(clearInput = false): void {
+		this.slashPaletteOpen = false;
+		this.slashPaletteQuery = "";
+		this.slashPaletteIndex = 0;
+		if (clearInput) this.inputText = "";
+	}
+
+	private normalizeSkillNameFromCommand(rawName: string): string | null {
+		const trimmed = rawName.trim();
+		if (!trimmed) return null;
+		const fromPrefixed = trimmed.match(/^\/?skill:([a-zA-Z0-9._-]+)\b/i);
+		if (fromPrefixed) return fromPrefixed[1] ?? null;
+		if (/^[a-zA-Z0-9._-]+$/.test(trimmed)) return trimmed;
+		return null;
+	}
+
+	private collectRuntimeSkillNames(commands: Array<Record<string, unknown>>): string[] {
+		const names = new Set<string>();
+		for (const raw of commands) {
+			const source = normalizeText((raw as Record<string, unknown>).source).toLowerCase();
+			if (source !== "skill") continue;
+			const name = this.normalizeSkillNameFromCommand(normalizeText((raw as Record<string, unknown>).name));
+			if (name) names.add(name);
+		}
+		return [...names].sort((a, b) => a.localeCompare(b));
+	}
+
+	private async ensureSlashSkillsLoaded(force = false): Promise<void> {
+		if (this.slashSkillsLoading) return;
+		if (!force && this.slashSkills.length > 0 && Date.now() - this.slashSkillsUpdatedAt < 120_000) return;
+		this.slashSkillsLoading = true;
+		if (this.slashPaletteOpen) this.render();
+		try {
+			const runtimeCommands = await rpcBridge.getCommands().catch(() => []);
+			const runtimeSkills = this.collectRuntimeSkillNames(runtimeCommands as Array<Record<string, unknown>>);
+
+			const { homeDir } = await import("@tauri-apps/api/path");
+			const home = await homeDir();
+			const roots = [joinFsPath(joinFsPath(joinFsPath(home, ".pi"), "agent"), "skills")];
+			const sets = await Promise.all(roots.map((root) => this.collectSkillNames(root)));
+			const merged = new Set<string>(runtimeSkills);
+			for (const list of sets) {
+				for (const name of list) merged.add(name);
+			}
+			this.slashSkills = [...merged].sort((a, b) => a.localeCompare(b));
+			this.slashSkillsUpdatedAt = Date.now();
+		} catch {
+			this.slashSkills = this.slashSkills.slice();
+			this.slashSkillsUpdatedAt = Date.now();
+		} finally {
+			this.slashSkillsLoading = false;
+			if (this.slashPaletteOpen) this.render();
+		}
+	}
+
+	private matchesSlashQuery(query: string, ...values: string[]): boolean {
+		if (!query) return true;
+		const haystack = values.join(" ").toLowerCase();
+		return haystack.includes(query);
+	}
+
+	private getSlashPaletteItems(): SlashPaletteItem[] {
+		if (!this.slashPaletteOpen) return [];
+		const query = this.slashPaletteQuery;
+		const actions: SlashPaletteItem[] = [
+			{ id: "action:new-session", section: "Actions" as const, label: "New session", hint: "Create a fresh session tab" },
+			{ id: "action:rename-session", section: "Actions" as const, label: "Rename session", hint: "Rename current session" },
+			{ id: "action:open-terminal", section: "Actions" as const, label: "Open terminal", hint: "Switch to terminal pane" },
+			{ id: "action:compact", section: "Actions" as const, label: "Compact context", hint: "Run session compaction now" },
+			{ id: "action:fork", section: "Actions" as const, label: "Fork from message", hint: "Create fork from session history" },
+			{ id: "action:history", section: "Actions" as const, label: "Open history", hint: "Browse current session history" },
+			{ id: "action:copy-last", section: "Actions" as const, label: "Copy last answer", hint: "Copy latest assistant response" },
+			{ id: "action:export-html", section: "Actions" as const, label: "Export HTML", hint: "Export conversation to HTML" },
+		].filter((item) => this.matchesSlashQuery(query, item.label, item.hint, item.id));
+
+		const skills = this.slashSkills
+			.filter((name) => this.matchesSlashQuery(query, name, "skill"))
+			.slice(0, 24)
+			.map((name) => ({
+				id: `skill:${name}`,
+				section: "Skills" as const,
+				label: name,
+				hint: "Use skill in composer",
+				skillName: name,
+			}));
+
+		if (query && query.startsWith("skill:") && skills.length === 0) {
+			const raw = query.slice("skill:".length).trim();
+			if (raw) {
+				skills.push({
+					id: `skill:${raw}`,
+					section: "Skills" as const,
+					label: raw,
+					hint: "Use typed skill name",
+					skillName: raw,
+				});
+			}
+		}
+
+		return [...actions, ...skills];
+	}
+
+	private selectSlashPaletteItem(item: SlashPaletteItem): void {
+		if (item.section === "Skills" && item.skillName) {
+			this.selectedSkillDraft = {
+				name: item.skillName,
+				commandText: `/skill:${item.skillName}`,
+				scope: null,
+			};
+			this.inputText = "";
+			this.closeSlashPalette();
+			this.render();
+			requestAnimationFrame(() => {
+				const textarea = this.container.querySelector("#chat-input") as HTMLTextAreaElement | null;
+				textarea?.focus();
+			});
+			return;
+		}
+
+		this.inputText = "";
+		this.closeSlashPalette();
+		this.render();
+		switch (item.id) {
+			case "action:new-session":
+				void this.newSession();
+				return;
+			case "action:rename-session":
+				void this.renameSession();
+				return;
+			case "action:open-terminal":
+				this.onOpenTerminal?.();
+				return;
+			case "action:compact":
+				void this.compactNow();
+				return;
+			case "action:fork":
+				this.openHistoryViewerForFork({ loading: false, sessionName: this.state?.sessionName ?? null });
+				return;
+			case "action:history":
+				this.openHistoryViewer();
+				return;
+			case "action:copy-last":
+				void this.copyLastMessage();
+				return;
+			case "action:export-html":
+				void this.exportToHtml();
+				return;
+			default:
+				return;
+		}
 	}
 
 	private async bindNativeFileDropListener(): Promise<void> {
@@ -2420,6 +2685,8 @@ export class ChatView {
 	private clearComposer(): void {
 		this.inputText = "";
 		this.pendingImages = [];
+		this.selectedSkillDraft = null;
+		this.closeSlashPalette();
 		this.render();
 		const textarea = this.container.querySelector("#chat-input") as HTMLTextAreaElement | null;
 		if (textarea) {
@@ -2433,7 +2700,11 @@ export class ChatView {
 			this.pushNotice(this.bindingStatusText || "Session is still loading. Try again in a moment.", "info");
 			return;
 		}
-		const text = this.inputText.trim();
+		const promptText = this.inputText.trim();
+		const selectedSkillCommand = this.selectedSkillDraft?.commandText?.trim() ?? "";
+		const text = selectedSkillCommand
+			? (promptText ? `${selectedSkillCommand}\n\n${promptText}` : selectedSkillCommand)
+			: promptText;
 		const images = [...this.pendingImages];
 		if (!text && images.length === 0) return;
 
@@ -3448,66 +3719,6 @@ export class ChatView {
 				</div>
 
 				<div class="control-group right">
-					<div class="chat-actions-menu-wrap">
-						<button
-							class="composer-icon-btn"
-							title="Session actions"
-							?disabled=${interactionLocked}
-							@click=${() => {
-								if (interactionLocked) return;
-								this.quickActionsOpen = !this.quickActionsOpen;
-								this.render();
-							}}
-						>
-							${uiIcon("spark")}
-						</button>
-						${this.quickActionsOpen
-							? html`
-								<div class="chat-actions-menu">
-									<button @click=${() => {
-										this.quickActionsOpen = false;
-										this.render();
-										void this.newSession();
-									}}>New session</button>
-									<button @click=${() => {
-										this.quickActionsOpen = false;
-										this.render();
-										void this.renameSession();
-									}}>Rename session</button>
-									<button @click=${() => {
-										this.quickActionsOpen = false;
-										this.render();
-										this.onOpenTerminal?.();
-									}}>Open terminal</button>
-									<button @click=${() => {
-										this.quickActionsOpen = false;
-										this.render();
-										void this.compactNow();
-									}}>Compact context</button>
-									<button @click=${() => {
-										this.quickActionsOpen = false;
-										this.render();
-										this.openHistoryViewerForFork({ loading: false, sessionName: this.state?.sessionName ?? null });
-									}}>Fork from message</button>
-									<button @click=${() => {
-										this.quickActionsOpen = false;
-										this.render();
-										this.openHistoryViewer();
-									}}>Open history</button>
-									<button @click=${() => {
-										this.quickActionsOpen = false;
-										this.render();
-										void this.copyLastMessage();
-									}}>Copy last answer</button>
-									<button @click=${() => {
-										this.quickActionsOpen = false;
-										this.render();
-										void this.exportToHtml();
-									}}>Export HTML</button>
-								</div>
-							`
-							: nothing}
-					</div>
 					${isStreaming
 						? html`
 							<button
@@ -3560,10 +3771,59 @@ export class ChatView {
 		`;
 	}
 
+	private renderComposerSkillDraftPill(): TemplateResult | typeof nothing {
+		const draft = this.selectedSkillDraft;
+		if (!draft) return nothing;
+		return html`
+			<div class="composer-skill-draft-row">
+				<div class="composer-skill-draft-pill">
+					<span class="composer-skill-draft-label">Skill</span>
+					<span class="composer-skill-draft-name">${draft.name}</span>
+					<button class="composer-skill-draft-remove" title="Remove skill" @click=${() => this.removeComposerSkillDraft()}>✕</button>
+				</div>
+			</div>
+		`;
+	}
+
+	private renderSlashPalette(items: SlashPaletteItem[]): TemplateResult | typeof nothing {
+		if (!this.slashPaletteOpen) return nothing;
+		if (this.slashSkillsLoading && items.length === 0) {
+			return html`<div class="composer-slash-menu"><div class="composer-slash-empty">Loading commands…</div></div>`;
+		}
+		if (items.length === 0) {
+			return html`<div class="composer-slash-menu"><div class="composer-slash-empty">No commands match “/${this.slashPaletteQuery}”.</div></div>`;
+		}
+		const activeIndex = Math.max(0, Math.min(this.slashPaletteIndex, items.length - 1));
+		let currentSection: "Actions" | "Skills" | null = null;
+		return html`
+			<div class="composer-slash-menu">
+				${items.map((item, index) => {
+					const sectionChanged = item.section !== currentSection;
+					currentSection = item.section;
+					return html`
+						${sectionChanged ? html`<div class="composer-slash-section">${item.section}</div>` : nothing}
+						<button
+							class="composer-slash-item ${index === activeIndex ? "active" : ""}"
+							@click=${() => this.selectSlashPaletteItem(item)}
+						>
+							<span class="composer-slash-item-label">${item.label}</span>
+							<span class="composer-slash-item-hint">${item.hint}</span>
+						</button>
+					`;
+				})}
+			</div>
+		`;
+	}
+
 	private renderComposer(): TemplateResult {
 		const isStreaming = this.currentIsStreaming();
 		const interactionLocked = this.isComposerInteractionLocked();
-		const canSend = !interactionLocked && (this.inputText.trim().length > 0 || this.pendingImages.length > 0);
+		const slashItems = this.getSlashPaletteItems();
+		const canSendBase = !interactionLocked && (this.inputText.trim().length > 0 || this.pendingImages.length > 0 || Boolean(this.selectedSkillDraft));
+		const canSend = canSendBase && !(this.slashPaletteOpen && slashItems.length > 0);
+		if (slashItems.length > 0 && this.slashPaletteIndex >= slashItems.length) {
+			this.slashPaletteIndex = slashItems.length - 1;
+		}
 		const connectivityStatus = this.bindingStatusText || (!this.isConnected && this.projectPath ? "RPC disconnected" : "");
 		const statusText = [connectivityStatus, this.compactionStatus, this.retryStatus].filter(Boolean).join(" · ");
 		const ratio = Math.min(1, Math.max(0, this.sessionStats.usageRatio ?? 0));
@@ -3578,6 +3838,7 @@ export class ChatView {
 				<div class="composer-inner">
 					<div class="composer-panel">
 						${this.renderPendingImages()}
+						${this.renderComposerSkillDraftPill()}
 						<div class="composer-row">
 							<textarea
 								id="chat-input"
@@ -3589,9 +3850,14 @@ export class ChatView {
 								@input=${(e: Event) => {
 									if (interactionLocked) return;
 									const ta = e.target as HTMLTextAreaElement;
+									const hadSlashPalette = this.slashPaletteOpen;
 									this.inputText = ta.value;
+									this.updateSlashPaletteStateFromInput();
 									ta.style.height = "auto";
 									ta.style.height = `${Math.min(ta.scrollHeight, 220)}px`;
+									if (this.slashPaletteOpen || hadSlashPalette) {
+										this.render();
+									}
 								}}
 								@paste=${(e: ClipboardEvent) => {
 									if (interactionLocked) {
@@ -3619,6 +3885,33 @@ export class ChatView {
 								}}
 								@keydown=${(e: KeyboardEvent) => {
 									if (interactionLocked) return;
+									const liveSlashItems = this.getSlashPaletteItems();
+									if (this.slashPaletteOpen && liveSlashItems.length > 0) {
+										if (e.key === "ArrowDown") {
+											e.preventDefault();
+											this.slashPaletteIndex = (this.slashPaletteIndex + 1) % liveSlashItems.length;
+											this.render();
+											return;
+										}
+										if (e.key === "ArrowUp") {
+											e.preventDefault();
+											this.slashPaletteIndex = (this.slashPaletteIndex - 1 + liveSlashItems.length) % liveSlashItems.length;
+											this.render();
+											return;
+										}
+										if (e.key === "Enter" && !e.shiftKey) {
+											e.preventDefault();
+											const picked = liveSlashItems[Math.max(0, Math.min(this.slashPaletteIndex, liveSlashItems.length - 1))];
+											if (picked) this.selectSlashPaletteItem(picked);
+											return;
+										}
+									}
+									if (this.slashPaletteOpen && e.key === "Escape") {
+										e.preventDefault();
+										this.closeSlashPalette();
+										this.render();
+										return;
+									}
 									if (e.key === "Enter" && !e.shiftKey) {
 										e.preventDefault();
 										if (e.altKey) {
@@ -3631,6 +3924,7 @@ export class ChatView {
 								}}
 							></textarea>
 						</div>
+						${this.renderSlashPalette(slashItems)}
 						${this.renderComposerControls(canSend, isStreaming, interactionLocked)}
 						${statusText ? html`<div class="composer-status-inline">${statusText}</div>` : nothing}
 					</div>
@@ -3988,8 +4282,8 @@ export class ChatView {
 					const target = e.target as HTMLElement;
 					let changed = false;
 
-					if (this.quickActionsOpen && !target.closest(".chat-actions-menu-wrap")) {
-						this.quickActionsOpen = false;
+					if (this.slashPaletteOpen && !target.closest(".composer-slash-menu") && !target.closest("#chat-input")) {
+						this.closeSlashPalette();
 						changed = true;
 					}
 

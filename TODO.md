@@ -90,12 +90,12 @@ These should be packages/extensions/skills unless there is a very strong reason 
 - [x] Add first-class “recommended packages” section
 - [x] Make recommended packages external-sourced (`npm` / `git` / `url`) instead of bundling behavior packages into the app
 - [x] Keep global install as the default in the UI, with project install as an explicit/manual choice
-- [ ] Add richer package metadata in the pane:
+- [x] Add richer package metadata in the pane:
   - [x] source badges (`npm`, `git`, `local`)
   - [x] better project/global scoping cues
   - [x] simplify the Packages pane into a more minimalist list/row layout with less repeated chrome/text
   - [x] remove manual source install bar from the top-level flow; keep install action on package rows
-  - [ ] diagnostics/load errors where possible
+  - [x] diagnostics/load errors where possible
 - [ ] Add proper per-resource enable/disable UX
   - [ ] do **not** shell users into the interactive `pi config` TUI
   - [ ] prefer direct config/settings-driven desktop UX

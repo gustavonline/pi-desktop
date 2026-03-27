@@ -150,6 +150,20 @@ fn discover_sidecar(app: &AppHandle) -> Option<PathBuf> {
     None
 }
 
+fn resolve_home_dir() -> Option<PathBuf> {
+    if let Ok(home) = std::env::var("HOME") {
+        if !home.trim().is_empty() {
+            return Some(PathBuf::from(home));
+        }
+    }
+    if let Ok(user_profile) = std::env::var("USERPROFILE") {
+        if !user_profile.trim().is_empty() {
+            return Some(PathBuf::from(user_profile));
+        }
+    }
+    None
+}
+
 fn discover_pi_from_common_locations() -> Option<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
 
@@ -206,9 +220,7 @@ fn discover_pi_from_common_locations() -> Option<PathBuf> {
         return candidates.into_iter().find(|candidate| candidate.is_file());
     }
 
-    if let Ok(home) = std::env::var("HOME") {
-        let home_dir = PathBuf::from(home);
-
+    if let Some(home_dir) = resolve_home_dir() {
         // nvm installations (common for npm global installs)
         candidates.push(home_dir.join(".nvm/versions/node/current/bin/pi"));
         let nvm_versions_dir = home_dir.join(".nvm/versions/node");
@@ -230,6 +242,7 @@ fn discover_pi_from_common_locations() -> Option<PathBuf> {
         }
 
         // Other common per-user install locations
+        candidates.push(home_dir.join(".pi/agent/bin/pi"));
         candidates.push(home_dir.join(".volta/bin/pi"));
         candidates.push(home_dir.join(".local/bin/pi"));
     }
@@ -301,20 +314,55 @@ fn discover_npm_path(pi: Option<&PiProcess>) -> Option<PathBuf> {
     candidates.into_iter().find(|candidate| candidate.is_file())
 }
 
+fn discover_pi_from_env_override() -> Option<PathBuf> {
+    for key in ["PI_DESKTOP_PI_PATH", "PI_CLI_PATH"] {
+        if let Ok(raw) = std::env::var(key) {
+            let value = raw.trim();
+            if value.is_empty() {
+                continue;
+            }
+            let candidate = PathBuf::from(value);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+            if let Ok(which_path) = which::which(value) {
+                return Some(which_path);
+            }
+        }
+    }
+    None
+}
+
 /// Discover the pi binary. Strategy:
 /// 1. If cli_path is provided (dev mode), use node + script
-/// 2. Try sidecar discovery (packaged app)
-/// 3. Try finding `pi` on PATH (globally installed CLI or standalone binary)
-/// 4. Try common install locations (for GUI app launches without shell PATH)
-/// 5. Fail with actionable error
+/// 2. Try explicit env override (PI_DESKTOP_PI_PATH / PI_CLI_PATH)
+/// 3. Try sidecar discovery (packaged app)
+/// 4. Try finding `pi` on PATH (globally installed CLI or standalone binary)
+/// 5. Try common install locations (for GUI app launches without shell PATH)
+/// 6. Fail with actionable error
 fn discover_pi(app: &AppHandle, options: &RpcStartOptions) -> Result<PiProcess, String> {
     // Dev mode: cli_path explicitly provided
     if let Some(ref cli_path) = options.cli_path {
-        if !cli_path.is_empty() {
-            return Ok(PiProcess::DevNode {
-                script: cli_path.clone(),
-            });
+        let trimmed = cli_path.trim();
+        if !trimmed.is_empty() {
+            if trimmed.ends_with(".js") || trimmed.ends_with(".mjs") || trimmed.ends_with(".cjs") {
+                return Ok(PiProcess::DevNode {
+                    script: trimmed.to_string(),
+                });
+            }
+            let direct = PathBuf::from(trimmed);
+            if direct.is_file() {
+                return Ok(PiProcess::PathBinary { path: direct });
+            }
+            if let Ok(which_path) = which::which(trimmed) {
+                return Ok(PiProcess::PathBinary { path: which_path });
+            }
         }
+    }
+
+    // Explicit environment override
+    if let Some(path) = discover_pi_from_env_override() {
+        return Ok(PiProcess::PathBinary { path });
     }
 
     // Packaged app: bundled sidecar
@@ -423,6 +471,11 @@ async fn rpc_start(
     } else {
         return Err("Failed to acquire RPC instances lock".to_string());
     };
+
+    let cwd_path = Path::new(&options.cwd);
+    if !cwd_path.is_dir() {
+        return Err(format!("Working directory does not exist: {}", options.cwd));
+    }
 
     let pi = discover_pi(&app, &options)?;
     let discovery_label = format!("{:?}", pi);
@@ -1252,9 +1305,14 @@ async fn run_pi_cli_command(
         return Err("No command arguments provided".to_string());
     }
 
+    let resolved_cwd = options.cwd.clone().unwrap_or_else(|| ".".to_string());
+    if !Path::new(&resolved_cwd).is_dir() {
+        return Err(format!("Working directory does not exist: {}", resolved_cwd));
+    }
+
     let discovery_opts = RpcStartOptions {
         cli_path: options.cli_path.clone(),
-        cwd: options.cwd.clone().unwrap_or_else(|| ".".to_string()),
+        cwd: resolved_cwd,
         provider: None,
         model: None,
         env: options.env.clone(),

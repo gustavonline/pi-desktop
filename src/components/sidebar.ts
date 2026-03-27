@@ -34,7 +34,6 @@ interface Project {
 	name: string;
 	color: string;
 	emoji: string;
-	pinned: boolean;
 	expanded: boolean;
 	sessions: SidebarSession[];
 	loadingSessions: boolean;
@@ -50,7 +49,6 @@ interface PersistedProject {
 	name: string;
 	color: string;
 	emoji?: string;
-	pinned?: boolean;
 }
 
 interface FileNode {
@@ -75,6 +73,7 @@ type SidebarContextTarget =
 const LEGACY_STORAGE_KEY = "pi-desktop.projects.v1";
 const WORKSPACE_STORAGE_KEY_PREFIX = "pi-desktop.workspace-projects.v1";
 const SIDEBAR_COLLAPSED_KEY = "pi-desktop.sidebar.collapsed.v1";
+const SESSION_PINS_STORAGE_KEY_SUFFIX = ".session-pins.v1";
 const WORKSPACE_DRAG_THRESHOLD_PX = 5;
 const WORKSPACE_SWIPE_THRESHOLD_PX = 34;
 const WORKSPACE_SWIPE_IDLE_MS = 420;
@@ -241,6 +240,7 @@ export class Sidebar {
 	private contextMenu: { x: number; y: number; target: SidebarContextTarget } | null = null;
 	private transientSessionDraft: { projectId: string; path: string | null; name: string; createdAt: number } | null = null;
 	private suppressedSessionPaths = new Set<string>();
+	private pinnedSessionPaths = new Set<string>();
 
 	private onOpenSettings: (() => void) | null = null;
 	private onTogglePackages: (() => void) | null = null;
@@ -267,6 +267,7 @@ export class Sidebar {
 		this.container = container;
 		this.loadSidebarState();
 		this.loadPersistedProjects();
+		this.loadPinnedSessions();
 		this.render();
 		this.workspaceHydrationToken += 1;
 		void this.hydrateProjects(this.workspaceHydrationToken);
@@ -323,10 +324,12 @@ export class Sidebar {
 		this.closeProjectEmojiPicker(false);
 		this.transientSessionDraft = null;
 		this.suppressedSessionPaths.clear();
+		this.pinnedSessionPaths.clear();
 		this.clearInlineDrafts();
 		this.closeContextMenu(false);
 
 		this.loadPersistedProjects();
+		this.loadPinnedSessions();
 		this.render();
 		void this.hydrateProjects(hydrationToken);
 	}
@@ -521,7 +524,7 @@ export class Sidebar {
 		e.preventDefault();
 		e.stopPropagation();
 		const menuWidth = 170;
-		const menuHeight = target.kind === "workspace" ? 92 : target.kind === "session" ? 164 : 92;
+		const menuHeight = target.kind === "workspace" ? 92 : target.kind === "session" ? 194 : 92;
 		const padding = 8;
 		const x = Math.max(padding, Math.min(e.clientX, window.innerWidth - menuWidth - padding));
 		const y = Math.max(padding, Math.min(e.clientY, window.innerHeight - menuHeight - padding));
@@ -850,7 +853,6 @@ export class Sidebar {
 				name,
 				color: stringToColor(name),
 				emoji: normalizeProjectEmoji(null),
-				pinned: false,
 				expanded: true,
 				sessions: [],
 				loadingSessions: false,
@@ -1000,6 +1002,7 @@ export class Sidebar {
 				await remove(session.path);
 			}
 			project.sessions = project.sessions.filter((entry) => normalizePath(entry.path) !== normalizePath(session.path));
+			this.clearSessionPin(session.path);
 			if (this.activeSessionPath === normalizePath(session.path)) {
 				this.activeSessionPath = null;
 			}
@@ -1071,7 +1074,7 @@ export class Sidebar {
 		this.openContextMenu(e, { kind: "workspace", workspaceId });
 	}
 
-	private runSessionContextAction(action: "rename" | "delete" | "fork" | "markUnread"): void {
+	private runSessionContextAction(action: "rename" | "delete" | "fork" | "markUnread" | "togglePin"): void {
 		const target = this.contextMenu?.target;
 		if (!target || target.kind !== "session") return;
 		this.closeContextMenu(false);
@@ -1090,6 +1093,11 @@ export class Sidebar {
 		}
 		if (action === "markUnread") {
 			this.onSessionMarkUnread?.(found.project.id, found.session.path, found.session.name);
+			return;
+		}
+		if (action === "togglePin") {
+			this.toggleSessionPinned(found.session.path);
+			this.render();
 			return;
 		}
 		void this.deleteSession(found.project, found.session);
@@ -1141,10 +1149,13 @@ export class Sidebar {
 		const target = menu.target;
 		let menuContent: TemplateResult;
 		if (target.kind === "session") {
+			const canPinSession = normalizePath(target.sessionPath).length > 0;
+			const pinned = canPinSession && this.isSessionPinned(target.sessionPath);
 			menuContent = html`
 				<div class="sidebar-context-menu" style=${`left:${menu.x}px;top:${menu.y}px`} @click=${(e: Event) => e.stopPropagation()}>
 					<button @click=${() => this.runSessionContextAction("fork")}>Fork from message…</button>
 					<button @click=${() => this.runSessionContextAction("markUnread")}>Mark unread</button>
+					<button ?disabled=${!canPinSession} @click=${() => this.runSessionContextAction("togglePin")}>${pinned ? "Unpin session" : "Pin session"}</button>
 					<div class="sidebar-context-menu-divider"></div>
 					<button @click=${() => this.runSessionContextAction("rename")}>Rename session</button>
 					<button class="danger" @click=${() => this.runSessionContextAction("delete")}>Delete session</button>
@@ -1694,27 +1705,6 @@ export class Sidebar {
 		this.render();
 	}
 
-	private toggleProjectPinned(projectId: string): void {
-		const index = this.projects.findIndex((entry) => entry.id === projectId);
-		if (index === -1) return;
-		const project = this.projects[index];
-		const nextPinned = !project.pinned;
-		this.projects.splice(index, 1);
-		project.pinned = nextPinned;
-		if (nextPinned) {
-			const pinnedCount = this.projects.filter((entry) => entry.pinned).length;
-			this.projects.splice(pinnedCount, 0, project);
-		} else {
-			const pinnedCount = this.projects.filter((entry) => entry.pinned).length;
-			this.projects.splice(pinnedCount, 0, project);
-		}
-		this.sortProjectsInPlace();
-		this.cancelProjectPointerDrag(false);
-		this.openProjectMenuId = null;
-		this.persistProjects();
-		this.render();
-	}
-
 	private renameProject(projectId: string): void {
 		const project = this.projects.find((p) => p.id === projectId);
 		if (!project) return;
@@ -1776,9 +1766,72 @@ export class Sidebar {
 			name: p.name,
 			color: p.color,
 			emoji: normalizeProjectEmoji(p.emoji),
-			pinned: p.pinned,
 		}));
 		localStorage.setItem(this.storageKey, JSON.stringify(data));
+	}
+
+	private sessionPinsStorageKey(): string {
+		return `${this.storageKey}${SESSION_PINS_STORAGE_KEY_SUFFIX}`;
+	}
+
+	private loadPinnedSessions(): void {
+		try {
+			const raw = localStorage.getItem(this.sessionPinsStorageKey());
+			if (!raw) {
+				this.pinnedSessionPaths.clear();
+				return;
+			}
+			const parsed = JSON.parse(raw);
+			if (!Array.isArray(parsed)) {
+				this.pinnedSessionPaths.clear();
+				return;
+			}
+			const next = parsed
+				.filter((entry): entry is string => typeof entry === "string")
+				.map((entry) => normalizePath(entry))
+				.filter((entry) => entry.length > 0);
+			this.pinnedSessionPaths = new Set(next);
+		} catch {
+			this.pinnedSessionPaths.clear();
+		}
+	}
+
+	private persistPinnedSessions(): void {
+		try {
+			if (this.pinnedSessionPaths.size === 0) {
+				localStorage.removeItem(this.sessionPinsStorageKey());
+				return;
+			}
+			localStorage.setItem(this.sessionPinsStorageKey(), JSON.stringify([...this.pinnedSessionPaths]));
+		} catch {
+			// ignore
+		}
+	}
+
+	private isSessionPinned(sessionPath: string): boolean {
+		const normalized = normalizePath(sessionPath);
+		if (!normalized) return false;
+		return this.pinnedSessionPaths.has(normalized);
+	}
+
+	private toggleSessionPinned(sessionPath: string): boolean {
+		const normalized = normalizePath(sessionPath);
+		if (!normalized) return false;
+		const nextPinned = !this.pinnedSessionPaths.has(normalized);
+		if (nextPinned) {
+			this.pinnedSessionPaths.add(normalized);
+		} else {
+			this.pinnedSessionPaths.delete(normalized);
+		}
+		this.persistPinnedSessions();
+		return nextPinned;
+	}
+
+	private clearSessionPin(sessionPath: string): void {
+		const normalized = normalizePath(sessionPath);
+		if (!normalized) return;
+		if (!this.pinnedSessionPaths.delete(normalized)) return;
+		this.persistPinnedSessions();
 	}
 
 	private loadPersistedProjects(): void {
@@ -1816,7 +1869,6 @@ export class Sidebar {
 					name: p.name,
 					color: typeof p.color === "string" && p.color.trim().length > 0 ? p.color : stringToColor(p.name || pathBaseName(p.path)),
 					emoji: normalizeProjectEmoji(p.emoji),
-					pinned: Boolean(p.pinned),
 					expanded: idx === 0,
 					sessions: [],
 					loadingSessions: false,
@@ -1834,14 +1886,8 @@ export class Sidebar {
 		}
 	}
 
-	private normalizeProjectGrouping(): void {
-		const pinned = this.projects.filter((project) => project.pinned);
-		const unpinned = this.projects.filter((project) => !project.pinned);
-		this.projects = [...pinned, ...unpinned];
-	}
-
 	private sortProjectsInPlace(): void {
-		this.normalizeProjectGrouping();
+		// Keep explicit drag order; no project pin groups.
 	}
 
 	private filteredProjects(includeQuery = true): Project[] {
@@ -1861,6 +1907,8 @@ export class Sidebar {
 	private sortedSessions(sessions: SidebarSession[]): SidebarSession[] {
 		const sorted = [...sessions];
 		sorted.sort((a, b) => {
+			const pinDelta = Number(this.isSessionPinned(b.path)) - Number(this.isSessionPinned(a.path));
+			if (pinDelta !== 0) return pinDelta;
 			const aTs = this.sessionSortBy === "created" ? a.createdAt || a.modifiedAt : a.modifiedAt || a.createdAt;
 			const bTs = this.sessionSortBy === "created" ? b.createdAt || b.modifiedAt : b.modifiedAt || b.createdAt;
 			return bTs - aTs || a.name.localeCompare(b.name);
@@ -1899,8 +1947,10 @@ export class Sidebar {
 		if (this.sessionShow === "all" || q) return sessions;
 
 		const cutoff = Date.now() - 1000 * 60 * 60 * 24 * 14;
+		const pinned = sessions.filter((session) => this.isSessionPinned(session.path));
 		const recent = sessions.filter((session) => session.transient || (session.modifiedAt || session.createdAt || 0) >= cutoff);
-		if (recent.length > 0) return recent;
+		const merged = [...pinned, ...recent.filter((session) => !this.isSessionPinned(session.path))];
+		if (merged.length > 0) return merged;
 		return sessions.slice(0, 5);
 	}
 
@@ -1912,6 +1962,8 @@ export class Sidebar {
 			}
 		}
 		list.sort((a, b) => {
+			const pinDelta = Number(this.isSessionPinned(b.session.path)) - Number(this.isSessionPinned(a.session.path));
+			if (pinDelta !== 0) return pinDelta;
 			const aTs = this.sessionSortBy === "created"
 				? a.session.createdAt || a.session.modifiedAt
 				: a.session.modifiedAt || a.session.createdAt;
@@ -2155,8 +2207,7 @@ export class Sidebar {
 	private isCompatibleProjectDropTarget(draggedProjectId: string, targetProjectId: string): boolean {
 		const dragged = this.projects.find((project) => project.id === draggedProjectId) ?? null;
 		const target = this.projects.find((project) => project.id === targetProjectId) ?? null;
-		if (!dragged || !target) return false;
-		return Boolean(dragged.pinned) === Boolean(target.pinned);
+		return Boolean(dragged && target);
 	}
 
 	private resolveProjectIdFromPoint(clientX: number, clientY: number, draggedProjectId: string): string | null {
@@ -3202,7 +3253,6 @@ export class Sidebar {
 		return html`
 			<div class="sidebar-project-menu" @click=${(e: Event) => e.stopPropagation()}>
 				<button @click=${() => this.renameProject(project.id)}>Rename project</button>
-				<button @click=${() => this.toggleProjectPinned(project.id)}>${project.pinned ? "Unpin project" : "Pin project"}</button>
 				<button @click=${(event: MouseEvent) => this.openProjectEmojiPicker(project.id, event)}>Change emoji</button>
 				<div class="sidebar-project-menu-divider"></div>
 				<button @click=${() => this.removeProject(project.id)}>Remove project</button>
@@ -3229,9 +3279,10 @@ export class Sidebar {
 						: Boolean(session.transient && this.activeProjectId === project.id && !this.activeSessionPath);
 					const runningSession = this.runningSessionPaths.has(normalizedSessionPath);
 					const attentionMessage = this.attentionSessionMessages.get(normalizedSessionPath) ?? null;
+					const pinnedSession = this.isSessionPinned(session.path);
 					return html`
 						<button
-							class="sidebar-chrono-row ${activeSession ? "active-session" : ""}"
+							class="sidebar-chrono-row ${activeSession ? "active-session" : ""} ${pinnedSession ? "pinned" : ""}"
 							@click=${() => {
 								if (session.transient && !session.path) return;
 								this.selectProject(project.id, false);
@@ -3247,6 +3298,7 @@ export class Sidebar {
 							<span class="sidebar-session-leading">
 								${this.renderSessionPiIcon(runningSession)}
 							</span>
+							${pinnedSession ? html`<span class="sidebar-session-pin" title="Pinned session">📌</span>` : nothing}
 							<span class="sidebar-chrono-main">
 								<span class="sidebar-chrono-name sidebar-session-name ${attentionMessage ? "needs-attention" : ""}">${session.name}</span>
 								<span class="sidebar-chrono-project">${project.name}</span>
@@ -3280,11 +3332,8 @@ export class Sidebar {
 					const unreadCount = this.getProjectAttentionCount(project);
 					const showBlockingSessionLoad = project.loadingSessions && sessions.length === 0;
 					const showInlineSessionRefresh = project.loadingSessions && sessions.length > 0;
-					const previousProject = projects[index - 1] ?? null;
-					const showPinnedDivider = Boolean(previousProject?.pinned) && !Boolean(project.pinned);
 					const dragOver = project.id === this.projectDragOverId && this.draggingProjectId !== project.id;
 					return html`
-						${showPinnedDivider ? html`<div class="sidebar-project-pin-divider" role="separator" aria-hidden="true"></div>` : nothing}
 						<div class="sidebar-project-row ${active ? "active" : ""} ${menuOpen ? "menu-open" : ""} ${dragOver ? "drag-over" : ""} ${project.id === this.draggingProjectId ? "dragging" : ""}" data-project-id=${project.id}>
 							<div class="sidebar-project-head">
 								<div class="sidebar-project-main-wrap">
@@ -3366,15 +3415,17 @@ export class Sidebar {
                                                             : Boolean(session.transient && this.activeProjectId === project.id && !this.activeSessionPath);
                                                         const runningSession = this.runningSessionPaths.has(normalizedSessionPath);
                                                         const attentionMessage = this.attentionSessionMessages.get(normalizedSessionPath) ?? null;
+                                                        const pinnedSession = this.isSessionPinned(session.path);
                                                         const sessionRenameActive =
                                                             Boolean(this.sessionRenameDraft) &&
                                                             this.sessionRenameDraft?.projectId === project.id &&
                                                             this.sessionRenameDraft?.sessionPath === normalizePath(session.path);
                                                         return html`
-                                                            <div class="sidebar-session-row ${activeSession ? "active" : ""}">
+                                                            <div class="sidebar-session-row ${activeSession ? "active" : ""} ${pinnedSession ? "pinned" : ""}">
                                                                 <span class="sidebar-session-leading">
                                                                     ${this.renderSessionPiIcon(runningSession)}
                                                                 </span>
+                                                                ${pinnedSession ? html`<span class="sidebar-session-pin" title="Pinned session">📌</span>` : nothing}
                                                                 <button
                                                                     class="sidebar-session ${activeSession ? "active-session" : ""}"
                                                                     @click=${() => {
@@ -3454,12 +3505,9 @@ export class Sidebar {
 					const nodes = this.fileTrees.get(project.id) ?? [];
 					const fileTreeError = this.fileTreeErrors.get(project.id) ?? null;
 					const hasMatchingNode = nodes.some((node) => this.nodeMatchesQuery(node, query));
-					const previousProject = projects[index - 1] ?? null;
-					const showPinnedDivider = Boolean(previousProject?.pinned) && !Boolean(project.pinned);
 					const dragOver = project.id === this.projectDragOverId && this.draggingProjectId !== project.id;
 
 					return html`
-						${showPinnedDivider ? html`<div class="sidebar-project-pin-divider" role="separator" aria-hidden="true"></div>` : nothing}
 						<div class="sidebar-project-row ${active ? "active" : ""} ${menuOpen ? "menu-open" : ""} ${dragOver ? "drag-over" : ""} ${project.id === this.draggingProjectId ? "dragging" : ""}" data-project-id=${project.id}>
 							<div class="sidebar-project-head">
 								<div class="sidebar-project-main-wrap">

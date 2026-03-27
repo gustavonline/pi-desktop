@@ -114,6 +114,36 @@ Implemented:
 Relevant commits:
 - `9a3b994`, `4663f74`, `2bca6ae`
 
+## #25 — Resources/prompts/skills UX + default creatorskill policy
+
+Status: **Closed**
+
+Implemented:
+- Removed forced package/setup nudges and “recommended auto-install” behavior.
+- Kept only `creatorskill` as first-run default resource.
+- Bundled `creatorskill` in app assets and install/copy flow on first native run.
+- Reworked Packages pane IA and visuals toward minimal list layout (skills + extensions in unified installed view).
+- Improved skill/extension details modal UX, including cleaner content rendering and lower visual noise.
+- Added explicit initial loading state (`Loading packages…`) to reduce flicker/jump during async RPC/package discovery.
+
+Notes:
+- Creatorskill remains uninstallable by users.
+- No additional default package auto-install was introduced.
+
+## #40 — Package settings/config UX follow-up (model picker persistence)
+
+Status: **Closed**
+
+Implemented follow-up:
+- Fixed extension config hydration from disk for model-picker commands.
+- Added robust JSON discovery for extension/package config files (including canonical `~/.pi/agent/extensions/<package>.json`).
+- Added provider/id-to-`provider/model` normalization for extension configs such as `pi-session-auto-rename`.
+- Fixed select binding edge cases where UI could still show “Use package default” despite loaded config.
+- Preserved runtime command execution while persisting config updates back to disk.
+
+Notes:
+- Extension-specific config formats vary; generalized support will continue incrementally as more packages land.
+
 ## Next queued issues
 
 After this cycle, planned follow-up targets:

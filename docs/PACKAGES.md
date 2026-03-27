@@ -20,12 +20,28 @@ Pi Desktop should expose capabilities that extensions can consume (UI primitives
 ## What Pi Desktop surfaces
 
 Pi Desktop includes a Packages pane that supports:
-- listing installed packages
-- install/remove/update flows
-- global vs project scope
-- recommended packages
+- extension package install/remove/update flows
+- skills + extensions surfaced as first-class package capabilities
+- curated recommendations (skills + extensions)
 
 It also renders extension-driven UI signals through the extension UI host boundary.
+
+### Skills + extensions in Desktop
+
+In the Packages pane:
+- **Installed** lists all installed skills + extensions in one view.
+- **Recommended** blends curated skills/extensions (Brave Search, Browser Tools, YouTube Transcript) with top extension picks and search results.
+- list rows keep minimal controls (`+` to install, `✓` when installed)
+- clicking an item opens a details modal for richer actions:
+  - extension settings/config commands
+  - install / uninstall
+  - open folder / open page
+  - skill setup + “try in chat”
+- model-picker settings hydrate from extension config JSON when available (e.g. `~/.pi/agent/extensions/<package>.json`)
+- **Create skill** stages `/skill:creatorskill` in chat for manual Enter
+
+If runtime discovery fails, Desktop shows explicit error banners and keeps diagnostics available in the Packages pane.
+The pane also shows an explicit initial loading state (`Loading packages…`) to avoid confusing partial renders while RPC/package discovery is still in progress.
 
 ---
 

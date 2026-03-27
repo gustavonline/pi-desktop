@@ -192,15 +192,6 @@ function isCliMissingError(message: string | null | undefined): boolean {
 	if (text.includes("'pi' is not recognized as an internal or external command")) {
 		return true;
 	}
-	if (text.includes("failed to spawn pi process")) {
-		return text.includes("no such file") ||
-			text.includes("not found") ||
-			text.includes("cannot find the file specified") ||
-			text.includes("the system cannot find the file specified") ||
-			text.includes("os error 2") ||
-			text.includes("createprocess") ||
-			text.includes("enoent");
-	}
 	return text.includes("enoent") && text.includes("pi");
 }
 
@@ -2167,6 +2158,14 @@ async function initialize(): Promise<void> {
 	try {
 		connectionError = null;
 		renderApp();
+		// Ensure creatorskill exists on first run (copied from packaged assets if available)
+		await packagesView?.ensureCreatorSkillInstalled();
+		// Refresh discovered resources so Packages view shows the new skill immediately
+		try {
+			await packagesView?.refreshPackages(true);
+		} catch {
+			// ignore
+		}
 
 		const chatContainer = document.getElementById("chat-container");
 		if (!chatContainer) throw new Error("Chat container missing");
@@ -3020,6 +3019,16 @@ function renderApp(): void {
 			persistWorkspaces();
 			syncWorkspaceTabsBar();
 			void applyWorkspacePane(workspace);
+		});
+		packagesView.setOnInsertPromptTemplate(async (commandText) => {
+			const workspace = getActiveWorkspace();
+			if (!workspace) return;
+			workspace.pane = "chat";
+			persistWorkspaces();
+			syncWorkspaceTabsBar();
+			await applyWorkspacePane(workspace);
+			chatView?.stageComposerCommand(commandText);
+			clearVisibleActiveSessionAttention();
 		});
 	}
 
