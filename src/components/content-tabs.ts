@@ -42,6 +42,8 @@ export class ContentTabs {
 	private onSelect: ((id: string) => void) | null = null;
 	private onClose: ((id: string) => void) | null = null;
 	private onRename: ((id: string, title: string) => void) | null = null;
+	private onOpenTerminal: (() => void) | null = null;
+	private terminalActive = false;
 
 	private tabColors: Record<string, string> = {};
 	private tabPins: Record<string, boolean> = {};
@@ -63,7 +65,7 @@ export class ContentTabs {
 
 	private readonly onWindowPointerDown = (event: PointerEvent) => {
 		if (!this.contextTabKey) return;
-		const target = event.target as HTMLElement | null;
+		const target = event.target instanceof Element ? event.target : null;
 		if (target?.closest(".content-tab-context-menu")) return;
 		this.closeContext();
 	};
@@ -121,6 +123,16 @@ export class ContentTabs {
 
 	setOnRename(cb: (id: string, title: string) => void): void {
 		this.onRename = cb;
+	}
+
+	setOnOpenTerminal(cb: () => void): void {
+		this.onOpenTerminal = cb;
+	}
+
+	setTerminalActive(active: boolean): void {
+		if (this.terminalActive === active) return;
+		this.terminalActive = active;
+		this.render();
 	}
 
 	private tabKey(tab: MainContentTab): string {
@@ -435,10 +447,10 @@ export class ContentTabs {
 	}
 
 	private getDragGhostLeft(): number {
-		const root = this.container.querySelector<HTMLElement>(".content-tabs-root");
-		if (!root) return 0;
-		const rect = root.getBoundingClientRect();
-		return this.dragCurrentX - this.dragGrabOffsetX - rect.left + root.scrollLeft;
+		const scroll = this.container.querySelector<HTMLElement>(".content-tabs-scroll");
+		if (!scroll) return 0;
+		const rect = scroll.getBoundingClientRect();
+		return this.dragCurrentX - this.dragGrabOffsetX - rect.left + scroll.scrollLeft;
 	}
 
 	private scheduleOverflowMeasurement(): void {
@@ -505,26 +517,41 @@ export class ContentTabs {
 				data-tauri-drag-region
 				@click=${(e: Event) => {
 					if (!menuOpen) return;
-					const target = e.target as HTMLElement;
-					if (target.closest(".content-tab-context-menu")) return;
+					const target = e.target instanceof Element ? e.target : null;
+					if (target?.closest(".content-tab-context-menu")) return;
 					this.closeContext();
 				}}
 			>
-				${renderedTabs.map((tab, index) => this.renderTab(tab, index, this.draggingTabKey === this.tabKey(tab)))}
-				${draggingTab
-					? html`
-						<div
-							class="content-tab content-tab-drag-ghost ${draggingTab.pinned ? "pinned" : ""} ${draggingTab.needsAttention ? "needs-attention" : ""} ${this.activeId === draggingTab.id ? "active" : ""}"
-							style=${`left:${dragGhostLeft}px;width:${this.dragGhostWidth}px;${this.tabColors[this.tabKey(draggingTab)] ? `--content-tab-fill:${this.tabColors[this.tabKey(draggingTab)]};` : ""}`}
-						>
-							<div class="content-tab-main">
-								<span class="content-tab-title-wrap">
-									<span class="content-tab-title ${draggingTab.needsAttention ? "needs-attention" : ""}">${draggingTab.title}</span>
-								</span>
+				<div class="content-tabs-scroll" data-tauri-drag-region>
+					${renderedTabs.map((tab, index) => this.renderTab(tab, index, this.draggingTabKey === this.tabKey(tab)))}
+					${draggingTab
+						? html`
+							<div
+								class="content-tab content-tab-drag-ghost ${draggingTab.pinned ? "pinned" : ""} ${draggingTab.needsAttention ? "needs-attention" : ""} ${this.activeId === draggingTab.id ? "active" : ""}"
+								style=${`left:${dragGhostLeft}px;width:${this.dragGhostWidth}px;${this.tabColors[this.tabKey(draggingTab)] ? `--content-tab-fill:${this.tabColors[this.tabKey(draggingTab)]};` : ""}`}
+							>
+								<div class="content-tab-main">
+									<span class="content-tab-title-wrap">
+										<span class="content-tab-title ${draggingTab.needsAttention ? "needs-attention" : ""}">${draggingTab.title}</span>
+									</span>
+								</div>
 							</div>
-						</div>
-					`
-					: nothing}
+						`
+						: nothing}
+				</div>
+
+				<div class="content-tabs-trailing" data-tauri-drag-region>
+					<button
+						class="content-tabs-terminal-btn ${this.terminalActive ? "active" : ""}"
+						title="Open terminal"
+						@click=${(event: Event) => {
+							event.stopPropagation();
+							this.onOpenTerminal?.();
+						}}
+					>
+						<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 3.2h10v9.6H3z"></path><path d="M5.1 6.2l1.9 1.8-1.9 1.8"></path><path d="M8.6 9.8h2.6"></path></svg>
+					</button>
+				</div>
 
 				${this.contextTabKey
 					? html`

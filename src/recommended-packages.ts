@@ -13,6 +13,18 @@ export interface RecommendedPackageDefinition {
 
 export const RECOMMENDED_PACKAGES: RecommendedPackageDefinition[] = [
 	{
+		id: "pi-desktop-themes",
+		name: "Pi Desktop Themes",
+		description: "Default Pi Desktop light/dark themes for desktop + TUI (Notion, Catppuccin, GitHub, VSCode Plus).",
+		installScopeHint: "global",
+		source: "local:pi-desktop-themes",
+		sourceKind: "local",
+		publisher: "first-party",
+		resourcesLabel: "8 themes",
+		installSourceHint: "~/.pi/agent/themes/pi-desktop-*.json",
+		aliases: ["pi-desktop-themes"],
+	},
+	{
 		id: "pi-desktop-notify",
 		name: "Pi Desktop Notify",
 		description: "Focus-aware desktop notifications for Pi Desktop and other RPC hosts via ctx.ui.notify().",

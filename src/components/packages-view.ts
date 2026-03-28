@@ -6,6 +6,7 @@ import { html, nothing, render, type TemplateResult } from "lit";
 import { normalizeRecommendedSource, RECOMMENDED_PACKAGES, type RecommendedPackageDefinition } from "../recommended-packages.js";
 import { RECOMMENDED_SKILLS, type RecommendedSkillDefinition } from "../recommended-skills.js";
 import { rpcBridge } from "../rpc/bridge.js";
+import { getBundledThemesStatus, isBundledThemeId, removeBundledThemes, restoreBundledThemes } from "../theme/bundled-themes.js";
 
 interface CatalogPackageItem {
 	name: string;
@@ -53,6 +54,17 @@ interface DiscoveredResourceItem {
 	sourceKind: "npm" | "git" | "url" | "local" | "unknown";
 }
 
+interface DiscoveredThemeItem {
+	id: string;
+	name: string;
+	description: string;
+	variant: "light" | "dark";
+	accent: string;
+	background: string;
+	foreground: string;
+	path: string;
+}
+
 interface ExtensionSurfaceItem {
 	id: string;
 	displayName: string;
@@ -76,7 +88,8 @@ interface RecommendedSkillSurfaceItem {
 type ActivePackagesModal =
 	| { kind: "extension"; item: ExtensionSurfaceItem }
 	| { kind: "skill"; item: DiscoveredResourceItem }
-	| { kind: "recommended-skill"; item: RecommendedSkillSurfaceItem };
+	| { kind: "recommended-skill"; item: RecommendedSkillSurfaceItem }
+	| { kind: "theme"; item: DiscoveredThemeItem };
 
 type UiIcon =
 	| "package"
@@ -92,6 +105,8 @@ type UiIcon =
 const PACKAGES_CATALOG_URL = "https://shittycodingagent.ai/packages";
 const PACKAGES_SEARCH_URL = "https://registry.npmjs.org/-/v1/search?text=keywords:pi-package&size=250";
 const RESOURCE_CREATOR_SKILL_NAME = "creatorskill";
+const DESKTOP_THEMES_PACKAGE_SOURCE = "local:pi-desktop-themes";
+const DESKTOP_THEMES_DOC_URL = "https://github.com/gustavonline/pi-desktop/blob/dev/docs/THEMES_DESKTOP_MAPPING.md";
 
 function uniqueBy<T>(items: T[], getKey: (item: T) => string): T[] {
 	const seen = new Set<string>();
@@ -432,6 +447,7 @@ export class PackagesView {
 	private installedProject: InstalledPackageItem[] = [];
 	private promptTemplateResources: DiscoveredResourceItem[] = [];
 	private skillResources: DiscoveredResourceItem[] = [];
+	private themeResources: DiscoveredThemeItem[] = [];
 
 	private loadingCatalog = false;
 	private loadingResources = false;
@@ -485,6 +501,10 @@ export class PackagesView {
 	private activeSkillContentLoading = false;
 	private activeSkillContentError = "";
 	private activeSkillContentNotice = "";
+	private desktopThemesInstalled = false;
+	private desktopThemesInstalledCount = 0;
+	private desktopThemesTotal = 8;
+	private desktopThemesRootPath = "";
 
 	constructor(container: HTMLElement) {
 		this.container = container;
@@ -520,7 +540,7 @@ export class PackagesView {
 	}
 
 	async open(): Promise<void> {
-		await Promise.all([this.loadCatalog(this.catalogItems.length === 0), this.loadConfig()]);
+		await Promise.all([this.loadCatalog(this.catalogItems.length === 0), this.loadConfig(), this.refreshBundledThemesStatus()]);
 		await this.refreshDiscoveredResources();
 	}
 
@@ -529,8 +549,22 @@ export class PackagesView {
 	}
 
 	async refreshPackages(forceCatalog = false): Promise<void> {
-		await Promise.all([this.loadCatalog(forceCatalog), this.loadConfig()]);
+		await Promise.all([this.loadCatalog(forceCatalog), this.loadConfig(), this.refreshBundledThemesStatus()]);
 		await this.refreshDiscoveredResources();
+	}
+
+	private async refreshBundledThemesStatus(): Promise<void> {
+		try {
+			const status = await getBundledThemesStatus();
+			this.desktopThemesInstalled = status.installed;
+			this.desktopThemesInstalledCount = status.installedCount;
+			this.desktopThemesTotal = status.total;
+			this.desktopThemesRootPath = status.themesRoot;
+		} catch {
+			this.desktopThemesInstalled = false;
+			this.desktopThemesInstalledCount = 0;
+			this.desktopThemesRootPath = "";
+		}
 	}
 
 	private async openExternal(url: string): Promise<void> {
@@ -1040,9 +1074,10 @@ export class PackagesView {
 				.map((item) => ({ ...item, loaded: true }))
 				.filter((item) => item.packageScope !== "project");
 
-			const [globalPrompts, globalSkills] = await Promise.all([
+			const [globalPrompts, globalSkills, globalThemes] = await Promise.all([
 				this.scanPromptResources("global"),
 				this.scanSkillResources("global"),
+				this.scanThemeResources(),
 			]);
 			const localResources = [...globalPrompts, ...globalSkills];
 			const merged = this.mergeDiscoveredResources(commandResources, localResources);
@@ -1056,9 +1091,15 @@ export class PackagesView {
 				merged.filter((item) => item.kind === "skill"),
 				(item) => `${item.kind}:${item.name}:${normalizeFsPath(item.path) || item.packageScope || "runtime"}`.toLowerCase(),
 			).sort((a, b) => a.name.localeCompare(b.name));
+
+			this.themeResources = uniqueBy(
+				globalThemes,
+				(item) => `${item.id}:${normalizeFsPath(item.path)}`,
+			).sort((a, b) => a.name.localeCompare(b.name));
 		} catch (err) {
 			this.promptTemplateResources = [];
 			this.skillResources = [];
+			this.themeResources = [];
 			this.resourcesError = err instanceof Error ? err.message : String(err);
 		} finally {
 			this.loadingResources = false;
@@ -1594,6 +1635,7 @@ export class PackagesView {
 
 	private resolveSourceUrl(source: string): string | null {
 		if (!source) return null;
+		if (normalizeRecommendedSource(source) === DESKTOP_THEMES_PACKAGE_SOURCE) return DESKTOP_THEMES_DOC_URL;
 		if (/^https?:\/\//i.test(source)) return source;
 		if (source.startsWith("npm:")) return `https://www.npmjs.com/package/${source.slice(4)}`;
 		if (source.startsWith("github:")) return `https://github.com/${source.slice(7).replace(/^\/+/, "")}`;
@@ -1654,6 +1696,141 @@ export class PackagesView {
 			const haystack = `${item.name} ${item.description} ${item.commandText} ${item.packageSource ?? ""} ${item.path}`.toLowerCase();
 			return haystack.includes(q);
 		});
+	}
+
+	private filteredThemeResources(): DiscoveredThemeItem[] {
+		const q = this.normalizeQuery();
+		if (!q) return this.themeResources;
+		return this.themeResources.filter((item) => {
+			const haystack = `${item.name} ${item.description} ${item.variant} ${item.path}`.toLowerCase();
+			return haystack.includes(q);
+		});
+	}
+
+	private parseThemeRgb(color: string): { r: number; g: number; b: number } | null {
+		const trimmed = color.trim();
+		const short = trimmed.match(/^#([0-9a-f]{3})$/i);
+		if (short) {
+			const [r, g, b] = short[1].split("");
+			return {
+				r: parseInt(`${r}${r}`, 16),
+				g: parseInt(`${g}${g}`, 16),
+				b: parseInt(`${b}${b}`, 16),
+			};
+		}
+		const full = trimmed.match(/^#([0-9a-f]{6})$/i);
+		if (full) {
+			return {
+				r: parseInt(full[1].slice(0, 2), 16),
+				g: parseInt(full[1].slice(2, 4), 16),
+				b: parseInt(full[1].slice(4, 6), 16),
+			};
+		}
+		return null;
+	}
+
+	private inferThemeVariantFromBackground(background: string): "light" | "dark" {
+		const rgb = this.parseThemeRgb(background);
+		if (!rgb) return "dark";
+		const toLinear = (channel: number): number => {
+			const s = channel / 255;
+			return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+		};
+		const luminance = 0.2126 * toLinear(rgb.r) + 0.7152 * toLinear(rgb.g) + 0.0722 * toLinear(rgb.b);
+		return luminance >= 0.42 ? "light" : "dark";
+	}
+
+	private normalizeThemeColorLiteral(value: unknown): string | null {
+		if (typeof value === "string") {
+			const trimmed = value.trim();
+			if (/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(trimmed)) return trimmed;
+		}
+		return null;
+	}
+
+	private resolveThemeColorValue(doc: Record<string, unknown>, value: unknown, seen = new Set<string>()): string | null {
+		const direct = this.normalizeThemeColorLiteral(value);
+		if (direct) return direct;
+		if (typeof value !== "string") return null;
+		const ref = value.trim();
+		if (!ref || seen.has(ref)) return null;
+		seen.add(ref);
+		const vars = (doc.vars as Record<string, unknown> | undefined) ?? {};
+		if (Object.prototype.hasOwnProperty.call(vars, ref)) {
+			const fromVar = this.resolveThemeColorValue(doc, vars[ref], seen);
+			if (fromVar) return fromVar;
+		}
+		const colors = (doc.colors as Record<string, unknown> | undefined) ?? {};
+		if (Object.prototype.hasOwnProperty.call(colors, ref)) {
+			const fromColor = this.resolveThemeColorValue(doc, colors[ref], seen);
+			if (fromColor) return fromColor;
+		}
+		return null;
+	}
+
+	private themeBackgroundColor(doc: Record<string, unknown>): string {
+		const colors = (doc.colors as Record<string, unknown> | undefined) ?? {};
+		return (
+			this.resolveThemeColorValue(doc, colors.selectedBg) ??
+			this.resolveThemeColorValue(doc, colors.userMessageBg) ??
+			this.resolveThemeColorValue(doc, colors.customMessageBg) ??
+			"#101010"
+		);
+	}
+
+	private inferThemeVariant(doc: Record<string, unknown>, fileName: string): "light" | "dark" {
+		const meta = doc.piDesktop;
+		if (meta && typeof meta === "object" && !Array.isArray(meta)) {
+			const variant = (meta as Record<string, unknown>).variant;
+			if (variant === "light" || variant === "dark") return variant;
+		}
+		const background = this.themeBackgroundColor(doc);
+		const byBackground = this.inferThemeVariantFromBackground(background);
+		if (byBackground) return byBackground;
+		return fileName.toLowerCase().includes("light") ? "light" : "dark";
+	}
+
+	private async scanThemeResources(): Promise<DiscoveredThemeItem[]> {
+		await this.ensureHomePath();
+		if (!this.homePath) return [];
+		const themesRoot = joinFsPath(joinFsPath(joinFsPath(this.homePath, ".pi"), "agent"), "themes");
+		try {
+			const { exists, readDir, readTextFile } = await import("@tauri-apps/plugin-fs");
+			if (!(await exists(themesRoot))) return [];
+			const entries = await readDir(themesRoot);
+			const out: DiscoveredThemeItem[] = [];
+			for (const entry of entries) {
+				if (!entry.isFile || !entry.name.toLowerCase().endsWith(".json")) continue;
+				const path = joinFsPath(themesRoot, entry.name);
+				let parsed: Record<string, unknown> = {};
+				try {
+					const raw = await readTextFile(path);
+					const json = JSON.parse(raw) as unknown;
+					if (json && typeof json === "object" && !Array.isArray(json)) {
+						parsed = json as Record<string, unknown>;
+					}
+				} catch {
+					// keep defaults for malformed files
+				}
+				const fileId = entry.name.replace(/\.json$/i, "");
+				const name = typeof parsed.name === "string" && parsed.name.trim() ? parsed.name.trim() : fileId;
+				const variant = this.inferThemeVariant(parsed, fileId);
+				const colors = (parsed.colors as Record<string, unknown> | undefined) ?? {};
+				const accent = this.resolveThemeColorValue(parsed, colors.accent) ?? "#7A818F";
+				const background = this.themeBackgroundColor(parsed);
+				const foreground =
+					this.resolveThemeColorValue(parsed, colors.text) ??
+					this.resolveThemeColorValue(parsed, colors.userMessageText) ??
+					(variant === "dark" ? "#EFEFEF" : "#37352F");
+				const description = typeof parsed.description === "string" && parsed.description.trim()
+					? parsed.description.trim()
+					: `${variant === "dark" ? "Dark" : "Light"} theme`;
+				out.push({ id: fileId.toLowerCase(), name, description, variant, accent, background, foreground, path });
+			}
+			return out.sort((a, b) => a.name.localeCompare(b.name));
+		} catch {
+			return [];
+		}
 	}
 
 	private findSkillResourceByName(name: string): DiscoveredResourceItem | null {
@@ -2561,6 +2738,12 @@ Execute the required file creation/edits directly, then summarize exactly which 
 	}
 
 	private extensionInstallState(source: string): { global: boolean; project: boolean } {
+		if (normalizeRecommendedSource(source) === DESKTOP_THEMES_PACKAGE_SOURCE) {
+			return {
+				global: this.desktopThemesInstalled,
+				project: false,
+			};
+		}
 		return {
 			global: this.installedUser.some((item) => this.sourceMatchesInstalled(source, item.source)),
 			project: false,
@@ -2568,6 +2751,16 @@ Execute the required file creation/edits directly, then summarize exactly which 
 	}
 
 	private findInstalledItemForSource(source: string, _scope: "global" | "local"): InstalledDisplayItem | null {
+		if (normalizeRecommendedSource(source) === DESKTOP_THEMES_PACKAGE_SOURCE) {
+			if (!this.desktopThemesInstalled) return null;
+			return {
+				source: DESKTOP_THEMES_PACKAGE_SOURCE,
+				location: this.desktopThemesRootPath || "~/.pi/agent/themes",
+				scope: "user",
+				displayName: "Pi Desktop Themes",
+				openUrl: this.resolveSourceUrl(DESKTOP_THEMES_PACKAGE_SOURCE),
+			};
+		}
 		const hit = this.installedUser.find((item) => this.sourceMatchesInstalled(source, item.source)) ?? null;
 		if (!hit) return null;
 		return {
@@ -2654,24 +2847,22 @@ Execute the required file creation/edits directly, then summarize exactly which 
 	}
 
 	private buildRecommendedExtensionItems(): ExtensionSurfaceItem[] {
-		return RECOMMENDED_PACKAGES
-			.map((item) => {
-				const source = item.source;
-				const normalized = normalizeRecommendedSource(source);
-				const installState = this.extensionInstallState(source);
-				return {
-					id: `recommended:${normalized}`,
-					displayName: item.name,
-					source,
-					description: item.description,
-					note: item.installSourceHint,
-					openUrl: this.resolveSourceUrl(source),
-					sourceKind: item.sourceKind,
-					installState,
-					installedItemForScope: this.findInstalledItemForSource(source, "global"),
-				} satisfies ExtensionSurfaceItem;
-			})
-			.sort((a, b) => a.displayName.localeCompare(b.displayName));
+		return RECOMMENDED_PACKAGES.map((item) => {
+			const source = item.source;
+			const normalized = normalizeRecommendedSource(source);
+			const installState = this.extensionInstallState(source);
+			return {
+				id: `recommended:${normalized}`,
+				displayName: item.name,
+				source,
+				description: item.description,
+				note: item.installSourceHint,
+				openUrl: this.resolveSourceUrl(source),
+				sourceKind: item.sourceKind,
+				installState,
+				installedItemForScope: this.findInstalledItemForSource(source, "global"),
+			} satisfies ExtensionSurfaceItem;
+		});
 	}
 
 	private async openPackagesItemModal(modal: ActivePackagesModal): Promise<void> {
@@ -2699,6 +2890,9 @@ Execute the required file creation/edits directly, then summarize exactly which 
 		}
 
 		this.render();
+		if (modal.kind === "theme") {
+			return;
+		}
 		if (modal.kind === "skill") {
 			const directPath = modal.item.path.trim() || null;
 			const fallbackPath = directPath ? null : await this.resolvePackageSkillContentPath(modal.item.name, modal.item.packageSource);
@@ -2767,15 +2961,70 @@ Execute the required file creation/edits directly, then summarize exactly which 
 	}
 
 	private async installExtensionItem(item: ExtensionSurfaceItem): Promise<void> {
+		if (normalizeRecommendedSource(item.source) === DESKTOP_THEMES_PACKAGE_SOURCE) {
+			if (this.runningCommand || this.runningConfigCommand) return;
+			this.runningCommand = true;
+			this.commandStatus = "Installing Pi Desktop Themes…";
+			this.render();
+			try {
+				const result = await restoreBundledThemes();
+				await this.refreshBundledThemesStatus();
+				this.commandStatus = `Installed Pi Desktop Themes (${result.created} created, ${result.renamed} renamed).`;
+			} catch (err) {
+				this.commandStatus = `Failed to install Pi Desktop Themes: ${err instanceof Error ? err.message : String(err)}`;
+			} finally {
+				this.runningCommand = false;
+				this.render();
+			}
+			return;
+		}
 		await this.installPackage(item.source, "global");
 		await this.refreshPackages(false);
 	}
 
 	private async uninstallExtensionItem(item: ExtensionSurfaceItem): Promise<void> {
+		if (normalizeRecommendedSource(item.source) === DESKTOP_THEMES_PACKAGE_SOURCE) {
+			if (this.runningCommand || this.runningConfigCommand) return;
+			this.runningCommand = true;
+			this.commandStatus = "Uninstalling Pi Desktop Themes…";
+			this.render();
+			try {
+				const result = await removeBundledThemes();
+				await this.refreshBundledThemesStatus();
+				this.commandStatus = `Uninstalled Pi Desktop Themes (${result.removed} removed, ${result.removedLegacy} legacy removed).`;
+			} catch (err) {
+				this.commandStatus = `Failed to uninstall Pi Desktop Themes: ${err instanceof Error ? err.message : String(err)}`;
+			} finally {
+				this.runningCommand = false;
+				this.render();
+			}
+			return;
+		}
 		const installed = item.installedItemForScope ?? this.findInstalledItemForSource(item.source, "global");
 		if (!installed) return;
 		await this.removePackage(this.resolveInstalledRemoveSource(installed), "global");
 		await this.refreshPackages(false);
+	}
+
+	private async uninstallThemeItem(item: DiscoveredThemeItem): Promise<void> {
+		if (this.runningCommand || this.runningConfigCommand) return;
+		this.runningCommand = true;
+		this.commandStatus = `Uninstalling theme ${item.name}…`;
+		this.render();
+		try {
+			const { exists, remove } = await import("@tauri-apps/plugin-fs");
+			if (await exists(item.path)) {
+				await remove(item.path);
+			}
+			this.closePackagesItemModal();
+			await this.refreshPackages(false);
+			this.commandStatus = `Uninstalled theme ${item.name}.`;
+		} catch (err) {
+			this.commandStatus = `Failed to uninstall theme ${item.name}: ${err instanceof Error ? err.message : String(err)}`;
+		} finally {
+			this.runningCommand = false;
+			this.render();
+		}
 	}
 
 	private renderSkillContentBlock(): TemplateResult {
@@ -2891,6 +3140,49 @@ Execute the required file creation/edits directly, then summarize exactly which 
 								</button>
 								${item.openUrl ? html`<button class="ghost-btn" @click=${() => void this.openExternal(item.openUrl!)}>Open page</button>` : nothing}
 								${installedForScope?.location ? html`<button class="ghost-btn" @click=${() => void this.openPath(installedForScope.location)}>Open folder</button>` : nothing}
+							</div>
+						</div>
+					</div>
+				</div>
+			`;
+		}
+
+		if (modal.kind === "theme") {
+			const item = modal.item;
+			return html`
+				<div class="overlay" @click=${(event: Event) => event.target === event.currentTarget && this.closePackagesItemModal()}>
+					<div class="overlay-card packages-config-modal packages-item-modal">
+						<div class="overlay-header">
+							<div>
+								<div class="packages-config-modal-title">${item.name}</div>
+							</div>
+							<button @click=${() => this.closePackagesItemModal()}>✕</button>
+						</div>
+						<div class="overlay-body packages-config-modal-body">
+							${item.description ? html`<div class="packages-section-desc">${item.description}</div>` : nothing}
+							${this.renderItemMetaRows([
+								{ label: "Type", value: `${item.variant === "dark" ? "Dark" : "Light"} theme` },
+								{ label: "Path", value: item.path },
+							])}
+							<div class="packages-theme-preview-grid">
+								<div class="packages-theme-preview-row">
+									<span>Accent</span>
+									<div class="packages-theme-color-chip"><span class="packages-theme-color-dot" style=${`background:${item.accent}`}></span>${item.accent}</div>
+								</div>
+								<div class="packages-theme-preview-row">
+									<span>Background</span>
+									<div class="packages-theme-color-chip"><span class="packages-theme-color-dot" style=${`background:${item.background}`}></span>${item.background}</div>
+								</div>
+								<div class="packages-theme-preview-row">
+									<span>Foreground</span>
+									<div class="packages-theme-color-chip"><span class="packages-theme-color-dot" style=${`background:${item.foreground}`}></span>${item.foreground}</div>
+								</div>
+							</div>
+							<div class="packages-config-modal-actions">
+								<button class="ghost-btn danger" ?disabled=${this.runningCommand || this.runningConfigCommand} @click=${() => void this.uninstallThemeItem(item)}>
+									${this.runningCommand ? "Uninstalling…" : "Uninstall"}
+								</button>
+								<button class="ghost-btn" @click=${() => void this.openPath(pathDirName(item.path))}>Open folder</button>
 							</div>
 						</div>
 					</div>
@@ -3029,6 +3321,7 @@ Execute the required file creation/edits directly, then summarize exactly which 
 		const installedItems = this.getInstalledItems();
 		const catalogItems = this.filteredCatalogItems();
 		const skillResources = this.filteredSkillResources();
+		const themeResources = this.filteredThemeResources().filter((item) => !isBundledThemeId(item.id));
 		const query = this.normalizeQuery();
 		const hasQuery = query.length > 0;
 		const queryLabel = this.query.trim();
@@ -3078,6 +3371,8 @@ Execute the required file creation/edits directly, then summarize exactly which 
 		const installedRowsData: Array<{ sortKey: string; options: RowOptions }> = [];
 		const discoverRowsData: Array<{ sortKey: string; priority: number; options: RowOptions }> = [];
 		const recommendedBadge = html`<span class="packages-card-scope recommended">Recommended</span>`;
+		const extensionIconFor = (item: ExtensionSurfaceItem): UiIcon =>
+			normalizeRecommendedSource(item.source) === DESKTOP_THEMES_PACKAGE_SOURCE ? "theme" : "extension";
 
 		const addInstalledRow = (sortKey: string, options: RowOptions) => {
 			installedRowsData.push({ sortKey, options });
@@ -3112,12 +3407,24 @@ Execute the required file creation/edits directly, then summarize exactly which 
 			});
 		}
 
+		for (const item of themeResources) {
+			addInstalledRow(`theme:${item.name.toLowerCase()}`, {
+				title: item.name,
+				description: item.description,
+				note: item.path,
+				iconName: "theme",
+				actions: html`<button class="packages-row-install installed" title="Installed" @click=${() => void this.openPackagesItemModal({ kind: "theme", item })}>✓</button>`,
+				onTitleClick: () => void this.openPackagesItemModal({ kind: "theme", item }),
+				titleAttr: item.path,
+			});
+		}
+
 		for (const item of extensionInstalled) {
 			addInstalledRow(item.displayName.toLowerCase(), {
 				title: item.displayName,
 				description: item.description || item.source,
 				note: item.note,
-				iconName: "extension",
+				iconName: extensionIconFor(item),
 				actions: html`<button class="packages-row-install installed" title="Installed" @click=${() => void this.openPackagesItemModal({ kind: "extension", item })}>✓</button>`,
 				onTitleClick: () => void this.openPackagesItemModal({ kind: "extension", item }),
 				titleAttr: item.source,
@@ -3151,7 +3458,7 @@ Execute the required file creation/edits directly, then summarize exactly which 
 				title: item.displayName,
 				description: item.description || item.source,
 				note: item.note,
-				iconName: "extension",
+				iconName: extensionIconFor(item),
 				badges: [recommendedBadge],
 				actions: html`
 					<button
@@ -3173,7 +3480,7 @@ Execute the required file creation/edits directly, then summarize exactly which 
 				title: item.displayName,
 				description: item.description || item.source,
 				note: item.note,
-				iconName: "extension",
+				iconName: extensionIconFor(item),
 				badges: [html`<span class="packages-card-scope">${sourceKindLabel(item.sourceKind)}</span>`],
 				actions: html`
 					<button
@@ -3228,7 +3535,6 @@ Execute the required file creation/edits directly, then summarize exactly which 
 		const installedLoading = this.loadingResources || this.loadingConfig;
 		const discoverLoading = this.loadingCatalog && hasQuery;
 		const discoverTitle = hasQuery ? "Results" : "Recommended";
-		const discoverMetaLabel = hasQuery ? "results" : "recommended";
 		const discoverSubmeta = hasQuery
 			? `Results for “${queryLabel}”.`
 			: "Recommended skills and extensions to get started.";
@@ -3246,11 +3552,6 @@ Execute the required file creation/edits directly, then summarize exactly which 
 				<div class="packages-view-header">
 					<div class="packages-view-title-wrap">
 						<div class="packages-view-title">Packages</div>
-						<div class="packages-view-meta">
-							${installedLoading || discoverLoading
-								? "Refreshing package state…"
-								: `${installedCount} installed · ${discoverCount} ${discoverMetaLabel}`}
-						</div>
 					</div>
 					<div class="packages-view-header-actions">
 						<button class="packages-back-btn" ?disabled=${this.runningCommand} @click=${() => void this.refreshPackages(true)}>Refresh</button>
@@ -3277,7 +3578,6 @@ Execute the required file creation/edits directly, then summarize exactly which 
 										<div class="packages-section-title">Installed</div>
 										<div class="packages-section-submeta">Skills and extensions available in this session.</div>
 									</div>
-									<div class="packages-section-meta">${installedCount}</div>
 								</div>
 								${installedLoading
 									? html`<div class="packages-empty">Loading installed items…</div>`
@@ -3290,13 +3590,12 @@ Execute the required file creation/edits directly, then summarize exactly which 
 										`}
 							</section>
 
-							<section class="packages-section">
+							<section class="packages-section packages-section-discover">
 								<div class="packages-section-head">
 									<div>
 										<div class="packages-section-title">${discoverTitle}</div>
 										<div class="packages-section-submeta">${discoverSubmeta}</div>
 									</div>
-									<div class="packages-section-meta">${discoverCount}</div>
 								</div>
 								${discoverLoading
 									? html`<div class="packages-empty">Loading results…</div>`

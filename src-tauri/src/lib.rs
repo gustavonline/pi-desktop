@@ -1576,6 +1576,16 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
+        .setup(|app| {
+            #[cfg(target_os = "macos")]
+            {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.set_background_color(Some(tauri::utils::config::Color(0, 0, 0, 0)));
+                    let _ = window.set_shadow(true);
+                }
+            }
+            Ok(())
+        })
         .manage(RpcState::default())
         .invoke_handler(tauri::generate_handler![
             rpc_start,

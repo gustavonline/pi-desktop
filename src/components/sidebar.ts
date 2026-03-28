@@ -67,7 +67,7 @@ interface FileNode {
 
 type SidebarContextTarget =
 	| { kind: "session"; projectId: string; sessionPath: string }
-	| { kind: "file"; projectId: string; filePath: string }
+	| { kind: "file"; projectId: string; filePath: string; isDirectory: boolean }
 	| { kind: "workspace"; workspaceId: string };
 
 const LEGACY_STORAGE_KEY = "pi-desktop.projects.v1";
@@ -115,6 +115,19 @@ function joinFsPath(base: string, name: string): string {
 	const sep = base.includes("\\") ? "\\" : "/";
 	const normalizedBase = base.replace(/[\\/]+$/, "");
 	return `${normalizedBase}${sep}${name}`;
+}
+
+function parentFsPath(path: string): string {
+	const trimmed = path.replace(/[\\/]+$/, "");
+	if (!trimmed) return "";
+	const parent = trimmed.replace(/[\\/][^\\/]+$/, "");
+	if (parent && parent !== trimmed) {
+		if (/^[A-Za-z]:$/.test(parent)) return `${parent}\\`;
+		return parent;
+	}
+	if (/^[A-Za-z]:[\\/]/.test(trimmed)) return `${trimmed.slice(0, 2)}\\`;
+	if (trimmed.startsWith("/")) return "/";
+	return parent || trimmed;
 }
 
 function isAbsolutePath(path: string): boolean {
@@ -207,6 +220,7 @@ export class Sidebar {
 	private projectEmojiPickerX = 0;
 	private projectEmojiPickerY = 0;
 	private projectEmojiSearchQuery = "";
+	private projectEmojiPortalHost: HTMLElement | null = null;
 	private pendingProjectDragId: string | null = null;
 	private draggingProjectId: string | null = null;
 	private projectDragOverId: string | null = null;
@@ -257,7 +271,8 @@ export class Sidebar {
 	private onSessionFork: ((projectId: string, sessionPath: string, sessionName?: string) => void) | null = null;
 	private onSessionMarkUnread: ((projectId: string, sessionPath: string, sessionName?: string) => void) | null = null;
 	private onNewSessionInProject: ((project: { id: string; name: string; path: string }) => void) | null = null;
-	private onNewFileInProject: ((project: { id: string; name: string; path: string }) => void) | null = null;
+	private onNewFileInProject: ((project: { id: string; name: string; path: string; directoryPath?: string | null; anchorPath?: string | null }) => void) | null = null;
+	private newFilePlacementHint: { projectId: string; anchorPath: string; newPath: string; expiresAt: number } | null = null;
 	private onFileOpen: ((projectId: string, filePath: string) => void) | null = null;
 	private onFileDelete: ((projectId: string, filePath: string) => void) | null = null;
 	private onModeChange: ((mode: SidebarMode) => void) | null = null;
@@ -485,7 +500,7 @@ export class Sidebar {
 		this.onNewSessionInProject = cb;
 	}
 
-	setOnNewFileInProject(cb: (project: { id: string; name: string; path: string }) => void): void {
+	setOnNewFileInProject(cb: (project: { id: string; name: string; path: string; directoryPath?: string | null; anchorPath?: string | null }) => void): void {
 		this.onNewFileInProject = cb;
 	}
 
@@ -514,9 +529,25 @@ export class Sidebar {
 		}
 	}
 
+	private readonly onWindowContextMenuPointerDown = (event: PointerEvent): void => {
+		if (!this.contextMenu) return;
+		const target = event.target instanceof Element ? event.target : null;
+		if (target?.closest(".sidebar-context-menu")) return;
+		this.closeContextMenu();
+	};
+
+	private readonly onWindowContextMenuMouseDown = (event: MouseEvent): void => {
+		if (!this.contextMenu) return;
+		const target = event.target instanceof Element ? event.target : null;
+		if (target?.closest(".sidebar-context-menu")) return;
+		this.closeContextMenu();
+	};
+
 	private closeContextMenu(shouldRender = true): void {
 		if (!this.contextMenu) return;
 		this.contextMenu = null;
+		window.removeEventListener("pointerdown", this.onWindowContextMenuPointerDown, true);
+		window.removeEventListener("mousedown", this.onWindowContextMenuMouseDown, true);
 		if (shouldRender) this.render();
 	}
 
@@ -524,13 +555,28 @@ export class Sidebar {
 		e.preventDefault();
 		e.stopPropagation();
 		const menuWidth = 170;
-		const menuHeight = target.kind === "workspace" ? 92 : target.kind === "session" ? 194 : 92;
+		const menuHeight = target.kind === "workspace"
+			? 92
+			: target.kind === "session"
+				? 194
+				: target.isDirectory
+					? 52
+					: 122;
 		const padding = 8;
-		const x = Math.max(padding, Math.min(e.clientX, window.innerWidth - menuWidth - padding));
-		const y = Math.max(padding, Math.min(e.clientY, window.innerHeight - menuHeight - padding));
+		const bounds = this.container.getBoundingClientRect();
+		const minX = Math.max(padding, Math.floor(bounds.left + padding));
+		const maxX = Math.min(window.innerWidth - menuWidth - padding, Math.floor(bounds.right - menuWidth - padding));
+		const minY = Math.max(padding, Math.floor(bounds.top + padding));
+		const maxY = Math.min(window.innerHeight - menuHeight - padding, Math.floor(bounds.bottom - menuHeight - padding));
+		const x = Math.max(minX, Math.min(e.clientX, Math.max(minX, maxX)));
+		const y = Math.max(minY, Math.min(e.clientY, Math.max(minY, maxY)));
 		this.closeWorkspaceEmojiPicker(false);
 		this.closeProjectEmojiPicker(false);
 		this.contextMenu = { x, y, target };
+		window.removeEventListener("pointerdown", this.onWindowContextMenuPointerDown, true);
+		window.removeEventListener("mousedown", this.onWindowContextMenuMouseDown, true);
+		window.addEventListener("pointerdown", this.onWindowContextMenuPointerDown, true);
+		window.addEventListener("mousedown", this.onWindowContextMenuMouseDown, true);
 		this.render();
 	}
 
@@ -823,6 +869,19 @@ export class Sidebar {
 		void this.ensureFileTreeForProject(active.id, forceReload);
 	}
 
+	setNewFilePlacementHint(projectId: string, newFilePath: string, anchorPath: string): void {
+		const normalizedProjectId = projectId.trim();
+		const normalizedNewPath = normalizePath(newFilePath);
+		const normalizedAnchorPath = normalizePath(anchorPath);
+		if (!normalizedProjectId || !normalizedNewPath || !normalizedAnchorPath) return;
+		this.newFilePlacementHint = {
+			projectId: normalizedProjectId,
+			newPath: normalizedNewPath,
+			anchorPath: normalizedAnchorPath,
+			expiresAt: Date.now() + 120_000,
+		};
+	}
+
 	// Legacy compatibility for existing keybindings in main.ts
 	setActiveView(_view: string): void {
 		// no-op
@@ -879,6 +938,12 @@ export class Sidebar {
 	private async createFileInActiveProject(): Promise<void> {
 		const project = this.getActiveProject();
 		if (!project) return;
+		await this.createFileInDirectory(project.id, project.path);
+	}
+
+	private async createFileInDirectory(projectId: string, directoryPath: string): Promise<void> {
+		const project = this.projects.find((entry) => entry.id === projectId) ?? null;
+		if (!project) return;
 
 		const input = window.prompt("New file name", "new-file.txt")?.trim();
 		if (!input) return;
@@ -887,7 +952,8 @@ export class Sidebar {
 			return;
 		}
 
-		const filePath = joinFsPath(project.path, input);
+		const targetDir = directoryPath || project.path;
+		const filePath = joinFsPath(targetDir, input);
 		try {
 			const { exists, writeTextFile } = await import("@tauri-apps/plugin-fs");
 			if (await exists(filePath)) {
@@ -896,8 +962,8 @@ export class Sidebar {
 			}
 
 			await writeTextFile(filePath, "");
-			await this.ensureFileTreeForProject(project.id, true);
-			this.openFile(project.id, filePath);
+			await this.ensureFileTreeForProject(projectId, true);
+			this.openFile(projectId, filePath);
 		} catch (err) {
 			console.error("Failed to create file:", err);
 			window.alert(err instanceof Error ? err.message : String(err));
@@ -1062,12 +1128,11 @@ export class Sidebar {
 	}
 
 	private handleFileContextMenu(e: MouseEvent, projectId: string, node: FileNode): void {
-		if (node.isDirectory) return;
 		this.selectProject(projectId, false);
 		this.activeSessionPath = null;
-		this.activeFilePath = normalizePath(node.path);
+		this.activeFilePath = node.isDirectory ? null : normalizePath(node.path);
 		this.clearInlineDrafts();
-		this.openContextMenu(e, { kind: "file", projectId, filePath: node.path });
+		this.openContextMenu(e, { kind: "file", projectId, filePath: node.path, isDirectory: node.isDirectory });
 	}
 
 	private handleWorkspaceContextMenu(e: MouseEvent, workspaceId: string): void {
@@ -1077,7 +1142,7 @@ export class Sidebar {
 	private runSessionContextAction(action: "rename" | "delete" | "fork" | "markUnread" | "togglePin"): void {
 		const target = this.contextMenu?.target;
 		if (!target || target.kind !== "session") return;
-		this.closeContextMenu(false);
+		this.closeContextMenu();
 		const found = this.findSession(target.projectId, target.sessionPath);
 		if (!found) {
 			this.render();
@@ -1103,10 +1168,26 @@ export class Sidebar {
 		void this.deleteSession(found.project, found.session);
 	}
 
-	private runFileContextAction(action: "rename" | "delete"): void {
+	private runFileContextAction(action: "newFile" | "rename" | "delete"): void {
 		const target = this.contextMenu?.target;
 		if (!target || target.kind !== "file") return;
-		this.closeContextMenu(false);
+		this.closeContextMenu();
+		if (action === "newFile") {
+			const project = this.projects.find((entry) => entry.id === target.projectId) ?? null;
+			if (!project) {
+				this.render();
+				return;
+			}
+			const baseDir = target.isDirectory ? target.filePath : parentFsPath(target.filePath);
+			this.onNewFileInProject?.({
+				id: project.id,
+				name: project.name,
+				path: project.path,
+				directoryPath: baseDir,
+				anchorPath: target.isDirectory ? null : target.filePath,
+			});
+			return;
+		}
 		const node = this.findFileNode(target.projectId, target.filePath);
 		if (!node) {
 			this.render();
@@ -1122,7 +1203,7 @@ export class Sidebar {
 	private runWorkspaceContextAction(action: "rename" | "delete"): void {
 		const target = this.contextMenu?.target;
 		if (!target || target.kind !== "workspace") return;
-		this.closeContextMenu(false);
+		this.closeContextMenu();
 		const workspace = this.workspaces.find((entry) => entry.id === target.workspaceId) ?? null;
 		if (!workspace) {
 			this.render();
@@ -1162,10 +1243,18 @@ export class Sidebar {
 				</div>
 			`;
 		} else if (target.kind === "file") {
+			const node = this.findFileNode(target.projectId, target.filePath);
+			const isDirectory = node?.isDirectory ?? target.isDirectory;
 			menuContent = html`
 				<div class="sidebar-context-menu" style=${`left:${menu.x}px;top:${menu.y}px`} @click=${(e: Event) => e.stopPropagation()}>
-					<button @click=${() => this.runFileContextAction("rename")}>Rename file</button>
-					<button class="danger" @click=${() => this.runFileContextAction("delete")}>Delete file</button>
+					<button @click=${() => this.runFileContextAction("newFile")}>New file</button>
+					${isDirectory
+						? nothing
+						: html`
+							<div class="sidebar-context-menu-divider"></div>
+							<button @click=${() => this.runFileContextAction("rename")}>Rename file</button>
+							<button class="danger" @click=${() => this.runFileContextAction("delete")}>Delete file</button>
+						`}
 				</div>
 			`;
 		} else {
@@ -1976,6 +2065,25 @@ export class Sidebar {
 	}
 
 	private compareFileNodes(a: FileNode, b: FileNode): number {
+		const hint = this.newFilePlacementHint;
+		if (hint && Date.now() > hint.expiresAt) {
+			this.newFilePlacementHint = null;
+		}
+		if (hint && this.activeProjectId === hint.projectId) {
+			const aPath = normalizePath(a.path);
+			const bPath = normalizePath(b.path);
+			const matchesPair =
+				(aPath === hint.newPath && bPath === hint.anchorPath) ||
+				(aPath === hint.anchorPath && bPath === hint.newPath);
+			if (matchesPair) {
+				const aParent = normalizePath(parentFsPath(a.path));
+				const bParent = normalizePath(parentFsPath(b.path));
+				const hintParent = normalizePath(parentFsPath(hint.newPath));
+				if (aParent && aParent === bParent && aParent === hintParent) {
+					return aPath === hint.newPath ? 1 : -1;
+				}
+			}
+		}
 		if (this.fileKind === "all" && a.isDirectory !== b.isDirectory) {
 			return a.isDirectory ? -1 : 1;
 		}
@@ -2978,13 +3086,6 @@ export class Sidebar {
 				class="sidebar-workspace-header"
 				@contextmenu=${(e: MouseEvent) => this.handleWorkspaceContextMenu(e, activeWorkspace.id)}
 			>
-				<button
-					class="sidebar-workspace-header-emoji"
-					title="Change workspace emoji"
-					@click=${(e: MouseEvent) => this.openWorkspaceEmojiPicker(activeWorkspace.id, e)}
-				>
-					<span class="sidebar-workspace-avatar">${activeWorkspace.emoji || "💼"}</span>
-				</button>
 				<div class="sidebar-workspace-header-main">
 					${isRenaming
 						? html`
@@ -3032,12 +3133,8 @@ export class Sidebar {
 					}}
 				>
 					<svg class="sidebar-icon-svg" viewBox="0 0 16 16" aria-hidden="true">
-						<path d="M2.8 4h10.4" />
-						<path d="M2.8 8h10.4" />
-						<path d="M2.8 12h10.4" />
-						<circle cx="6" cy="4" r="1.1" />
-						<circle cx="10" cy="8" r="1.1" />
-						<circle cx="7" cy="12" r="1.1" />
+						<path d="M6.6 1.9h2.8l.3 1.5c.4.1.7.3 1 .5l1.4-.6 1.4 2.4-1.1 1c.1.4.1.8 0 1.2l1.1 1-1.4 2.4-1.4-.6c-.3.2-.6.4-1 .5l-.3 1.5H6.6l-.3-1.5c-.4-.1-.7-.3-1-.5l-1.4.6-1.4-2.4 1.1-1a3.8 3.8 0 0 1 0-1.2l-1.1-1 1.4-2.4 1.4.6c.3-.2.6-.4 1-.5z" />
+						<circle cx="8" cy="8" r="2.1" />
 					</svg>
 				</button>
 				<div class="sidebar-workspace-dock-list" @click=${(e: Event) => e.stopPropagation()}>
@@ -3202,6 +3299,12 @@ export class Sidebar {
 		const project = this.projects.find((entry) => entry.id === this.projectEmojiPickerProjectId) ?? null;
 		const filteredEmojis = this.filteredProjectEmojis();
 		return html`
+			<button
+				type="button"
+				class="project-emoji-picker-backdrop"
+				aria-label="Close emoji picker"
+				@click=${() => this.closeProjectEmojiPicker()}
+			></button>
 			<div class="workspace-emoji-picker project-emoji-picker" style=${`left:${this.projectEmojiPickerX}px;top:${this.projectEmojiPickerY}px`} @click=${(event: Event) => event.stopPropagation()}>
 				<input
 					class="workspace-emoji-search project-emoji-search"
@@ -3235,6 +3338,22 @@ export class Sidebar {
 				</div>
 			</div>
 		`;
+	}
+
+	private ensureProjectEmojiPortalHost(): HTMLElement | null {
+		if (typeof document === "undefined") return null;
+		if (this.projectEmojiPortalHost && document.body.contains(this.projectEmojiPortalHost)) return this.projectEmojiPortalHost;
+		const host = document.createElement("div");
+		host.className = "sidebar-project-emoji-portal-host";
+		document.body.appendChild(host);
+		this.projectEmojiPortalHost = host;
+		return host;
+	}
+
+	private renderProjectEmojiPickerPortal(): void {
+		const host = this.ensureProjectEmojiPortalHost();
+		if (!host) return;
+		render(this.renderProjectEmojiPicker(), host);
 	}
 
 	private renderSessionPiIcon(running = false): TemplateResult | typeof nothing {
@@ -3271,7 +3390,7 @@ export class Sidebar {
 
 		return html`
 			<div class="sidebar-chrono-list">
-				${rows.map(({ project, session }) => {
+				${rows.map(({ project, session }, index) => {
 					const ts = this.sessionSortBy === "created" ? session.createdAt || session.modifiedAt : session.modifiedAt || session.createdAt;
 					const normalizedSessionPath = normalizePath(session.path);
 					const activeSession = normalizedSessionPath
@@ -3280,7 +3399,10 @@ export class Sidebar {
 					const runningSession = this.runningSessionPaths.has(normalizedSessionPath);
 					const attentionMessage = this.attentionSessionMessages.get(normalizedSessionPath) ?? null;
 					const pinnedSession = this.isSessionPinned(session.path);
+					const prevPinned = index > 0 ? this.isSessionPinned(rows[index - 1]?.session.path ?? "") : false;
+					const showPinnedDivider = prevPinned && !pinnedSession;
 					return html`
+						${showPinnedDivider ? html`<div class="sidebar-session-pin-divider" role="separator" aria-hidden="true"></div>` : nothing}
 						<button
 							class="sidebar-chrono-row ${activeSession ? "active-session" : ""} ${pinnedSession ? "pinned" : ""}"
 							@click=${() => {
@@ -3298,7 +3420,6 @@ export class Sidebar {
 							<span class="sidebar-session-leading">
 								${this.renderSessionPiIcon(runningSession)}
 							</span>
-							${pinnedSession ? html`<span class="sidebar-session-pin" title="Pinned session">📌</span>` : nothing}
 							<span class="sidebar-chrono-main">
 								<span class="sidebar-chrono-name sidebar-session-name ${attentionMessage ? "needs-attention" : ""}">${session.name}</span>
 								<span class="sidebar-chrono-project">${project.name}</span>
@@ -3408,7 +3529,7 @@ export class Sidebar {
 											: sessions.length === 0
 												? html`<div class="sidebar-empty">${this.sessionShow === "relevant" ? "No relevant sessions." : "No sessions yet."}</div>`
 												: sessions.map(
-                                                    (session) => {
+                                                    (session, index) => {
                                                         const normalizedSessionPath = normalizePath(session.path);
                                                         const activeSession = normalizedSessionPath
                                                             ? normalizedSessionPath === this.activeSessionPath
@@ -3416,16 +3537,18 @@ export class Sidebar {
                                                         const runningSession = this.runningSessionPaths.has(normalizedSessionPath);
                                                         const attentionMessage = this.attentionSessionMessages.get(normalizedSessionPath) ?? null;
                                                         const pinnedSession = this.isSessionPinned(session.path);
+                                                        const prevPinned = index > 0 ? this.isSessionPinned(sessions[index - 1]?.path ?? "") : false;
+                                                        const showPinnedDivider = prevPinned && !pinnedSession;
                                                         const sessionRenameActive =
                                                             Boolean(this.sessionRenameDraft) &&
                                                             this.sessionRenameDraft?.projectId === project.id &&
                                                             this.sessionRenameDraft?.sessionPath === normalizePath(session.path);
                                                         return html`
+                                                            ${showPinnedDivider ? html`<div class="sidebar-session-pin-divider" role="separator" aria-hidden="true"></div>` : nothing}
                                                             <div class="sidebar-session-row ${activeSession ? "active" : ""} ${pinnedSession ? "pinned" : ""}">
                                                                 <span class="sidebar-session-leading">
                                                                     ${this.renderSessionPiIcon(runningSession)}
                                                                 </span>
-                                                                ${pinnedSession ? html`<span class="sidebar-session-pin" title="Pinned session">📌</span>` : nothing}
                                                                 <button
                                                                     class="sidebar-session ${activeSession ? "active-session" : ""}"
                                                                     @click=${() => {
@@ -3660,32 +3783,32 @@ export class Sidebar {
 				class="sidebar-single"
 				@wheel=${(e: WheelEvent) => this.handleSidebarWheel(e)}
 				@click=${(e: Event) => {
-					const target = e.target as HTMLElement;
+					const target = e.target instanceof Element ? e.target : null;
 					let changed = false;
 
-					if (this.openProjectMenuId && !target.closest(".sidebar-project-menu") && !target.closest(".sidebar-project-action.menu")) {
+					if (this.openProjectMenuId && !target?.closest(".sidebar-project-menu") && !target?.closest(".sidebar-project-action.menu")) {
 						this.openProjectMenuId = null;
 						changed = true;
 					}
 
-					if (this.modeFilterMenuOpen && !target.closest(".sidebar-mode-filter-menu") && !target.closest(".sidebar-mode-filter-btn")) {
+					if (this.modeFilterMenuOpen && !target?.closest(".sidebar-mode-filter-menu") && !target?.closest(".sidebar-mode-filter-btn")) {
 						this.modeFilterMenuOpen = false;
 						changed = true;
 					}
 
-					if ((this.pendingProjectDragId || this.draggingProjectId) && !target.closest(".sidebar-project-list")) {
+					if ((this.pendingProjectDragId || this.draggingProjectId) && !target?.closest(".sidebar-project-list")) {
 						this.cancelProjectPointerDrag(false);
 						changed = true;
 					}
 
-					if ((this.pendingWorkspaceDragId || this.draggingWorkspaceId) && !target.closest(".sidebar-workspace-dock")) {
+					if ((this.pendingWorkspaceDragId || this.draggingWorkspaceId) && !target?.closest(".sidebar-workspace-dock")) {
 						this.cancelWorkspacePointerDrag(false);
 						changed = true;
 					}
 
 					if (
 						this.workspaceRenameDraft &&
-						!target.closest(".sidebar-workspace-title-input")
+						!target?.closest(".sidebar-workspace-title-input")
 					) {
 						this.commitWorkspaceRename();
 						return;
@@ -3693,8 +3816,8 @@ export class Sidebar {
 
 					if (
 						this.workspaceCreateDialogOpen &&
-						!target.closest(".sidebar-space-dialog") &&
-						!target.closest(".sidebar-workspace-dock-add")
+						!target?.closest(".sidebar-space-dialog") &&
+						!target?.closest(".sidebar-workspace-dock-add")
 					) {
 						this.closeWorkspaceCreateDialog(false);
 						changed = true;
@@ -3702,8 +3825,8 @@ export class Sidebar {
 
 					if (
 						this.workspaceCreateEmojiPickerOpen &&
-						!target.closest(".sidebar-space-emoji-picker") &&
-						!target.closest(".sidebar-space-emoji-trigger")
+						!target?.closest(".sidebar-space-emoji-picker") &&
+						!target?.closest(".sidebar-space-emoji-trigger")
 					) {
 						this.workspaceCreateEmojiPickerOpen = false;
 						this.workspaceCreateEmojiQuery = "";
@@ -3712,8 +3835,8 @@ export class Sidebar {
 
 					if (
 						this.emojiPickerWorkspaceId &&
-						!target.closest(".workspace-emoji-picker") &&
-						!target.closest(".sidebar-workspace-header-emoji")
+						!target?.closest(".workspace-emoji-picker") &&
+						!target?.closest(".sidebar-workspace-header-emoji")
 					) {
 						this.closeWorkspaceEmojiPicker(false);
 						changed = true;
@@ -3721,14 +3844,14 @@ export class Sidebar {
 
 					if (
 						this.projectEmojiPickerProjectId &&
-						!target.closest(".project-emoji-picker")
+						!target?.closest(".project-emoji-picker")
 					) {
 						this.closeProjectEmojiPicker(false);
 						changed = true;
 					}
 
-					if (this.contextMenu && !target.closest(".sidebar-context-menu")) {
-						this.contextMenu = null;
+					if (this.contextMenu && !target?.closest(".sidebar-context-menu")) {
+						this.closeContextMenu(false);
 						changed = true;
 					}
 
@@ -3808,11 +3931,11 @@ export class Sidebar {
 
 				${this.renderWorkspaceCreateDialog()}
 				${this.renderWorkspaceEmojiPicker()}
-				${this.renderProjectEmojiPicker()}
 				${this.renderContextMenu()}
 			</div>
 		`;
 
 		render(template, this.container);
+		this.renderProjectEmojiPickerPortal();
 	}
 }
