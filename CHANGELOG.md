@@ -6,6 +6,29 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-03-28
+
+### Added
+- Added a provider-first **model picker flyout** in chat composer (provider → model) with cleaner model labeling.
+- Added bundled desktop theme management foundations (`tokens.css`, `theme.css`, `src/theme/*`) including appearance profile projection.
+- Added robust project emoji picker portal rendering to avoid clipping/stacking conflicts.
+
+### Changed
+- Refined chat composer parity: spacing, controls, send/stop states, reasoning control labels, and slash menu navigation stability.
+- Moved Settings from modal overlay toward a full-page pane flow in the main canvas architecture.
+- Cleaned Packages visual hierarchy by removing noisy counters/dividers and improving section spacing.
+- Updated top chrome/content tab polish (trailing terminal affordance and divider rhythm).
+
+### Fixed
+- Fixed startup regression that could leave app stuck on **"Starting pi agent…"** after settings-pane refactors.
+- Fixed overlay stacking conflicts where sidebar/main-pane layering could clip or obscure popups/modals.
+- Fixed emoji/change-picker clipping and close behavior across outside-click/escape flows.
+- Hardened slash palette keyboard/pointer interaction so scrolling and hover jitter no longer hijack selection.
+
+### Notes
+- Corresponds to merged parity PR **#65** into `dev`.
+- Native/Tauri visual changes should be validated with a cold native restart when smoke testing release candidates.
+
 ## [0.1.8] - 2026-03-23
 
 ### Changed
