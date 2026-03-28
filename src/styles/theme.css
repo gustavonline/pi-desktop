@@ -1,0 +1,55 @@
+/*
+ * Semantic theme mapping.
+ *
+ * Keep this layer aligned with Pi theme tokens so custom Pi ecosystem themes
+ * can map into desktop semantic tokens later.
+ */
+
+:root,
+:root.dark {
+	color-scheme: dark;
+
+	--color-bg-app: #0d0d0f;
+	--color-bg-elevated: #141417;
+	--color-bg-muted: #1b1b1f;
+	--color-bg-soft: #202026;
+	--color-bg-sidebar: #0f1012;
+	--color-bg-workspace-chrome: #131419;
+	--color-bg-workspace-chrome-soft: #1a1b22;
+
+	--color-border-default: rgb(255 255 255 / 0.08);
+	--color-text-primary: #f5f5f7;
+	--color-text-secondary: #9a9aa3;
+	--color-text-tertiary: #6f7078;
+
+	--color-accent-primary: #7a818f;
+	--color-accent-soft: rgb(122 129 143 / 0.2);
+
+	--color-state-danger: #ef4444;
+	--color-state-success: #22c55e;
+	--color-state-warning: #f59e0b;
+}
+
+:root.light {
+	color-scheme: light;
+
+	--color-bg-app: #f3f3f5;
+	--color-bg-elevated: #ffffff;
+	--color-bg-muted: #f6f6f8;
+	--color-bg-soft: #ececf0;
+	--color-bg-sidebar: #ececf1;
+	--color-bg-workspace-chrome: #eff0f4;
+	--color-bg-workspace-chrome-soft: #e7e9f0;
+
+	--color-border-default: rgb(12 12 12 / 0.12);
+	--color-text-primary: #151518;
+	--color-text-secondary: #555863;
+	--color-text-tertiary: #80838f;
+
+	--color-accent-primary: #6b7280;
+	--color-accent-soft: rgb(107 114 128 / 0.16);
+
+	--color-state-danger: #dc2626;
+	--color-state-success: #16a34a;
+	--color-state-warning: #d97706;
+}

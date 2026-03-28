@@ -11,6 +11,7 @@
 	},
 	"app": {
 		"withGlobalTauri": true,
+		"macOSPrivateApi": true,
 		"windows": [
 			{
 				"title": "Pi Desktop",
@@ -19,7 +20,9 @@
 				"minWidth": 600,
 				"minHeight": 400,
 				"decorations": false,
-				"transparent": false,
+				"transparent": true,
+				"shadow": true,
+				"backgroundColor": "#00000000",
 				"center": true
 			}
 		],

@@ -17,6 +17,14 @@ import { TerminalPanel } from "./components/terminal-panel.js";
 import type { WorkspaceTabs } from "./components/workspace-tabs.js";
 import { fetchDesktopUpdateStatus, type DesktopUpdateStatus } from "./desktop-updates.js";
 import { type CliUpdateStatus, RpcBridge, type RpcSessionState, rpcBridge, setActiveRpcBridge } from "./rpc/bridge.js";
+import {
+	applyDesktopAppearanceProfileToRoot,
+	DESKTOP_APPEARANCE_PROFILE_CHANGED_EVENT,
+	loadDesktopAppearanceProfiles,
+} from "./theme/appearance-profiles.js";
+import { syncDesktopThemeWithPiTheme } from "./theme/pi-theme-bridge.js";
+import { DESKTOP_THEME_CHANGED_EVENT, getResolvedDesktopTheme, initializeDesktopTheme, toggleDesktopTheme } from "./theme/theme-manager.js";
+import { ensureBundledThemesInstalled } from "./theme/bundled-themes.js";
 import "./styles/app.css";
 
 interface WorkspaceSessionTab {
@@ -37,6 +45,8 @@ interface WorkspaceFileTab {
 	projectPath: string | null;
 	path: string | null;
 	title: string;
+	draftDirectoryPath: string | null;
+	draftAnchorPath: string | null;
 }
 
 interface WorkspaceState {
@@ -46,7 +56,7 @@ interface WorkspaceState {
 	emoji: string | null;
 	pinned: boolean;
 	leftMode: SidebarMode;
-	pane: "chat" | "file" | "packages" | "terminal";
+	pane: "chat" | "file" | "packages" | "settings" | "terminal";
 	activeProjectId: string | null;
 	activeProjectPath: string | null;
 	filePath: string | null;
@@ -643,12 +653,19 @@ function ensureWorkspaceContentState(workspace: WorkspaceState): void {
 		.map((tab) => {
 			const path = normalizeStoredPath(tab.path);
 			const fallbackTitle = path ? baseName(path) : NEW_FILE_TAB_TITLE;
+			const projectPath = normalizeStoredPath((tab as Partial<WorkspaceFileTab>).projectPath);
+			const draftDirectoryPath = path
+				? null
+				: normalizeStoredPath((tab as Partial<WorkspaceFileTab>).draftDirectoryPath) ?? projectPath;
+			const draftAnchorPath = path ? null : normalizeStoredPath((tab as Partial<WorkspaceFileTab>).draftAnchorPath);
 			return {
 				id: tab.id,
 				projectId: normalizeStoredId((tab as Partial<WorkspaceFileTab>).projectId),
-				projectPath: normalizeStoredPath((tab as Partial<WorkspaceFileTab>).projectPath),
+				projectPath,
 				path,
 				title: typeof tab.title === "string" && tab.title.trim().length > 0 ? tab.title.trim() : fallbackTitle,
+				draftDirectoryPath,
+				draftAnchorPath,
 			};
 		});
 
@@ -664,6 +681,13 @@ function ensureWorkspaceContentState(workspace: WorkspaceState): void {
 	}
 	if (activeFile && isDraftFileTab(activeFile) && !activeFile.projectPath && workspace.activeProjectPath) {
 		setFileTabProject(activeFile, workspace.activeProjectId, workspace.activeProjectPath);
+	}
+	if (activeFile && isDraftFileTab(activeFile) && !activeFile.draftDirectoryPath) {
+		activeFile.draftDirectoryPath = activeFile.projectPath ?? workspace.activeProjectPath;
+	}
+	if (activeFile && !isDraftFileTab(activeFile)) {
+		activeFile.draftDirectoryPath = null;
+		activeFile.draftAnchorPath = null;
 	}
 
 	workspace.activeProjectId = getWorkspaceActiveProjectId(workspace);
@@ -829,10 +853,14 @@ function openOrActivateFileTab(
 			projectPath: normalizeStoredPath(projectPath),
 			path: filePath,
 			title: baseName(filePath),
+			draftDirectoryPath: null,
+			draftAnchorPath: null,
 		};
 		workspace.fileTabs.push(tab);
 	} else {
 		setFileTabProject(tab, projectId, projectPath);
+		tab.draftDirectoryPath = null;
+		tab.draftAnchorPath = null;
 	}
 	workspace.activeFileTabId = tab.id;
 	workspace.filePath = tab.path;
@@ -846,12 +874,18 @@ function createAndActivateEmptyFileTab(
 	title = NEW_FILE_TAB_TITLE,
 	projectId: string | null = workspace.activeProjectId,
 	projectPath: string | null = workspace.activeProjectPath,
+	draftDirectoryPath: string | null = projectPath,
+	draftAnchorPath: string | null = null,
 ): WorkspaceFileTab {
 	ensureWorkspaceContentState(workspace);
+	const normalizedDraftDirectoryPath = normalizeStoredPath(draftDirectoryPath) ?? normalizeStoredPath(projectPath);
+	const normalizedDraftAnchorPath = normalizeStoredPath(draftAnchorPath);
 	const activeDraft = workspace.fileTabs.find((entry) => entry.id === workspace.activeFileTabId && isDraftFileTab(entry));
 	if (activeDraft) {
 		activeDraft.title = title.trim() || NEW_FILE_TAB_TITLE;
 		setFileTabProject(activeDraft, projectId, projectPath);
+		activeDraft.draftDirectoryPath = normalizedDraftDirectoryPath;
+		activeDraft.draftAnchorPath = normalizedDraftAnchorPath;
 		workspace.activeFileTabId = activeDraft.id;
 		workspace.filePath = null;
 		setWorkspaceActiveProject(workspace, { id: activeDraft.projectId, path: activeDraft.projectPath });
@@ -864,6 +898,8 @@ function createAndActivateEmptyFileTab(
 		projectPath: normalizeStoredPath(projectPath),
 		path: null,
 		title: title.trim() || NEW_FILE_TAB_TITLE,
+		draftDirectoryPath: normalizedDraftDirectoryPath,
+		draftAnchorPath: normalizedDraftAnchorPath,
 	};
 	workspace.fileTabs.push(tab);
 	workspace.activeFileTabId = tab.id;
@@ -1388,10 +1424,11 @@ function loadWorkspaces(): void {
 						.filter((tab) => typeof tab.id === "string" && tab.id.length > 0)
 						.map((tab) => {
 							const path = normalizeStoredPath(tab.path);
+							const projectPath = normalizeStoredPath(tab.projectPath);
 							return {
 								id: tab.id!,
 								projectId: normalizeStoredId(tab.projectId),
-								projectPath: normalizeStoredPath(tab.projectPath),
+								projectPath,
 								path,
 								title:
 									typeof tab.title === "string" && tab.title.trim().length > 0
@@ -1399,6 +1436,8 @@ function loadWorkspaces(): void {
 										: path
 											? baseName(path)
 											: NEW_FILE_TAB_TITLE,
+								draftDirectoryPath: path ? null : normalizeStoredPath(tab.draftDirectoryPath) ?? projectPath,
+								draftAnchorPath: path ? null : normalizeStoredPath(tab.draftAnchorPath),
 							};
 						});
 
@@ -1409,6 +1448,8 @@ function loadWorkspaces(): void {
 							projectPath: normalizeStoredPath(w.activeProjectPath),
 							path: w.filePath,
 							title: baseName(w.filePath),
+							draftDirectoryPath: null,
+							draftAnchorPath: null,
 						});
 					}
 
@@ -1419,7 +1460,7 @@ function loadWorkspaces(): void {
 						emoji: typeof w.emoji === "string" && w.emoji.trim().length > 0 ? w.emoji.trim() : null,
 						pinned: false,
 						leftMode: w.leftMode === "files" ? "files" : "projects",
-						pane: w.pane === "file" || w.pane === "packages" || w.pane === "terminal" ? w.pane : "chat",
+						pane: w.pane === "file" || w.pane === "packages" || w.pane === "settings" || w.pane === "terminal" ? w.pane : "chat",
 						activeProjectId: normalizeStoredId(w.activeProjectId),
 						activeProjectPath: normalizeStoredPath(w.activeProjectPath),
 						filePath: typeof w.filePath === "string" ? w.filePath : null,
@@ -1652,10 +1693,11 @@ function syncContentTabsBar(workspace: WorkspaceState | null = getActiveWorkspac
 	const hasProject = Boolean(workspace && getWorkspaceActiveProjectPath(workspace));
 	const tabsContainer = document.getElementById("content-tabs-container");
 	if (tabsContainer) {
-		tabsContainer.classList.toggle("hidden", workspace?.pane === "packages" || !hasProject);
+		tabsContainer.classList.toggle("hidden", workspace?.pane === "packages" || workspace?.pane === "settings" || !hasProject);
 	}
 
-	if (!contentTabsBar || !workspace || workspace.pane === "packages" || !hasProject) {
+	if (!contentTabsBar || !workspace || workspace.pane === "packages" || workspace.pane === "settings" || !hasProject) {
+		contentTabsBar?.setTerminalActive(false);
 		contentTabsBar?.setTabs([], null);
 		return;
 	}
@@ -1698,6 +1740,7 @@ function syncContentTabsBar(workspace: WorkspaceState | null = getActiveWorkspac
 				? "terminal"
 				: workspace.activeSessionTabId;
 
+	contentTabsBar.setTerminalActive(workspace.pane === "terminal");
 	contentTabsBar.setTabs(tabs, activeTabId);
 }
 
@@ -1706,12 +1749,14 @@ function setPaneVisibility(pane: WorkspaceState["pane"]): void {
 	const filePane = document.getElementById("file-pane");
 	const terminalPane = document.getElementById("terminal-pane");
 	const packagesPane = document.getElementById("packages-pane");
-	if (!sessionPane || !filePane || !terminalPane || !packagesPane) return;
+	const settingsPane = document.getElementById("settings-pane");
+	if (!sessionPane || !filePane || !terminalPane || !packagesPane || !settingsPane) return;
 
 	sessionPane.classList.toggle("hidden-pane", pane !== "chat");
 	filePane.classList.toggle("hidden-pane", pane !== "file");
 	terminalPane.classList.toggle("hidden-pane", pane !== "terminal");
 	packagesPane.classList.toggle("hidden-pane", pane !== "packages");
+	settingsPane.classList.toggle("hidden-pane", pane !== "settings");
 }
 
 async function applyWorkspacePane(workspace: WorkspaceState | null = getActiveWorkspace()): Promise<void> {
@@ -1720,6 +1765,12 @@ async function applyWorkspacePane(workspace: WorkspaceState | null = getActiveWo
 	syncContentTabsBar(workspace);
 
 	if (!workspace) {
+		const resolved = getResolvedDesktopTheme();
+		const profiles = loadDesktopAppearanceProfiles();
+		void syncDesktopThemeWithPiTheme(null).finally(() => {
+			applyDesktopAppearanceProfileToRoot(resolved, profiles);
+		});
+		settingsPanel?.close(false);
 		syncRunningSessionIndicators();
 		setPaneVisibility("chat");
 		return;
@@ -1727,16 +1778,25 @@ async function applyWorkspacePane(workspace: WorkspaceState | null = getActiveWo
 
 	ensureWorkspaceContentState(workspace);
 	const workspaceProjectPath = getWorkspaceActiveProjectPath(workspace);
+	const resolved = getResolvedDesktopTheme();
+	const profiles = loadDesktopAppearanceProfiles();
+	void syncDesktopThemeWithPiTheme(workspaceProjectPath).finally(() => {
+		applyDesktopAppearanceProfileToRoot(resolved, profiles);
+	});
 	chatView?.setProjectPath(workspaceProjectPath);
 	packagesView?.setProjectPath(workspaceProjectPath);
 	terminalPanel?.setProjectPath(workspaceProjectPath);
+	if (workspace.pane !== "settings") {
+		settingsPanel?.close(false);
+	}
 	if (workspace.pane !== "file") {
 		fileViewer?.setProjectPath(workspaceProjectPath);
 	}
 
 	if (workspace.pane === "file") {
 		const activeFileTab = getActiveFileTab(workspace);
-		fileViewer?.setProjectPath(getFileTabProjectPath(activeFileTab) ?? getWorkspaceActiveProjectPath(workspace));
+		const draftBasePath = activeFileTab && isDraftFileTab(activeFileTab) ? normalizeStoredPath(activeFileTab.draftDirectoryPath) : null;
+		fileViewer?.setProjectPath(draftBasePath ?? getFileTabProjectPath(activeFileTab) ?? getWorkspaceActiveProjectPath(workspace));
 		setPaneVisibility("file");
 		if (activeFileTab?.path) {
 			await fileViewer?.openFile(activeFileTab.path);
@@ -1756,6 +1816,7 @@ async function applyWorkspacePane(workspace: WorkspaceState | null = getActiveWo
 	}
 
 	if (workspace.pane === "packages") {
+		settingsPanel?.close(false);
 		packagesView?.setProjectPath(getWorkspaceActiveProjectPath(workspace));
 		setPaneVisibility("packages");
 		await packagesView?.open();
@@ -1764,6 +1825,19 @@ async function applyWorkspacePane(workspace: WorkspaceState | null = getActiveWo
 		return;
 	}
 
+	if (workspace.pane === "settings") {
+		setPaneVisibility("settings");
+		const panel = mountSettingsPanel();
+		if (!panel.isVisible()) {
+			await panel.open();
+		} else {
+			panel.render();
+		}
+		syncDebugOverlay();
+		return;
+	}
+
+	settingsPanel?.close(false);
 	syncActiveChatRuntimeBinding(workspace);
 	setPaneVisibility("chat");
 	chatView?.focusInput();
@@ -2042,9 +2116,22 @@ function closeWorkspace(workspaceId: string): void {
 }
 
 function applyInitialTheme(): void {
-	const theme = (localStorage.getItem("pi-theme") as "dark" | "light" | null) ?? "dark";
-	document.documentElement.classList.remove("dark", "light");
-	document.documentElement.classList.add(theme);
+	initializeDesktopTheme();
+	const resolved = getResolvedDesktopTheme();
+	const profiles = loadDesktopAppearanceProfiles();
+	void syncDesktopThemeWithPiTheme(null).finally(() => {
+		applyDesktopAppearanceProfileToRoot(resolved, profiles);
+	});
+}
+
+async function applyNativeWindowVisualFixes(): Promise<void> {
+	try {
+		const { getCurrentWindow } = await import("@tauri-apps/api/window");
+		const win = getCurrentWindow();
+		await win.setBackgroundColor({ red: 0, green: 0, blue: 0, alpha: 0 });
+	} catch {
+		// Ignore in web / non-tauri runtimes
+	}
 }
 
 async function runStartupCompatibilityCheck(): Promise<void> {
@@ -2154,10 +2241,12 @@ async function initialize(): Promise<void> {
 	loadWorkspaces();
 	loadSidebarWidth();
 	applySidebarWidth();
+	await ensureBundledThemesInstalled();
 
 	try {
 		connectionError = null;
 		renderApp();
+		mountSettingsPanel();
 		// Ensure creatorskill exists on first run (copied from packaged assets if available)
 		await packagesView?.ensureCreatorSkillInstalled();
 		// Refresh discovered resources so Packages view shows the new skill immediately
@@ -2314,13 +2403,11 @@ async function initialize(): Promise<void> {
 }
 
 function mountSettingsPanel(): SettingsPanel {
-	settingsPanel?.destroy();
-	const existing = document.getElementById("settings-container");
-	existing?.remove();
-
-	const settingsContainer = document.createElement("div");
-	settingsContainer.id = "settings-container";
-	document.body.appendChild(settingsContainer);
+	if (settingsPanel) return settingsPanel;
+	const settingsContainer = document.getElementById("settings-pane");
+	if (!settingsContainer) {
+		throw new Error("Settings pane container not found");
+	}
 	const panel = new SettingsPanel(settingsContainer);
 	panel.setOnDesktopStatusChange((status) => {
 		desktopUpdateStatus = status;
@@ -2330,6 +2417,14 @@ function mountSettingsPanel(): SettingsPanel {
 		cliUpdateStatus = status;
 		syncCliUpdateUiHint();
 	});
+	panel.setOnClose(() => {
+		const workspace = getActiveWorkspace();
+		if (!workspace || workspace.pane !== "settings") return;
+		workspace.pane = "chat";
+		persistWorkspaces();
+		syncWorkspaceTabsBar();
+		void applyWorkspacePane(workspace);
+	});
 	settingsPanel = panel;
 	return panel;
 }
@@ -2338,8 +2433,6 @@ function initializeComponents(): void {
 	if (commandPalette || sessionBrowser || shortcutsPanel || extensionUiHandler) {
 		return;
 	}
-
-	mountSettingsPanel();
 
 	const commandPaletteContainer = document.createElement("div");
 	commandPaletteContainer.id = "command-palette-container";
@@ -2523,8 +2616,13 @@ function wireCommandPaletteBuiltins(): void {
 }
 
 function requestOpenSettingsPanel(): void {
-	const panel = mountSettingsPanel();
-	void panel.open();
+	const workspace = getActiveWorkspace();
+	if (!workspace) return;
+	mountSettingsPanel();
+	workspace.pane = "settings";
+	persistWorkspaces();
+	syncWorkspaceTabsBar();
+	void applyWorkspacePane(workspace);
 }
 
 function openSettings(): void {
@@ -2544,11 +2642,7 @@ function openShortcuts(): void {
 }
 
 function toggleThemeQuickly(): void {
-	const current = (localStorage.getItem("pi-theme") as "dark" | "light" | null) ?? "dark";
-	const next = current === "dark" ? "light" : "dark";
-	document.documentElement.classList.remove("light", "dark");
-	document.documentElement.classList.add(next);
-	localStorage.setItem("pi-theme", next);
+	toggleDesktopTheme();
 }
 
 (window as any).openSettings = openSettings;
@@ -2768,6 +2862,7 @@ function renderApp(): void {
 						<div id="file-pane" class="hidden-pane"></div>
 						<div id="terminal-pane" class="hidden-pane"></div>
 						<div id="packages-pane" class="hidden-pane"></div>
+						<div id="settings-pane" class="hidden-pane"></div>
 					</div>
 				</div>
 			</div>
@@ -2839,6 +2934,15 @@ function renderApp(): void {
 					chatView?.notify("Failed to switch session tab", "error");
 				},
 			);
+		});
+		contentTabsBar.setOnOpenTerminal(() => {
+			const workspace = getActiveWorkspace();
+			if (!workspace) return;
+			workspace.terminalOpen = true;
+			workspace.pane = "terminal";
+			persistWorkspaces();
+			syncWorkspaceTabsBar();
+			void applyWorkspacePane(workspace);
 		});
 		contentTabsBar.setOnRename((tabId, nextTitle) => {
 			const workspace = getActiveWorkspace();
@@ -2983,9 +3087,15 @@ function renderApp(): void {
 
 			const activeFileTab = workspace.fileTabs.find((tab) => tab.id === workspace.activeFileTabId) ?? null;
 			if (activeFileTab && !activeFileTab.path) {
+				const anchorPath = normalizeStoredPath(activeFileTab.draftAnchorPath);
 				activeFileTab.path = filePath;
 				activeFileTab.title = baseName(filePath);
+				activeFileTab.draftDirectoryPath = null;
+				activeFileTab.draftAnchorPath = null;
 				setFileTabProject(activeFileTab, activeFileTab.projectId ?? workspace.activeProjectId, activeFileTab.projectPath ?? workspace.activeProjectPath);
+				if (anchorPath && activeFileTab.projectId) {
+					sidebar?.setNewFilePlacementHint(activeFileTab.projectId, filePath, anchorPath);
+				}
 			} else {
 				openOrActivateFileTab(workspace, filePath, workspace.activeProjectId, workspace.activeProjectPath);
 			}
@@ -3281,13 +3391,15 @@ function renderApp(): void {
 		const switchingProject = normalizeProjectPath(getWorkspaceActiveProjectPath(workspace)) !== normalizeProjectPath(project.path);
 		const oldRuntimeKeys = switchingProject ? listRuntimeKeysForWorkspace(workspace.id) : [];
 		const discardedSessionTabs = switchingProject ? [...workspace.sessionTabs] : [];
+		const draftDirectoryPath = normalizeStoredPath(project.directoryPath) ?? normalizeStoredPath(project.path);
+		const draftAnchorPath = normalizeStoredPath(project.anchorPath);
 		setWorkspaceActiveProject(workspace, project);
 		if (switchingProject) {
 			scheduleDiscardEphemeralSessionTabs(discardedSessionTabs);
 			resetWorkspaceContentTabs(workspace, project);
 		}
-		createAndActivateEmptyFileTab(workspace, NEW_FILE_TAB_TITLE, project.id, project.path);
-		fileViewer?.setProjectPath(project.path);
+		createAndActivateEmptyFileTab(workspace, NEW_FILE_TAB_TITLE, project.id, project.path, draftDirectoryPath, draftAnchorPath);
+		fileViewer?.setProjectPath(draftDirectoryPath ?? project.path);
 		persistWorkspaces();
 		syncWorkspaceTabsBar();
 		syncContentTabsBar(workspace);
@@ -3623,6 +3735,22 @@ function renderApp(): void {
 	syncWorkspaceContextChrome(getActiveWorkspace());
 }
 
+function setupThemeSyncListeners(): void {
+	const refreshThemeProjection = () => {
+		const resolved = getResolvedDesktopTheme();
+		const profiles = loadDesktopAppearanceProfiles();
+		const workspace = getActiveWorkspace();
+		const projectPath = workspace ? getWorkspaceActiveProjectPath(workspace) : null;
+		void syncDesktopThemeWithPiTheme(projectPath).finally(() => {
+			applyDesktopAppearanceProfileToRoot(resolved, profiles);
+		});
+	};
+	window.addEventListener(DESKTOP_THEME_CHANGED_EVENT, refreshThemeProjection);
+	window.addEventListener(DESKTOP_APPEARANCE_PROFILE_CHANGED_EVENT, refreshThemeProjection);
+}
+
 applyInitialTheme();
+void applyNativeWindowVisualFixes();
+setupThemeSyncListeners();
 setupKeyboardShortcuts();
 void initialize();
