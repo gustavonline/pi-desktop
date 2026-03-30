@@ -99,8 +99,9 @@ export class SettingsPanel {
 
 	setContainer(container: HTMLElement): void {
 		if (this.container === container) return;
+		const wasOpen = this.isOpen;
 		this.container = container;
-		this.render();
+		if (wasOpen) this.render();
 	}
 
 	hasRenderedContent(): boolean {

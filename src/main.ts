@@ -919,6 +919,7 @@ function resetWorkspaceContentTabs(
 	workspace: WorkspaceState,
 	project: { id?: string | null; path?: string | null } | null = { id: workspace.activeProjectId, path: workspace.activeProjectPath },
 ): void {
+	const previousPane = workspace.pane;
 	setWorkspaceActiveProject(workspace, project);
 	workspace.sessionTabs = [createSessionTab(NEW_SESSION_TAB_TITLE, null, workspace.activeProjectId, workspace.activeProjectPath)];
 	workspace.activeSessionTabId = workspace.sessionTabs[0].id;
@@ -926,7 +927,7 @@ function resetWorkspaceContentTabs(
 	workspace.activeFileTabId = null;
 	workspace.filePath = null;
 	workspace.sessionTitle = NEW_SESSION_TAB_TITLE;
-	workspace.pane = "chat";
+	workspace.pane = previousPane === "settings" || previousPane === "packages" ? previousPane : "chat";
 }
 
 function createAndActivateEmptySessionTab(
@@ -1843,12 +1844,8 @@ async function applyWorkspacePane(workspace: WorkspaceState | null = getActiveWo
 		setPaneVisibility("settings");
 		try {
 			const panel = mountSettingsPanel();
-			if (!panel.isVisible() || !panel.hasRenderedContent()) {
-				await panel.open();
-				if (isStale()) return;
-			} else {
-				panel.render();
-			}
+			await panel.open();
+			if (isStale()) return;
 		} catch (err) {
 			console.error("Failed to render settings pane:", err);
 			settingsPanel = null;
@@ -2645,10 +2642,16 @@ function wireCommandPaletteBuiltins(): void {
 function requestOpenSettingsPanel(): void {
 	const workspace = getActiveWorkspace();
 	if (!workspace) return;
-	mountSettingsPanel();
 	workspace.pane = "settings";
 	persistWorkspaces();
 	syncWorkspaceTabsBar();
+	setPaneVisibility("settings");
+	try {
+		const panel = mountSettingsPanel();
+		void panel.open();
+	} catch (err) {
+		console.error("Failed to pre-open settings pane:", err);
+	}
 	void applyWorkspacePane(workspace).catch((err) => {
 		console.error("Failed to open settings pane:", err);
 		try {
