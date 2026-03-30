@@ -130,6 +130,7 @@ let desktopUpdateChecking = false;
 
 let projectSwitchTask: Promise<void> = Promise.resolve();
 let projectSwitchVersion = 0;
+let workspacePaneApplyVersion = 0;
 
 class StaleProjectTaskError extends Error {
 	constructor() {
@@ -1760,9 +1761,13 @@ function setPaneVisibility(pane: WorkspaceState["pane"]): void {
 }
 
 async function applyWorkspacePane(workspace: WorkspaceState | null = getActiveWorkspace()): Promise<void> {
+	const applyVersion = ++workspacePaneApplyVersion;
+	const isStale = (): boolean => applyVersion !== workspacePaneApplyVersion;
+
 	syncWorkspaceContextChrome(workspace);
 	syncSidebarSelectionFromWorkspace(workspace);
 	syncContentTabsBar(workspace);
+	if (isStale()) return;
 
 	if (!workspace) {
 		const resolved = getResolvedDesktopTheme();
@@ -1770,7 +1775,8 @@ async function applyWorkspacePane(workspace: WorkspaceState | null = getActiveWo
 		void syncDesktopThemeWithPiTheme(null).finally(() => {
 			applyDesktopAppearanceProfileToRoot(resolved, profiles);
 		});
-		settingsPanel?.close(false);
+		if (isStale()) return;
+		settingsPanel?.hideWithoutClearing();
 		syncRunningSessionIndicators();
 		setPaneVisibility("chat");
 		return;
@@ -1783,15 +1789,18 @@ async function applyWorkspacePane(workspace: WorkspaceState | null = getActiveWo
 	void syncDesktopThemeWithPiTheme(workspaceProjectPath).finally(() => {
 		applyDesktopAppearanceProfileToRoot(resolved, profiles);
 	});
+	if (isStale()) return;
+
 	chatView?.setProjectPath(workspaceProjectPath);
 	packagesView?.setProjectPath(workspaceProjectPath);
 	terminalPanel?.setProjectPath(workspaceProjectPath);
 	if (workspace.pane !== "settings") {
-		settingsPanel?.close(false);
+		settingsPanel?.hideWithoutClearing();
 	}
 	if (workspace.pane !== "file") {
 		fileViewer?.setProjectPath(workspaceProjectPath);
 	}
+	if (isStale()) return;
 
 	if (workspace.pane === "file") {
 		const activeFileTab = getActiveFileTab(workspace);
@@ -1800,6 +1809,7 @@ async function applyWorkspacePane(workspace: WorkspaceState | null = getActiveWo
 		setPaneVisibility("file");
 		if (activeFileTab?.path) {
 			await fileViewer?.openFile(activeFileTab.path);
+			if (isStale()) return;
 		} else {
 			const draftId = activeFileTab?.id ?? "draft";
 			const draftTitle = activeFileTab?.title || NEW_FILE_TAB_TITLE;
@@ -1810,27 +1820,32 @@ async function applyWorkspacePane(workspace: WorkspaceState | null = getActiveWo
 
 	if (workspace.pane === "terminal" && workspace.terminalOpen) {
 		terminalPanel?.setProjectPath(getWorkspaceActiveProjectPath(workspace));
+		if (isStale()) return;
 		setPaneVisibility("terminal");
 		terminalPanel?.focusInput();
 		return;
 	}
 
 	if (workspace.pane === "packages") {
-		settingsPanel?.close(false);
+		settingsPanel?.hideWithoutClearing();
 		packagesView?.setProjectPath(getWorkspaceActiveProjectPath(workspace));
+		if (isStale()) return;
 		setPaneVisibility("packages");
 		await packagesView?.open();
+		if (isStale()) return;
 		workspaceTabsBar?.setPackagesSearchQuery(packagesView?.getQuery() ?? "");
 		syncDebugOverlay();
 		return;
 	}
 
 	if (workspace.pane === "settings") {
+		if (isStale()) return;
 		setPaneVisibility("settings");
 		try {
 			const panel = mountSettingsPanel();
 			if (!panel.isVisible() || !panel.hasRenderedContent()) {
 				await panel.open();
+				if (isStale()) return;
 			} else {
 				panel.render();
 			}
@@ -1839,12 +1854,14 @@ async function applyWorkspacePane(workspace: WorkspaceState | null = getActiveWo
 			settingsPanel = null;
 			const panel = mountSettingsPanel();
 			await panel.open();
+			if (isStale()) return;
 		}
 		syncDebugOverlay();
 		return;
 	}
 
-	settingsPanel?.close(false);
+	if (isStale()) return;
+	settingsPanel?.hideWithoutClearing();
 	syncActiveChatRuntimeBinding(workspace);
 	setPaneVisibility("chat");
 	chatView?.focusInput();
@@ -2889,6 +2906,14 @@ function renderApp(): void {
 		`,
 		app,
 	);
+	const settingsPaneContainer = document.getElementById("settings-pane");
+	if (settingsPanel && settingsPaneContainer) {
+		settingsPanel.setContainer(settingsPaneContainer);
+		if (settingsPanel.isVisible() && !settingsPanel.hasRenderedContent()) {
+			settingsPanel.render();
+		}
+	}
+
 	applySidebarWidth();
 	setupSidebarResize();
 	syncSidebarCollapseToggleButton();

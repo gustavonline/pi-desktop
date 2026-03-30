@@ -150,6 +150,15 @@ export class SettingsPanel {
 		if (notify) this.onClose?.();
 	}
 
+	hideWithoutClearing(): void {
+		this.resetColorDrafts();
+		this.createThemeDialogOpen = false;
+		this.createThemeDialogSaving = false;
+		this.createThemeDialogError = "";
+		this.applyAppearanceProfileForCurrentResolvedTheme();
+		this.isOpen = false;
+	}
+
 	private loadTheme(): void {
 		const saved = readStoredDesktopTheme();
 		this.state.theme = saved;
