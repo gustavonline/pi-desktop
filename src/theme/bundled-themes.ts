@@ -1,3 +1,5 @@
+import { buildPiThemeDocument, isThemeDocumentSchemaCompatible } from "./pi-theme-document.js";
+
 interface BundledThemeSpec {
 	fileName: string;
 	legacyFileName?: string;
@@ -146,48 +148,29 @@ function joinFsPath(base: string, child: string): string {
 	return b ? `${b}/${c}` : c;
 }
 
-function toPiThemeDocument(spec: BundledThemeSpec): Record<string, unknown> {
-	return {
+function toPiThemeDocument(spec: BundledThemeSpec) {
+	return buildPiThemeDocument({
 		name: spec.name,
-		vars: {
-			accent: spec.accent,
-			surface: spec.surface,
-			ink: spec.ink,
-			diffAdded: spec.diffAdded,
-			diffRemoved: spec.diffRemoved,
-			skill: spec.skill,
-		},
-		colors: {
-			accent: "accent",
-			text: "ink",
-			muted: "ink",
-			dim: "ink",
-			selectedBg: "surface",
-			userMessageBg: "surface",
-			userMessageText: "ink",
-			customMessageBg: "surface",
-			customMessageText: "ink",
-			toolPendingBg: "surface",
-			toolSuccessBg: "surface",
-			toolErrorBg: "surface",
-			toolTitle: "skill",
-			toolOutput: "ink",
-			diffAdded: "diffAdded",
-			diffRemoved: "diffRemoved",
-		},
-		piDesktop: {
-			source: "pi-desktop-theme-v1",
-			variant: spec.variant,
-			contrast: spec.contrast,
-			codeThemeId: spec.codeThemeId,
-		},
-	};
+		variant: spec.variant,
+		accent: spec.accent,
+		surface: spec.surface,
+		ink: spec.ink,
+		skill: spec.skill,
+		diffAdded: spec.diffAdded,
+		diffRemoved: spec.diffRemoved,
+		success: spec.diffAdded,
+		error: spec.diffRemoved,
+		contrast: spec.contrast,
+		codeThemeId: spec.codeThemeId,
+		source: "pi-desktop-theme-v1",
+	});
 }
 
 const BUNDLED_THEMES_MARKER = ".pi-desktop-default-themes-installed-v1";
 
 export interface BundledThemeInstallResult {
 	created: number;
+	updated: number;
 	renamed: number;
 	removedLegacy: number;
 	skippedByMarker: boolean;
@@ -212,18 +195,55 @@ async function resolveThemesRoot(): Promise<string | null> {
 	return joinFsPath(joinFsPath(joinFsPath(home, ".pi"), "agent"), "themes");
 }
 
+async function readJsonFile(path: string, readTextFile: (path: string) => Promise<string>): Promise<unknown | null> {
+	try {
+		const content = await readTextFile(path);
+		return JSON.parse(content) as unknown;
+	} catch {
+		return null;
+	}
+}
+
+async function hasBundledThemeRepairCandidate(
+	themesRoot: string,
+	exists: (path: string) => Promise<boolean>,
+	readTextFile: (path: string) => Promise<string>,
+): Promise<boolean> {
+	for (const spec of BUNDLED_THEME_SPECS) {
+		const targetPath = joinFsPath(themesRoot, spec.fileName);
+		const legacyPath = spec.legacyFileName ? joinFsPath(themesRoot, spec.legacyFileName) : null;
+
+		if (legacyPath && !(await exists(targetPath)) && (await exists(legacyPath))) {
+			return true;
+		}
+
+		if (await exists(targetPath)) {
+			const doc = await readJsonFile(targetPath, readTextFile);
+			if (!isThemeDocumentSchemaCompatible(doc)) {
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
 async function installBundledThemes(options: { respectMarker: boolean }): Promise<BundledThemeInstallResult> {
-	const { exists, mkdir, writeTextFile, rename, remove } = await import("@tauri-apps/plugin-fs");
+	const { exists, mkdir, writeTextFile, readTextFile, rename, remove } = await import("@tauri-apps/plugin-fs");
 	const themesRoot = await resolveThemesRoot();
-	if (!themesRoot) return { created: 0, renamed: 0, removedLegacy: 0, skippedByMarker: true };
+	if (!themesRoot) return { created: 0, updated: 0, renamed: 0, removedLegacy: 0, skippedByMarker: true };
 	await mkdir(themesRoot, { recursive: true });
 
 	const markerPath = joinFsPath(themesRoot, BUNDLED_THEMES_MARKER);
 	if (options.respectMarker && (await exists(markerPath))) {
-		return { created: 0, renamed: 0, removedLegacy: 0, skippedByMarker: true };
+		const hasRepairCandidate = await hasBundledThemeRepairCandidate(themesRoot, exists, readTextFile);
+		if (!hasRepairCandidate) {
+			return { created: 0, updated: 0, renamed: 0, removedLegacy: 0, skippedByMarker: true };
+		}
 	}
 
 	let created = 0;
+	let updated = 0;
 	let renamed = 0;
 	let removedLegacy = 0;
 
@@ -244,6 +264,13 @@ async function installBundledThemes(options: { respectMarker: boolean }): Promis
 			const doc = toPiThemeDocument(spec);
 			await writeTextFile(targetPath, `${JSON.stringify(doc, null, 2)}\n`);
 			created += 1;
+		} else {
+			const existingDoc = await readJsonFile(targetPath, readTextFile);
+			if (!isThemeDocumentSchemaCompatible(existingDoc)) {
+				const doc = toPiThemeDocument(spec);
+				await writeTextFile(targetPath, `${JSON.stringify(doc, null, 2)}\n`);
+				updated += 1;
+			}
 		}
 
 		if (legacyPath && legacyPath !== targetPath && (await exists(legacyPath))) {
@@ -257,7 +284,7 @@ async function installBundledThemes(options: { respectMarker: boolean }): Promis
 	}
 
 	await writeTextFile(markerPath, `${new Date().toISOString()}\n`);
-	return { created, renamed, removedLegacy, skippedByMarker: false };
+	return { created, updated, renamed, removedLegacy, skippedByMarker: false };
 }
 
 export async function ensureBundledThemesInstalled(): Promise<void> {

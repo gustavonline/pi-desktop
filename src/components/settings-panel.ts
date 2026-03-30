@@ -22,6 +22,7 @@ import {
 	rpcBridge,
 } from "../rpc/bridge.js";
 import { applyDesktopTheme, getResolvedDesktopTheme, readStoredDesktopTheme, type DesktopThemeMode } from "../theme/theme-manager.js";
+import { buildPiThemeDocument } from "../theme/pi-theme-document.js";
 
 interface ThemeOption {
 	id: string;
@@ -664,40 +665,20 @@ export class SettingsPanel {
 		const accent = preview.accent;
 		const background = preview.background;
 		const foreground = preview.foreground;
-		const doc = {
+		const doc = buildPiThemeDocument({
 			name: normalizedName,
-			vars: {
-				accent,
-				background,
-				foreground,
+			variant: theme,
+			accent,
+			surface: background,
+			ink: foreground,
+			contrast: profile.contrast,
+			fonts: {
+				ui: profile.uiFont || null,
+				code: profile.codeFont || null,
 			},
-			colors: {
-				accent: "accent",
-				text: "foreground",
-				muted: "foreground",
-				dim: "foreground",
-				selectedBg: "background",
-				userMessageBg: "background",
-				userMessageText: "foreground",
-				customMessageBg: "background",
-				customMessageText: "foreground",
-				toolPendingBg: "background",
-				toolSuccessBg: "background",
-				toolErrorBg: "background",
-				toolTitle: "accent",
-				toolOutput: "foreground",
-			},
-			piDesktop: {
-				source: "pi-desktop-theme-v1",
-				variant: theme,
-				contrast: profile.contrast,
-				fonts: {
-					ui: profile.uiFont || null,
-					code: profile.codeFont || null,
-				},
-				opaqueWindows: !profile.translucentSidebar,
-			},
-		};
+			opaqueWindows: !profile.translucentSidebar,
+			source: "pi-desktop-theme-v1",
+		});
 
 		const safeBase = normalizedName
 			.toLowerCase()

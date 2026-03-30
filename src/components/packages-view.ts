@@ -2969,7 +2969,7 @@ Execute the required file creation/edits directly, then summarize exactly which 
 			try {
 				const result = await restoreBundledThemes();
 				await this.refreshBundledThemesStatus();
-				this.commandStatus = `Installed Pi Desktop Themes (${result.created} created, ${result.renamed} renamed).`;
+				this.commandStatus = `Installed Pi Desktop Themes (${result.created} created, ${result.updated} updated, ${result.renamed} renamed).`;
 			} catch (err) {
 				this.commandStatus = `Failed to install Pi Desktop Themes: ${err instanceof Error ? err.message : String(err)}`;
 			} finally {
