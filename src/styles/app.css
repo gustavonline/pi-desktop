@@ -4966,7 +4966,7 @@ body.sidebar-resizing {
 	background: transparent;
 	padding: 0;
 	display: grid;
-	grid-template-columns: 1fr auto auto auto 1fr;
+	grid-template-columns: 1fr auto auto 1fr;
 	align-items: center;
 	gap: 10px;
 	cursor: pointer;
@@ -4991,11 +4991,6 @@ body.sidebar-resizing {
 	white-space: nowrap;
 }
 
-.workflow-summary-caret {
-	font-size: 11px;
-	color: color-mix(in srgb, var(--muted) 88%, var(--text));
-}
-
 .tool-workflow-summary:hover .workflow-summary-label,
 .tool-workflow-summary:hover .workflow-summary-meta {
 	color: color-mix(in srgb, var(--text) 90%, var(--muted));
@@ -5016,20 +5011,21 @@ body.sidebar-resizing {
 }
 
 .tool-workflow-line {
-	width: 100%;
+	width: fit-content;
+	max-width: 100%;
 	border: none;
 	background: transparent;
-	padding: 5px 0;
-	display: grid;
-	grid-template-columns: minmax(0, 1fr) auto auto auto;
+	padding: 5px 8px;
+	display: inline-flex;
 	align-items: center;
 	gap: 8px;
-	cursor: pointer;
 	text-align: left;
+	border-radius: 8px;
 }
 
 .tool-workflow-line:hover {
 	color: var(--text);
+	background: color-mix(in srgb, var(--bg-soft) 72%, transparent);
 }
 
 .tool-workflow-line-text {
@@ -5064,9 +5060,11 @@ body.sidebar-resizing {
 	color: color-mix(in srgb, var(--success) 78%, var(--text));
 }
 
-.tool-workflow-caret {
-	font-size: 11px;
-	color: color-mix(in srgb, var(--muted) 86%, var(--text));
+.tool-file-target {
+	color: color-mix(in srgb, var(--accent) 78%, #4f95ff);
+	background: color-mix(in srgb, var(--accent) 14%, transparent);
+	border-radius: 6px;
+	padding: 1px 5px;
 }
 
 .tool-workflow-details {
