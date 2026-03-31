@@ -1169,12 +1169,16 @@ export class ChatView {
 						}
 					}
 
+					const normalizedThinking = thinking.trim();
+					if (text.trim().length === 0 && normalizedThinking.length === 0 && toolCalls.length === 0) {
+						break;
+					}
 					mapped.push({
 						id: uid("assistant"),
 						sessionEntryId,
 						role: "assistant",
 						text,
-						thinking: thinking || undefined,
+						thinking: normalizedThinking || undefined,
 						thinkingExpanded: this.allThinkingExpanded,
 						isThinkingStreaming: false,
 						toolCalls,
@@ -2344,15 +2348,12 @@ export class ChatView {
 					}
 					const initialText = this.extractText(msg.content);
 					const assistantError = this.extractAssistantMessageError(msg);
-					this.messages.push({
-						id: uid("assistant"),
-						role: "assistant",
+					if (initialText.trim().length === 0 && !assistantError) {
+						break;
+					}
+					this.ensureStreamingAssistantMessage({
 						text: initialText,
 						errorText: assistantError || undefined,
-						toolCalls: [],
-						isStreaming: true,
-						isThinkingStreaming: false,
-						thinkingExpanded: this.allThinkingExpanded,
 					});
 					if (initialText.trim().length > 0) {
 						this.runHasAssistantText = true;
@@ -2397,28 +2398,25 @@ export class ChatView {
 				const assistantEvent = event.assistantMessageEvent as Record<string, unknown>;
 				if (!assistantEvent) break;
 				const subtype = typeof assistantEvent.type === "string" ? assistantEvent.type : "";
-				const last = this.messages[this.messages.length - 1];
 
 				if (subtype === "error") {
-					if (last?.role === "assistant") {
-						last.isStreaming = false;
-						last.isThinkingStreaming = false;
-						const streamError = this.extractRuntimeErrorMessage(assistantEvent) || this.extractRuntimeErrorMessage(event);
-						if (streamError) {
-							last.errorText = streamError;
-						}
+					const streamError = this.extractRuntimeErrorMessage(assistantEvent) || this.extractRuntimeErrorMessage(event);
+					const assistant = this.ensureStreamingAssistantMessage(streamError ? { errorText: streamError } : undefined);
+					assistant.isStreaming = false;
+					assistant.isThinkingStreaming = false;
+					if (streamError) {
+						assistant.errorText = streamError;
 					}
 					this.render();
 					break;
 				}
 
-				if (!last || last.role !== "assistant") break;
-
 				if (subtype === "text_delta") {
+					const assistant = this.ensureStreamingAssistantMessage();
 					const partialText = this.extractAssistantPartialContent(assistantEvent, "text");
-					last.text = this.mergeStreamingText(last.text, partialText, assistantEvent.delta);
-					last.isThinkingStreaming = false;
-					if (last.text.trim().length > 0) {
+					assistant.text = this.mergeStreamingText(assistant.text, partialText, assistantEvent.delta);
+					assistant.isThinkingStreaming = false;
+					if (assistant.text.trim().length > 0) {
 						this.runHasAssistantText = true;
 						if (this.runSawToolActivity) {
 							this.keepWorkflowExpandedUntilAssistantText = false;
@@ -2428,21 +2426,23 @@ export class ChatView {
 					this.render();
 					this.scrollToBottom();
 				} else if (subtype === "thinking_delta" || subtype === "reasoning_delta" || subtype.includes("thinking") || subtype.includes("reason")) {
+					const assistant = this.ensureStreamingAssistantMessage();
 					const partialThinking = this.extractAssistantPartialContent(assistantEvent, "thinking");
-					const currentThinking = last.thinking || "";
-					last.thinking = this.mergeStreamingText(currentThinking, partialThinking, assistantEvent.delta);
-					last.isThinkingStreaming = true;
+					const currentThinking = assistant.thinking || "";
+					assistant.thinking = this.mergeStreamingText(currentThinking, partialThinking, assistantEvent.delta);
+					assistant.isThinkingStreaming = true;
 					this.scheduleStreamingUiReconcile(1800);
-					if ((last.thinking?.length || 0) % 100 === 0) this.render();
+					if ((assistant.thinking?.length || 0) % 100 === 0) this.render();
 				} else if (subtype === "toolcall_end") {
 					this.runSawToolActivity = true;
 					this.keepWorkflowExpandedUntilAssistantText = true;
-					last.isThinkingStreaming = false;
+					const assistant = this.ensureStreamingAssistantMessage();
+					assistant.isThinkingStreaming = false;
 					const tc = assistantEvent.toolCall as Record<string, unknown>;
 					if (tc) {
 						const rawId = typeof tc.id === "string" ? tc.id.trim() : "";
 						const id = rawId || uid("tc");
-						const existing = last.toolCalls.find((entry) => entry.id === id);
+						const existing = assistant.toolCalls.find((entry) => entry.id === id);
 						if (existing) {
 							existing.name = typeof tc.name === "string" && tc.name.trim().length > 0 ? tc.name : existing.name;
 							existing.args = ((tc.arguments ?? existing.args) as Record<string, unknown>) || existing.args;
@@ -2451,7 +2451,7 @@ export class ChatView {
 							existing.startedAt = existing.startedAt ?? Date.now();
 							existing.endedAt = undefined;
 						} else {
-							last.toolCalls.push({
+							assistant.toolCalls.push({
 								id,
 								name: (tc.name as string) || "tool",
 								args: ((tc.arguments ?? {}) as Record<string, unknown>) || {},
@@ -3027,6 +3027,39 @@ export class ChatView {
 	private cloneImages(images?: PendingImage[]): PendingImage[] {
 		if (!images || images.length === 0) return [];
 		return images.map((img) => ({ ...img, id: uid("img") }));
+	}
+
+	private hasRenderableAssistantContent(msg: UiMessage): boolean {
+		if (msg.role !== "assistant") return false;
+		if (msg.toolCalls.length > 0) return true;
+		if (msg.text.trim().length > 0) return true;
+		if ((msg.thinking ?? "").trim().length > 0) return true;
+		return (msg.errorText ?? "").trim().length > 0;
+	}
+
+	private ensureStreamingAssistantMessage(seed?: { text?: string; errorText?: string }): UiMessage {
+		const last = this.messages[this.messages.length - 1];
+		if (last?.role === "assistant" && last.isStreaming) {
+			if (seed?.text && seed.text.trim().length > 0 && last.text.trim().length === 0) {
+				last.text = seed.text;
+			}
+			if (seed?.errorText && !last.errorText) {
+				last.errorText = seed.errorText;
+			}
+			return last;
+		}
+		const next: UiMessage = {
+			id: uid("assistant"),
+			role: "assistant",
+			text: seed?.text ?? "",
+			errorText: seed?.errorText,
+			toolCalls: [],
+			isStreaming: true,
+			isThinkingStreaming: false,
+			thinkingExpanded: this.allThinkingExpanded,
+		};
+		this.messages.push(next);
+		return next;
 	}
 
 	private messagePreview(msg: UiMessage): string {
@@ -4239,6 +4272,9 @@ export class ChatView {
 				continue;
 			}
 			if (msg.role === "assistant") {
+				if (!this.hasRenderableAssistantContent(msg)) {
+					continue;
+				}
 				rows.push(this.renderAssistantMessage(msg));
 				continue;
 			}
