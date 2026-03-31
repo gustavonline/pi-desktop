@@ -437,6 +437,7 @@ export class ChatView {
 	private historyRoleFilter: UiRole | "all" = "all";
 	private autoFollowChat = true;
 	private expandedToolWorkflowIds = new Set<string>();
+	private expandedToolGroupByWorkflowId = new Map<string, string>();
 	private selectedSkillDraft: ComposerSkillDraft | null = null;
 	private slashPaletteOpen = false;
 	private slashPaletteQuery = "";
@@ -581,6 +582,7 @@ export class ChatView {
 		this.slashPaletteIndex = 0;
 		this.slashSkillsUpdatedAt = 0;
 		this.expandedToolWorkflowIds.clear();
+		this.expandedToolGroupByWorkflowId.clear();
 		this.compactionCycle = null;
 		if (!path) {
 			this.bindingStatusText = null;
@@ -611,6 +613,7 @@ export class ChatView {
 		this.slashPaletteQuery = "";
 		this.slashPaletteIndex = 0;
 		this.expandedToolWorkflowIds.clear();
+		this.expandedToolGroupByWorkflowId.clear();
 		this.compactionCycle = null;
 		this.runHasAssistantText = false;
 		this.clearWorkingStatusTimer(true);
@@ -1017,6 +1020,7 @@ export class ChatView {
 			this.onStateChange?.(state);
 			this.messages = this.mapBackendMessages(backendMessages);
 			this.expandedToolWorkflowIds.clear();
+			this.expandedToolGroupByWorkflowId.clear();
 			this.forkEntryIdByMessageId.clear();
 			this.lastAssistantContextTokens = this.deriveLatestAssistantContextTokens(backendMessages);
 			if (state.isStreaming) {
@@ -3755,14 +3759,28 @@ export class ChatView {
 	private toggleToolWorkflowExpanded(workflowId: string): void {
 		if (this.expandedToolWorkflowIds.has(workflowId)) {
 			this.expandedToolWorkflowIds.delete(workflowId);
+			this.expandedToolGroupByWorkflowId.delete(workflowId);
 		} else {
 			this.expandedToolWorkflowIds.add(workflowId);
 		}
 		this.render();
 	}
 
+	private isToolGroupExpanded(workflowId: string, groupId: string): boolean {
+		return this.expandedToolGroupByWorkflowId.get(workflowId) === groupId;
+	}
+
+	private toggleToolGroupExpanded(workflowId: string, groupId: string): void {
+		if (this.expandedToolGroupByWorkflowId.get(workflowId) === groupId) {
+			this.expandedToolGroupByWorkflowId.delete(workflowId);
+		} else {
+			this.expandedToolGroupByWorkflowId.set(workflowId, groupId);
+		}
+		this.render();
+	}
+
 	private renderToolPreview(preview: string): TemplateResult {
-		const match = preview.match(/^(Edited|Wrote|Read)\s+(.+)$/);
+		const match = preview.match(/^(Edited|Wrote)\s+(.+)$/);
 		if (!match) return html`${preview}`;
 		const [, verb, target] = match;
 		return html`${verb} <span class="tool-file-target">${target}</span>`;
@@ -3884,7 +3902,8 @@ export class ChatView {
 		const durationLabel = durationMs > 0 ? formatDuration(durationMs) : "0s";
 		const summaryPrimary = running > 0 ? `Working for ${durationLabel}` : `Worked for ${durationLabel}`;
 		const summarySecondary = running > 0 ? `${total} running` : failed > 0 ? `${failed} failed` : `${total} complete`;
-		const showMissingWrapUp = !workflow.finalText && !workflow.errorText && running === 0 && !workflow.isStreaming;
+		const hasFinalContent = Boolean(workflow.finalText || workflow.errorText);
+		const showMissingWrapUp = !hasFinalContent && running === 0 && !workflow.isStreaming;
 
 		return html`
 			<div class="chat-row assistant-row assistant-workflow-row" data-message-id=${workflow.id}>
@@ -3892,8 +3911,10 @@ export class ChatView {
 					<div class="assistant-block">
 						<button class="tool-workflow-summary" @click=${() => this.toggleToolWorkflowExpanded(workflow.id)}>
 							<span class="workflow-divider" aria-hidden="true"></span>
-							<span class="workflow-summary-label">${summaryPrimary}</span>
-							<span class="workflow-summary-meta">${summarySecondary}</span>
+							<span class="workflow-summary-center">
+								<span class="workflow-summary-label">${summaryPrimary}</span>
+								<span class="workflow-summary-meta">${summarySecondary}</span>
+							</span>
 							<span class="workflow-divider" aria-hidden="true"></span>
 						</button>
 						${expanded
@@ -3903,32 +3924,48 @@ export class ChatView {
 										const count = group.calls.length;
 										const groupRunning = group.calls.some((tc) => tc.isRunning);
 										const groupFailed = group.calls.some((tc) => tc.isError);
+										const groupExpanded = this.isToolGroupExpanded(workflow.id, group.id);
 										const output =
 											[...group.calls]
 												.reverse()
 												.map((call) => (call.streamingOutput ?? call.result ?? "").trim())
 												.find((value) => value.length > 0) ?? "";
-										const showOutput = output.length > 0;
+										const statusLabel = groupRunning ? "running" : groupFailed ? "failed" : "success";
 										return html`
 											<div class="tool-workflow-item">
-												<div class="tool-workflow-line ${groupRunning ? "running" : groupFailed ? "error" : "done"}">
+												<button
+													class="tool-workflow-line"
+													@click=${() => this.toggleToolGroupExpanded(workflow.id, group.id)}
+												>
 													<span class="tool-workflow-line-text">${this.renderToolPreview(group.preview)}</span>
 													${count > 1 ? html`<span class="tool-workflow-count">×${count}</span>` : nothing}
-													<span class="tool-workflow-state ${groupRunning ? "running" : groupFailed ? "error" : "done"}">${groupRunning ? "running" : groupFailed ? "failed" : "done"}</span>
-												</div>
-												${showOutput ? html`<pre class="tool-workflow-output">${output}</pre>` : nothing}
+												</button>
+												${groupExpanded
+													? html`
+														<div class="tool-workflow-details">
+															<pre class="tool-workflow-output">${output || "No output reported."}${groupRunning ? html`<span class="streaming-inline"></span>` : nothing}</pre>
+															<div class="tool-workflow-detail-meta"><span class="tool-workflow-detail-status ${groupRunning ? "running" : groupFailed ? "error" : "done"}">${statusLabel}</span></div>
+														</div>
+													`
+													: nothing}
 											</div>
 										`;
 									})}
 								</div>
-								${workflow.finalText || workflow.errorText ? html`<div class="assistant-final-divider"><span>Final message</span></div>` : nothing}
+								${hasFinalContent ? html`<div class="assistant-final-divider"><span>Final message</span></div>` : nothing}
 								${workflow.finalText
 									? html`<div class="assistant-content ${workflow.isStreaming ? "streaming-cursor" : ""}"><markdown-block .content=${workflow.finalText}></markdown-block></div>`
 									: nothing}
 								${workflow.errorText ? html`<div class="assistant-error-line">${workflow.errorText}</div>` : nothing}
 								${showMissingWrapUp ? html`<div class="assistant-wrapup-missing">No final message returned for this tool run.</div>` : nothing}
 							`
-							: nothing}
+							: html`
+								${workflow.finalText
+									? html`<div class="assistant-content workflow-final-collapsed"><markdown-block .content=${workflow.finalText}></markdown-block></div>`
+									: nothing}
+								${workflow.errorText ? html`<div class="assistant-error-line">${workflow.errorText}</div>` : nothing}
+								${showMissingWrapUp ? html`<div class="assistant-wrapup-missing">No final message returned for this tool run.</div>` : nothing}
+							`}
 					</div>
 				</div>
 			</div>

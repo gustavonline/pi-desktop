@@ -4966,11 +4966,19 @@ body.sidebar-resizing {
 	background: transparent;
 	padding: 0;
 	display: grid;
-	grid-template-columns: 1fr auto auto 1fr;
+	grid-template-columns: 1fr auto 1fr;
 	align-items: center;
 	gap: 10px;
 	cursor: pointer;
 	color: color-mix(in srgb, var(--text) 76%, var(--muted));
+}
+
+.workflow-summary-center {
+	display: inline-flex;
+	align-items: baseline;
+	justify-content: center;
+	gap: 12px;
+	min-width: max-content;
 }
 
 .workflow-divider {
@@ -5021,6 +5029,7 @@ body.sidebar-resizing {
 	gap: 8px;
 	text-align: left;
 	border-radius: 8px;
+	cursor: pointer;
 }
 
 .tool-workflow-line:hover {
@@ -5068,32 +5077,47 @@ body.sidebar-resizing {
 }
 
 .tool-workflow-details {
-	margin: 4px 0 6px;
-	padding: 0 0 0 8px;
+	margin: 2px 0 8px;
+	padding: 0 0 0 10px;
 	display: grid;
-	gap: 8px;
-	border-left: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
-}
-
-.tool-workflow-detail-label {
-	font-size: 10px;
-	color: var(--muted);
-	text-transform: uppercase;
-	letter-spacing: 0.07em;
-	margin-bottom: 4px;
+	gap: 4px;
+	border-left: 1px solid color-mix(in srgb, var(--border) 54%, transparent);
 }
 
 .tool-workflow-output {
 	margin: 0;
-	padding: 8px 10px;
-	background: color-mix(in srgb, var(--bg-muted) 56%, transparent);
-	border-radius: 8px;
+	padding: 0;
+	background: transparent;
+	border-radius: 0;
 	font-size: 11px;
-	line-height: 1.42;
+	line-height: 1.45;
 	white-space: pre-wrap;
-	color: color-mix(in srgb, var(--text) 78%, var(--muted));
-	max-height: 260px;
+	color: color-mix(in srgb, var(--text) 74%, var(--muted));
+	max-height: 220px;
 	overflow: auto;
+}
+
+.tool-workflow-detail-meta {
+	display: flex;
+	justify-content: flex-end;
+}
+
+.tool-workflow-detail-status {
+	font-size: 10px;
+	text-transform: lowercase;
+	letter-spacing: 0.02em;
+}
+
+.tool-workflow-detail-status.done {
+	color: color-mix(in srgb, var(--success) 82%, var(--text));
+}
+
+.tool-workflow-detail-status.error {
+	color: var(--danger);
+}
+
+.tool-workflow-detail-status.running {
+	color: var(--accent);
 }
 
 .tool-output-empty {
@@ -5115,6 +5139,10 @@ body.sidebar-resizing {
 	font-size: 12px;
 	color: color-mix(in srgb, var(--muted) 92%, var(--text));
 	font-style: italic;
+}
+
+.workflow-final-collapsed {
+	margin-top: 6px;
 }
 
 .assistant-tool-only-row {
