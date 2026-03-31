@@ -5032,16 +5032,17 @@ body.sidebar-resizing {
 
 .tool-workflow-item {
 	border-radius: 8px;
-	max-width: min(100%, 760px);
+	max-width: 100%;
 }
 
 .tool-workflow-line {
-	width: min(100%, 760px);
-	max-width: min(100%, 760px);
+	width: min(100%, 72ch);
+	max-width: 100%;
+	min-width: 0;
 	border: none;
 	background: transparent;
 	padding: 5px 8px;
-	display: inline-flex;
+	display: flex;
 	align-items: center;
 	gap: 8px;
 	text-align: left;
@@ -5062,6 +5063,7 @@ body.sidebar-resizing {
 	text-overflow: ellipsis;
 	flex: 1;
 	min-width: 0;
+	display: block;
 }
 
 .tool-workflow-line-text.running {

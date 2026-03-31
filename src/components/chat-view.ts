@@ -447,6 +447,7 @@ export class ChatView {
 	private slashSkillsLoading = false;
 	private slashSkillsUpdatedAt = 0;
 	private runHasAssistantText = false;
+	private runSawToolActivity = false;
 	private keepWorkflowExpandedUntilAssistantText = false;
 	private readonly workingStatusPhrases = [
 		"starting",
@@ -592,6 +593,7 @@ export class ChatView {
 			this.modelLoadRequestSeq += 1;
 			this.loadingModels = false;
 			this.runHasAssistantText = false;
+			this.runSawToolActivity = false;
 			this.clearWorkingStatusTimer(true);
 			void this.refreshWelcomeDashboard(true);
 		}
@@ -618,6 +620,7 @@ export class ChatView {
 		this.expandedToolGroupByWorkflowId.clear();
 		this.compactionCycle = null;
 		this.runHasAssistantText = false;
+		this.runSawToolActivity = false;
 		this.keepWorkflowExpandedUntilAssistantText = false;
 		this.clearWorkingStatusTimer(true);
 		this.bindingStatusText = projectPath ? (statusText ?? "Loading session…") : null;
@@ -975,6 +978,8 @@ export class ChatView {
 		this.unsubscribeEvents = null;
 		this.cancelStreamingUiReconcile();
 		this.runHasAssistantText = false;
+		this.runSawToolActivity = false;
+		this.keepWorkflowExpandedUntilAssistantText = false;
 		this.clearWorkingStatusTimer(true);
 		if (this.welcomeHeadlineTimer) {
 			clearInterval(this.welcomeHeadlineTimer);
@@ -1039,9 +1044,28 @@ export class ChatView {
 					if ((entry.role as string) !== "assistant") return false;
 					return this.extractText((entry as Record<string, unknown>).content).trim().length > 0;
 				});
-				this.keepWorkflowExpandedUntilAssistantText = !this.runHasAssistantText;
+				const sawToolInStreamWindow = streamWindow.some((entry) => {
+					const role = (entry.role as string) ?? "";
+					if (role === "toolResult") return true;
+					if (role !== "assistant") return false;
+					const directToolCalls = (entry as { toolCalls?: unknown }).toolCalls;
+					if (Array.isArray(directToolCalls) && directToolCalls.length > 0) return true;
+					const content = (entry as Record<string, unknown>).content;
+					if (!Array.isArray(content)) return false;
+					return content.some((part) => {
+						if (!part || typeof part !== "object") return false;
+						const rec = part as Record<string, unknown>;
+						const type = typeof rec.type === "string" ? rec.type.toLowerCase() : "";
+						return type.includes("tool") || Boolean(rec.toolCall);
+					});
+				});
+				this.runSawToolActivity = this.runSawToolActivity || sawToolInStreamWindow;
+				if (this.runSawToolActivity) {
+					this.keepWorkflowExpandedUntilAssistantText = !this.runHasAssistantText;
+				}
 			} else {
 				this.runHasAssistantText = false;
+				this.runSawToolActivity = false;
 				this.keepWorkflowExpandedUntilAssistantText = false;
 			}
 			this.pendingDeliveryMode = state.isStreaming ? "steer" : "prompt";
@@ -2249,6 +2273,7 @@ export class ChatView {
 			case "agent_start":
 				this.pendingDeliveryMode = "steer";
 				this.runHasAssistantText = false;
+				this.runSawToolActivity = false;
 				this.keepWorkflowExpandedUntilAssistantText = true;
 				if (this.state) {
 					this.state = { ...this.state, isStreaming: true };
@@ -2277,6 +2302,7 @@ export class ChatView {
 					this.pushRuntimeNotice(`Run failed: ${truncate(runError, 180)}`, "error", 2600);
 				}
 				this.runHasAssistantText = false;
+				this.runSawToolActivity = false;
 				this.keepWorkflowExpandedUntilAssistantText = false;
 				this.onRunStateChange?.(false);
 				rpcBridge
@@ -2317,7 +2343,9 @@ export class ChatView {
 					});
 					if (initialText.trim().length > 0) {
 						this.runHasAssistantText = true;
-						this.keepWorkflowExpandedUntilAssistantText = false;
+						if (this.runSawToolActivity) {
+							this.keepWorkflowExpandedUntilAssistantText = false;
+						}
 					}
 					this.render();
 					this.scrollToBottom();
@@ -2325,6 +2353,8 @@ export class ChatView {
 				}
 
 				if (role === "toolResult") {
+					this.runSawToolActivity = true;
+					this.keepWorkflowExpandedUntilAssistantText = true;
 					const toolCallId = typeof msg.toolCallId === "string" ? msg.toolCallId : "";
 					const output = this.extractToolOutput(msg.content ?? msg.result ?? msg);
 					const isError = Boolean(msg.isError);
@@ -2375,7 +2405,9 @@ export class ChatView {
 					last.text = this.mergeStreamingText(last.text, partialText, assistantEvent.delta);
 					if (last.text.trim().length > 0) {
 						this.runHasAssistantText = true;
-						this.keepWorkflowExpandedUntilAssistantText = false;
+						if (this.runSawToolActivity) {
+							this.keepWorkflowExpandedUntilAssistantText = false;
+						}
 					}
 					this.scheduleStreamingUiReconcile(1800);
 					this.render();
@@ -2387,6 +2419,8 @@ export class ChatView {
 					this.scheduleStreamingUiReconcile(1800);
 					if ((last.thinking?.length || 0) % 100 === 0) this.render();
 				} else if (subtype === "toolcall_end") {
+					this.runSawToolActivity = true;
+					this.keepWorkflowExpandedUntilAssistantText = true;
 					const tc = assistantEvent.toolCall as Record<string, unknown>;
 					if (tc) {
 						const rawId = typeof tc.id === "string" ? tc.id.trim() : "";
@@ -2999,6 +3033,8 @@ export class ChatView {
 		});
 		this.autoFollowChat = true;
 		this.runHasAssistantText = false;
+		this.runSawToolActivity = false;
+		this.keepWorkflowExpandedUntilAssistantText = false;
 		this.render();
 		this.scrollToBottom(true);
 	}
@@ -3200,6 +3236,7 @@ export class ChatView {
 		}
 		this.pendingDeliveryMode = "prompt";
 		this.runHasAssistantText = false;
+		this.runSawToolActivity = false;
 		this.keepWorkflowExpandedUntilAssistantText = false;
 		this.onRunStateChange?.(false);
 	}
@@ -3737,13 +3774,13 @@ export class ChatView {
 		const command = this.pickToolArg(tc.args, ["command", "cmd", "shell", "script"]);
 		const path = this.pickToolArg(tc.args, ["path", "filePath", "targetPath", "from", "to"]);
 		const query = this.pickToolArg(tc.args, ["query", "pattern", "glob", "name"]);
-		if (name === "bash" && command) return `Ran ${truncate(command, 140)}`;
-		if ((name === "read" || name === "readfile") && path) return `Read ${truncate(path, 120)}`;
-		if ((name === "write" || name === "writefile") && path) return `Wrote ${truncate(path, 120)}`;
-		if (name === "edit" && path) return `Edited ${truncate(path, 120)}`;
-		if (name.includes("search") && query) return `Explored ${truncate(query, 120)}`;
-		if ((name === "list" || name.includes("ls")) && path) return `Explored ${truncate(path, 120)}`;
-		if (path) return `${tc.name} ${truncate(path, 120)}`;
+		if (name === "bash" && command) return `Ran ${truncate(command, 96)}`;
+		if ((name === "read" || name === "readfile") && path) return `Read ${truncate(path, 88)}`;
+		if ((name === "write" || name === "writefile") && path) return `Wrote ${truncate(path, 88)}`;
+		if (name === "edit" && path) return `Edited ${truncate(path, 88)}`;
+		if (name.includes("search") && query) return `Explored ${truncate(query, 88)}`;
+		if ((name === "list" || name.includes("ls")) && path) return `Explored ${truncate(path, 88)}`;
+		if (path) return `${tc.name} ${truncate(path, 88)}`;
 		return `Ran ${tc.name}`;
 	}
 
@@ -3920,7 +3957,7 @@ export class ChatView {
 		const summarySecondary = running > 0 ? `${total} running` : failed > 0 ? `${failed} failed` : `${total} complete`;
 		const hasFinalContent = Boolean(workflow.finalText || workflow.errorText);
 		const manualExpanded = this.isToolWorkflowExpanded(workflow.id);
-		const autoExpanded = this.keepWorkflowExpandedUntilAssistantText && workflow.isTerminal && !hasFinalContent;
+		const autoExpanded = !hasFinalContent && (this.keepWorkflowExpandedUntilAssistantText || workflow.isStreaming || running > 0);
 		const expanded = autoExpanded || manualExpanded;
 		if (!expanded) {
 			this.expandedToolGroupByWorkflowId.delete(workflow.id);
