@@ -4654,19 +4654,23 @@ body.sidebar-resizing {
 }
 
 .welcome-dashboard {
-	width: min(840px, calc(100% - 40px));
+	width: min(920px, calc(100% - 40px));
 	margin: 0 auto;
 	display: grid;
-	gap: 16px;
+	gap: 14px;
 }
 
 .welcome-hero {
 	border: 1px solid color-mix(in srgb, var(--border) 74%, transparent);
-	background: color-mix(in srgb, var(--bg-elev) 62%, transparent);
+	background: color-mix(in srgb, var(--bg-elev) 64%, transparent);
 	border-radius: 18px;
-	padding: 24px;
+	padding: 22px;
 	display: grid;
 	gap: 10px;
+}
+
+.welcome-hero-codex {
+	gap: 12px;
 }
 
 .welcome-eyebrow {
@@ -4678,24 +4682,81 @@ body.sidebar-resizing {
 
 .welcome-hero h2 {
 	margin: 0;
-	font-size: 32px;
-	line-height: 1.02;
+	font-size: 34px;
+	line-height: 1.04;
 	letter-spacing: -0.03em;
-	max-width: 560px;
+	max-width: 620px;
 }
 
 .welcome-hero p {
 	margin: 0;
 	color: var(--muted);
 	font-size: 14px;
-	line-height: 1.5;
-	max-width: 580px;
+	line-height: 1.55;
+	max-width: 680px;
 }
 
 .welcome-actions {
 	display: flex;
 	flex-wrap: wrap;
 	gap: 8px;
+}
+
+.welcome-quick-grid {
+	display: grid;
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+	gap: 10px;
+}
+
+.welcome-quick-action {
+	border-radius: 14px;
+	border: 1px solid color-mix(in srgb, var(--border) 76%, transparent);
+	background: color-mix(in srgb, var(--bg-soft) 62%, transparent);
+	padding: 11px 12px;
+	text-align: left;
+	display: grid;
+	gap: 5px;
+	cursor: pointer;
+	color: var(--text);
+}
+
+.welcome-quick-action:hover {
+	background: color-mix(in srgb, var(--bg-soft) 78%, transparent);
+}
+
+.welcome-quick-action.primary {
+	border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
+	background: color-mix(in srgb, var(--accent) 16%, var(--bg-soft));
+}
+
+.welcome-quick-title {
+	font-size: 13px;
+	font-weight: 620;
+}
+
+.welcome-quick-desc {
+	font-size: 11px;
+	color: var(--muted);
+	line-height: 1.35;
+}
+
+.welcome-inline-note {
+	font-size: 11px;
+	color: var(--muted-2);
+}
+
+.welcome-inline-note kbd {
+	display: inline-flex;
+	align-items: center;
+	height: 20px;
+	padding: 0 6px;
+	margin: 0 3px;
+	border-radius: 6px;
+	border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+	background: color-mix(in srgb, var(--bg-soft) 66%, transparent);
+	font-size: 10px;
+	font-family: var(--font-family-mono);
+	color: var(--text);
 }
 
 .welcome-action {
@@ -4736,9 +4797,21 @@ body.sidebar-resizing {
 	border: 1px solid color-mix(in srgb, var(--border) 74%, transparent);
 	background: color-mix(in srgb, var(--bg-elev) 60%, transparent);
 	border-radius: 16px;
-	padding: 16px;
+	padding: 15px;
 	display: grid;
 	gap: 10px;
+}
+
+.welcome-status-card {
+	gap: 11px;
+}
+
+.welcome-status-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	flex-wrap: wrap;
 }
 
 .welcome-card.compact {
@@ -4799,13 +4872,19 @@ body.sidebar-resizing {
 	color: var(--text);
 }
 
+.welcome-runtime-grid {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 8px;
+}
+
 .welcome-runtime-row {
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
 	gap: 10px;
 	font-size: 11px;
-	padding-top: 2px;
+	padding: 0;
 }
 
 .welcome-runtime-row span {
@@ -6046,6 +6125,14 @@ body.sidebar-resizing {
 		grid-template-columns: 1fr;
 	}
 
+	.welcome-quick-grid {
+		grid-template-columns: 1fr;
+	}
+
+	.welcome-runtime-grid {
+		grid-template-columns: 1fr;
+	}
+
 	.welcome-kpis.compact {
 		grid-template-columns: repeat(2, minmax(0, 1fr));
 	}
@@ -6086,8 +6173,16 @@ body.sidebar-resizing {
 		grid-template-columns: 1fr;
 	}
 
+	.welcome-dashboard {
+		width: calc(100% - 20px);
+	}
+
 	.welcome-hero h2 {
-		font-size: 22px;
+		font-size: 24px;
+	}
+
+	.welcome-kpis.compact {
+		grid-template-columns: 1fr 1fr;
 	}
 
 	.composer-shell {

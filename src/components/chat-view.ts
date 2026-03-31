@@ -3727,9 +3727,9 @@ export class ChatView {
 		const modelId = normalizeText(this.state?.model?.id);
 		const modelLabel = modelProvider && modelId ? `${modelProvider}/${modelId}` : "No active model";
 		const highlights = [
-			...snapshot.skills.slice(0, 4).map((item) => `Skill · ${item}`),
-			...snapshot.extensions.slice(0, 4).map((item) => `Extension · ${item}`),
-		].slice(0, 8);
+			...snapshot.skills.slice(0, 3).map((item) => `Skill · ${item}`),
+			...snapshot.extensions.slice(0, 3).map((item) => `Extension · ${item}`),
+		].slice(0, 6);
 		const cliLabel = snapshot.currentCliVersion ? `v${snapshot.currentCliVersion}` : "Unavailable";
 		const updateLabel = snapshot.updateAvailable
 			? `Update available${snapshot.latestCliVersion ? ` · v${snapshot.latestCliVersion}` : ""}`
@@ -3737,41 +3737,53 @@ export class ChatView {
 
 		return html`
 			<div class="welcome-dashboard">
-				<div class="welcome-hero">
-					<div class="welcome-eyebrow">No project open</div>
-					<h2>Open a project to start a Pi workspace</h2>
-					<p>Chat, files, terminal, and packages become available as soon as you add a project.</p>
-					<div class="welcome-actions">
-						<button class="welcome-action primary" @click=${() => this.onAddProject?.()}>Add project</button>
-						<button class="welcome-action" @click=${() => this.onOpenPackages?.()}>Open packages</button>
-						<button class="welcome-action" @click=${() => this.onOpenSettings?.()}>Appearance & settings</button>
+				<section class="welcome-hero welcome-hero-codex">
+					<div class="welcome-eyebrow">Workspace setup</div>
+					<h2>Start by adding a project</h2>
+					<p>Once a project is connected, chat, files, terminal, and full runtime settings unlock automatically.</p>
+					<div class="welcome-quick-grid">
+						<button class="welcome-quick-action primary" @click=${() => this.onAddProject?.()}>
+							<span class="welcome-quick-title">Add project</span>
+							<span class="welcome-quick-desc">Select a local folder and start working immediately.</span>
+						</button>
+						<button class="welcome-quick-action" @click=${() => this.onOpenPackages?.()}>
+							<span class="welcome-quick-title">Open packages</span>
+							<span class="welcome-quick-desc">Install skills, extensions, and templates first.</span>
+						</button>
+						<button class="welcome-quick-action" @click=${() => this.onOpenSettings?.()}>
+							<span class="welcome-quick-title">Appearance & settings</span>
+							<span class="welcome-quick-desc">Adjust theme now. Runtime settings unlock with a project.</span>
+						</button>
 					</div>
-				</div>
+					<div class="welcome-inline-note">Tip: press <kbd>⌘K</kbd> to open command palette.</div>
+				</section>
 
-				<div class="welcome-grid minimal">
-					<section class="welcome-card compact">
+				<section class="welcome-card welcome-status-card">
+					<div class="welcome-status-head">
 						<div class="welcome-card-title">Local Pi environment</div>
-						<div class="welcome-kpis compact">
-							<div><span>Skills</span><strong>${snapshot.skills.length}</strong></div>
-							<div><span>Extensions</span><strong>${snapshot.extensions.length}</strong></div>
-							<div><span>Themes</span><strong>${snapshot.themes.length}</strong></div>
-							<div><span>CLI</span><strong>${cliLabel}</strong></div>
-						</div>
-						${snapshot.loading
-							? html`<div class="welcome-empty">Refreshing local Pi inventory…</div>`
-							: highlights.length > 0
-								? html`<div class="welcome-chip-list">${highlights.map((item) => html`<span class="welcome-chip">${item}</span>`)}</div>`
-								: html`<div class="welcome-empty">No extra skills or extensions detected yet.</div>`}
-						<div class="welcome-runtime-row"><span>Model</span><strong>${modelLabel}</strong></div>
-						<div class="welcome-runtime-row"><span>Status</span><strong>${updateLabel}</strong></div>
 						<div class="welcome-actions compact">
 							<button class="welcome-action" @click=${() => void this.refreshWelcomeDashboard(true)}>Refresh</button>
 							<button class="welcome-action" @click=${() => void this.openExternalUrl("https://github.com/mariozechner/pi-coding-agent")}>Pi docs</button>
 						</div>
-						${snapshot.error ? html`<div class="welcome-error">${snapshot.error}</div>` : nothing}
-						<div class="welcome-updated">Updated ${formatAge(snapshot.updatedAt)}</div>
-					</section>
-				</div>
+					</div>
+					<div class="welcome-kpis compact">
+						<div><span>Skills</span><strong>${snapshot.skills.length}</strong></div>
+						<div><span>Extensions</span><strong>${snapshot.extensions.length}</strong></div>
+						<div><span>Themes</span><strong>${snapshot.themes.length}</strong></div>
+						<div><span>CLI</span><strong>${cliLabel}</strong></div>
+					</div>
+					<div class="welcome-runtime-grid">
+						<div class="welcome-runtime-row"><span>Model</span><strong>${modelLabel}</strong></div>
+						<div class="welcome-runtime-row"><span>Status</span><strong>${updateLabel}</strong></div>
+					</div>
+					${snapshot.loading
+						? html`<div class="welcome-empty">Refreshing local Pi inventory…</div>`
+						: highlights.length > 0
+							? html`<div class="welcome-chip-list">${highlights.map((item) => html`<span class="welcome-chip">${item}</span>`)}</div>`
+							: html`<div class="welcome-empty">No extra skills or extensions detected yet.</div>`}
+					${snapshot.error ? html`<div class="welcome-error">${snapshot.error}</div>` : nothing}
+					<div class="welcome-updated">Updated ${formatAge(snapshot.updatedAt)}</div>
+				</section>
 			</div>
 		`;
 	}
