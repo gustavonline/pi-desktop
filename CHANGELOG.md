@@ -6,6 +6,20 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Changed
+- Reworked the no-project / new-thread welcome view into a cleaner Codex-inspired centered layout with Pi Desktop branding, a project-focused dropdown, and reduced UI chrome.
+- Welcome project dropdown now lists all projects in the current workspace and supports direct project switching (plus quick actions for add project, packages, and settings).
+- Welcome heading copy now rotates between Pi-style idle phrases for a calmer ambient experience.
+
+### Fixed
+- Bundled default Pi Desktop themes now emit full Pi CLI-compatible theme schema (all required color tokens) instead of a partial Desktop-only color set.
+- Added bundled-theme auto-repair for legacy invalid `~/.pi/agent/themes/pi-desktop-*.json` files so existing installs stop producing CLI theme validation errors.
+- Theme files created from Settings (“Create theme”) now use the full Pi theme schema, so custom exports are valid in both Desktop and CLI.
+- Hardened Settings pane mounting/open flow to recover from race conditions and stale container rebinding during workspace/project transitions.
+- Settings now degrade to a safe basic shell when runtime-dependent sections fail to render, instead of showing a blank pane.
+- No-project Settings flow is now runtime-decoupled, so Appearance settings remain available even before RPC runtime is connected.
+- Removed centered welcome dropdown jitter by stabilizing open/close layout behavior and avoiding no-project auto-scroll on re-render.
+
 ## [0.1.8] - 2026-03-23
 
 ### Changed

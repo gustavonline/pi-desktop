@@ -634,6 +634,10 @@ export class Sidebar {
 		return p ? { id: p.id, name: p.name, path: p.path } : null;
 	}
 
+	listProjects(): Array<{ id: string; name: string; path: string }> {
+		return this.projects.map((project) => ({ id: project.id, name: project.name, path: project.path }));
+	}
+
 	getProjectById(projectId: string | null | undefined): { id: string; name: string; path: string } | null {
 		if (!projectId) return null;
 		const project = this.projects.find((entry) => entry.id === projectId) ?? null;

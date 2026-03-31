@@ -22,6 +22,7 @@ import {
 	rpcBridge,
 } from "../rpc/bridge.js";
 import { applyDesktopTheme, getResolvedDesktopTheme, readStoredDesktopTheme, type DesktopThemeMode } from "../theme/theme-manager.js";
+import { buildPiThemeDocument } from "../theme/pi-theme-document.js";
 
 interface ThemeOption {
 	id: string;
@@ -61,6 +62,7 @@ export class SettingsPanel {
 		followUpMode: "one-at-a-time",
 	};
 	private onClose: (() => void) | null = null;
+	private onRequestAddProject: (() => void) | null = null;
 	private saving = false;
 	private authStatus: PiAuthStatus | null = null;
 	private authLoading = false;
@@ -86,6 +88,7 @@ export class SettingsPanel {
 	private createThemeDialogName = "";
 	private createThemeDialogSaving = false;
 	private createThemeDialogError = "";
+	private runtimeProjectPath: string | null = null;
 	private colorDrafts: Record<ThemeVariant, ThemeColorDraft> = {
 		light: { accent: "", background: "", foreground: "" },
 		dark: { accent: "", background: "", foreground: "" },
@@ -96,8 +99,23 @@ export class SettingsPanel {
 		this.loadTheme();
 	}
 
+	setContainer(container: HTMLElement): void {
+		if (this.container === container) return;
+		const wasOpen = this.isOpen;
+		this.container = container;
+		if (wasOpen) this.render();
+	}
+
+	hasRenderedContent(): boolean {
+		return this.container.childElementCount > 0;
+	}
+
 	setOnClose(callback: () => void): void {
 		this.onClose = callback;
+	}
+
+	setOnRequestAddProject(callback: () => void): void {
+		this.onRequestAddProject = callback;
 	}
 
 	setOnDesktopStatusChange(callback: (status: DesktopUpdateStatus | null) => void): void {
@@ -106,6 +124,10 @@ export class SettingsPanel {
 
 	setOnCliStatusChange(callback: (status: CliUpdateStatus | null) => void): void {
 		this.onCliStatusChange = callback;
+	}
+
+	setRuntimeProjectPath(projectPath: string | null): void {
+		this.runtimeProjectPath = typeof projectPath === "string" && projectPath.trim().length > 0 ? projectPath : null;
 	}
 
 	isVisible(): boolean {
@@ -139,6 +161,15 @@ export class SettingsPanel {
 		if (notify) this.onClose?.();
 	}
 
+	hideWithoutClearing(): void {
+		this.resetColorDrafts();
+		this.createThemeDialogOpen = false;
+		this.createThemeDialogSaving = false;
+		this.createThemeDialogError = "";
+		this.applyAppearanceProfileForCurrentResolvedTheme();
+		this.isOpen = false;
+	}
+
 	private loadTheme(): void {
 		const saved = readStoredDesktopTheme();
 		this.state.theme = saved;
@@ -161,6 +192,11 @@ export class SettingsPanel {
 	}
 
 	private getProfile(theme: ThemeVariant): DesktopAppearanceProfile {
+		const candidate = theme === "light" ? this.appearanceProfiles?.light : this.appearanceProfiles?.dark;
+		if (candidate && typeof candidate === "object") {
+			return candidate;
+		}
+		this.appearanceProfiles = loadDesktopAppearanceProfiles();
 		return theme === "light" ? this.appearanceProfiles.light : this.appearanceProfiles.dark;
 	}
 
@@ -467,10 +503,16 @@ export class SettingsPanel {
 		return this.availableThemes.filter((entry) => entry.variant === theme);
 	}
 
-	private lookupThemeOption(themeName: string): ThemeOption | null {
+	private lookupThemeOption(themeName: unknown): ThemeOption | null {
+		if (typeof themeName !== "string") return null;
 		const normalized = themeName.trim().toLowerCase();
 		if (!normalized) return null;
-		return this.availableThemes.find((entry) => entry.id.toLowerCase() === normalized || entry.label.toLowerCase() === normalized) ?? null;
+		if (!Array.isArray(this.availableThemes)) return null;
+		return this.availableThemes.find((entry) => {
+			const id = typeof entry?.id === "string" ? entry.id.toLowerCase() : "";
+			const label = typeof entry?.label === "string" ? entry.label.toLowerCase() : "";
+			return id === normalized || label === normalized;
+		}) ?? null;
 	}
 
 	private resolveDefaultThemeId(theme: ThemeVariant): string {
@@ -573,7 +615,8 @@ export class SettingsPanel {
 		this.render();
 	}
 
-	private normalizeHex6(value: string): string | null {
+	private normalizeHex6(value: unknown): string | null {
+		if (typeof value !== "string") return null;
 		const trimmed = value.trim();
 		const short = trimmed.match(/^#([0-9a-f]{3})$/i);
 		if (short) {
@@ -585,11 +628,11 @@ export class SettingsPanel {
 		return null;
 	}
 
-	private coercePickerColor(value: string): string {
+	private coercePickerColor(value: unknown): string {
 		return this.normalizeHex6(value) ?? "#7A818F";
 	}
 
-	private setProfileColor(theme: ThemeVariant, key: "accent" | "background" | "foreground", value: string): void {
+	private setProfileColor(theme: ThemeVariant, key: "accent" | "background" | "foreground", value: unknown): void {
 		const normalized = this.normalizeHex6(value);
 		if (!normalized) return;
 		this.colorDrafts[theme][key] = normalized;
@@ -599,7 +642,8 @@ export class SettingsPanel {
 		this.render();
 	}
 
-	private setProfileFont(theme: ThemeVariant, key: "uiFont" | "codeFont", value: string): void {
+	private setProfileFont(theme: ThemeVariant, key: "uiFont" | "codeFont", value: unknown): void {
+		if (typeof value !== "string") return;
 		const next = value.trim();
 		if (!next) return;
 		const profile = this.getProfile(theme);
@@ -664,40 +708,20 @@ export class SettingsPanel {
 		const accent = preview.accent;
 		const background = preview.background;
 		const foreground = preview.foreground;
-		const doc = {
+		const doc = buildPiThemeDocument({
 			name: normalizedName,
-			vars: {
-				accent,
-				background,
-				foreground,
+			variant: theme,
+			accent,
+			surface: background,
+			ink: foreground,
+			contrast: profile.contrast,
+			fonts: {
+				ui: profile.uiFont || null,
+				code: profile.codeFont || null,
 			},
-			colors: {
-				accent: "accent",
-				text: "foreground",
-				muted: "foreground",
-				dim: "foreground",
-				selectedBg: "background",
-				userMessageBg: "background",
-				userMessageText: "foreground",
-				customMessageBg: "background",
-				customMessageText: "foreground",
-				toolPendingBg: "background",
-				toolSuccessBg: "background",
-				toolErrorBg: "background",
-				toolTitle: "accent",
-				toolOutput: "foreground",
-			},
-			piDesktop: {
-				source: "pi-desktop-theme-v1",
-				variant: theme,
-				contrast: profile.contrast,
-				fonts: {
-					ui: profile.uiFont || null,
-					code: profile.codeFont || null,
-				},
-				opaqueWindows: !profile.translucentSidebar,
-			},
-		};
+			opaqueWindows: !profile.translucentSidebar,
+			source: "pi-desktop-theme-v1",
+		});
 
 		const safeBase = normalizedName
 			.toLowerCase()
@@ -735,13 +759,29 @@ export class SettingsPanel {
 	}
 
 	private async loadState(): Promise<void> {
-		try {
-			const sessionState = await rpcBridge.getState();
-			this.state.autoCompactionEnabled = sessionState.autoCompactionEnabled;
-			this.state.steeringMode = sessionState.steeringMode;
-			this.state.followUpMode = sessionState.followUpMode;
-		} catch {
-			// ignore
+		const runtimeReady = Boolean(this.runtimeProjectPath) && rpcBridge.isConnected;
+		if (runtimeReady) {
+			try {
+				const sessionState = await rpcBridge.getState();
+				this.state.autoCompactionEnabled = Boolean(sessionState.autoCompactionEnabled);
+				this.state.steeringMode = sessionState.steeringMode === "all" ? "all" : "one-at-a-time";
+				this.state.followUpMode = sessionState.followUpMode === "all" ? "all" : "one-at-a-time";
+			} catch {
+				// ignore
+			}
+		} else {
+			this.authStatus = null;
+			this.compatibilityReport = null;
+			this.authLoading = false;
+			this.compatibilityLoading = false;
+			this.desktopStatus = null;
+			this.cliStatus = null;
+			this.desktopLoading = false;
+			this.cliLoading = false;
+			this.themeCatalogLoading = false;
+			this.themeCatalogError = "";
+			this.themeCatalogMessage = "";
+			this.availableThemes = [];
 		}
 
 		try {
@@ -761,12 +801,17 @@ export class SettingsPanel {
 			// ignore missing persisted settings
 		}
 
+		if (!runtimeReady) {
+			this.applyAppearanceProfileForCurrentResolvedTheme(false);
+			return;
+		}
+
 		await Promise.all([
-			this.refreshAuthStatus(),
 			this.refreshDesktopStatus(),
 			this.refreshCliStatus(),
-			this.refreshCompatibilityStatus(),
 			this.refreshThemeCatalog(),
+			this.refreshAuthStatus(),
+			this.refreshCompatibilityStatus(),
 		]);
 		this.applyAppearanceProfileForCurrentResolvedTheme(false);
 	}
@@ -775,7 +820,27 @@ export class SettingsPanel {
 		this.authLoading = true;
 		this.render();
 		try {
-			this.authStatus = await rpcBridge.getPiAuthStatus();
+			const raw = await rpcBridge.getPiAuthStatus();
+			const providers = Array.isArray(raw?.configured_providers)
+				? raw.configured_providers
+					.filter((entry) => entry && typeof entry === "object")
+					.map((entry) => {
+						const provider = typeof entry.provider === "string" && entry.provider.trim().length > 0 ? entry.provider.trim() : "unknown";
+						const source = entry.source === "environment" || entry.source === "auth_file_api_key" || entry.source === "auth_file_oauth"
+							? entry.source
+							: "environment";
+						const kind = entry.kind === "api_key" || entry.kind === "oauth" || entry.kind === "unknown"
+							? entry.kind
+							: "unknown";
+						return { provider, source, kind };
+					})
+				: [];
+			this.authStatus = {
+				agent_dir: typeof raw?.agent_dir === "string" ? raw.agent_dir : null,
+				auth_file: typeof raw?.auth_file === "string" ? raw.auth_file : null,
+				auth_file_exists: Boolean(raw?.auth_file_exists),
+				configured_providers: providers,
+			};
 		} catch {
 			this.authStatus = null;
 		} finally {
@@ -835,7 +900,13 @@ export class SettingsPanel {
 		this.compatibilityLoading = true;
 		this.render();
 		try {
-			this.compatibilityReport = await rpcBridge.checkRpcCompatibility();
+			const raw = await rpcBridge.checkRpcCompatibility();
+			this.compatibilityReport = {
+				ok: Boolean(raw?.ok),
+				checks: Array.isArray(raw?.checks) ? raw.checks.filter((entry) => typeof entry === "string") : [],
+				error: typeof raw?.error === "string" && raw.error.trim().length > 0 ? raw.error : undefined,
+				checkedAt: typeof raw?.checkedAt === "number" && Number.isFinite(raw.checkedAt) ? raw.checkedAt : Date.now(),
+			};
 		} catch (err) {
 			this.compatibilityReport = {
 				ok: false,
@@ -1102,13 +1173,82 @@ export class SettingsPanel {
 		`;
 	}
 
+	private renderBasicSettingsShell(runtimeMessage: string, options: { showAddProject: boolean; warning?: string } = { showAddProject: false }): void {
+		const { showAddProject, warning } = options;
+		render(
+			html`
+				<div class="settings-view-root">
+					<div class="settings-view-header">
+						<div class="settings-view-title-wrap">
+							<div class="settings-view-title">Settings</div>
+							<div class="settings-view-meta">Desktop preferences that work immediately.</div>
+						</div>
+						<div class="settings-view-header-actions">
+							<button class="settings-back-btn" @click=${() => this.close()}>← Back</button>
+						</div>
+					</div>
+					<div class="settings-view-body">
+						<div class="settings-view-grid">
+							<section class="settings-group settings-group-full">
+								<div class="settings-section">
+									<div class="settings-section-title">Appearance</div>
+									<div class="settings-label">Theme</div>
+									<div class="settings-desc">Choose light, dark, or system mode.</div>
+									<div class="theme-grid" style="margin-top:10px;">
+										<button class="theme-btn ${this.state.theme === "light" ? "active" : ""}" @click=${() => this.setTheme("light")}>Light</button>
+										<button class="theme-btn ${this.state.theme === "dark" ? "active" : ""}" @click=${() => this.setTheme("dark")}>Dark</button>
+										<button class="theme-btn ${this.state.theme === "system" ? "active" : ""}" @click=${() => this.setTheme("system")}>System</button>
+									</div>
+								</div>
+							</section>
+							<section class="settings-group settings-group-full">
+								<div class="settings-section">
+									<div class="settings-section-title">Runtime</div>
+									<div class="settings-desc">${runtimeMessage}</div>
+									${warning ? html`<div class="settings-desc" style="margin-top:8px;">${warning}</div>` : nothing}
+									${showAddProject
+										? html`
+											<div class="settings-actions" style="margin-top:10px;">
+												<button class="ghost-btn" @click=${() => this.onRequestAddProject?.()}>Add project</button>
+											</div>
+										`
+										: nothing}
+								</div>
+							</section>
+						</div>
+					</div>
+				</div>
+			`,
+			this.container,
+		);
+	}
+
 	render(): void {
 		if (!this.isOpen) {
 			this.container.innerHTML = "";
 			return;
 		}
 
-		const template = html`
+		const authProviders = Array.isArray(this.authStatus?.configured_providers) ? this.authStatus.configured_providers : [];
+		const compatibilityChecks = Array.isArray(this.compatibilityReport?.checks) ? this.compatibilityReport.checks : [];
+		const hasProjectContext = Boolean(this.runtimeProjectPath);
+		const runtimeControlsEnabled = hasProjectContext && rpcBridge.isConnected;
+
+		if (!runtimeControlsEnabled) {
+			const runtimeMessage = hasProjectContext
+				? "Runtime is still starting for this project. You can change appearance now; assistant/account settings unlock when runtime is ready."
+				: "Open a project to enable assistant, account, update diagnostics, and compatibility settings.";
+			try {
+				this.renderBasicSettingsShell(runtimeMessage, { showAddProject: !hasProjectContext });
+			} catch (err) {
+				console.error("Settings no-project render failed:", err);
+				this.container.innerHTML = "<div class=\"settings-view-root\"><div class=\"settings-view-body\"><div class=\"settings-desc\">Unable to render settings right now.</div></div></div>";
+			}
+			return;
+		}
+
+		try {
+			const template = html`
 			<div class="settings-view-root">
 				<div class="settings-view-header">
 					<div class="settings-view-title-wrap">
@@ -1146,87 +1286,96 @@ export class SettingsPanel {
 							</div>
 						</section>
 
-						<section class="settings-group">
-							<div class="settings-section">
-								<div class="settings-section-title">Assistant</div>
-								${this.renderToggle(
-									"Auto-compaction",
-									"Summarize older context automatically when conversations get long.",
-									this.state.autoCompactionEnabled,
-									(v) => this.setAutoCompaction(v),
-								)}
-								${this.renderToggle(
-									"Auto-retry",
-									"Retry temporary provider errors automatically.",
-									this.state.autoRetryEnabled,
-									(v) => this.setAutoRetry(v),
-								)}
-							</div>
-							<div class="settings-section">
-								<div class="settings-section-title">Message queue</div>
-								<div class="settings-row">
-									<div>
-										<div class="settings-label">Steering messages</div>
-										<div class="settings-desc">How queued steering messages are sent while a response is streaming.</div>
+						${runtimeControlsEnabled
+							? html`
+								<section class="settings-group">
+									<div class="settings-section">
+										<div class="settings-section-title">Assistant</div>
+										${this.renderToggle(
+											"Auto-compaction",
+											"Summarize older context automatically when conversations get long.",
+											this.state.autoCompactionEnabled,
+											(v) => this.setAutoCompaction(v),
+										)}
+										${this.renderToggle(
+											"Auto-retry",
+											"Retry temporary provider errors automatically.",
+											this.state.autoRetryEnabled,
+											(v) => this.setAutoRetry(v),
+										)}
 									</div>
-									<select class="settings-select" .value=${this.state.steeringMode} @change=${(e: Event) => this.setSteeringMode((e.target as HTMLSelectElement).value as QueueMode)}>
-										<option value="one-at-a-time">One at a time</option>
-										<option value="all">All queued</option>
-									</select>
-								</div>
-								<div class="settings-row">
-									<div>
-										<div class="settings-label">Follow-up messages</div>
-										<div class="settings-desc">How queued follow-up prompts are sent after each run.</div>
+									<div class="settings-section">
+										<div class="settings-section-title">Message queue</div>
+										<div class="settings-row">
+											<div>
+												<div class="settings-label">Steering messages</div>
+												<div class="settings-desc">How queued steering messages are sent while a response is streaming.</div>
+											</div>
+											<select class="settings-select" .value=${this.state.steeringMode} @change=${(e: Event) => this.setSteeringMode((e.target as HTMLSelectElement).value as QueueMode)}>
+												<option value="one-at-a-time">One at a time</option>
+												<option value="all">All queued</option>
+											</select>
+										</div>
+										<div class="settings-row">
+											<div>
+												<div class="settings-label">Follow-up messages</div>
+												<div class="settings-desc">How queued follow-up prompts are sent after each run.</div>
+											</div>
+											<select class="settings-select" .value=${this.state.followUpMode} @change=${(e: Event) => this.setFollowUpMode((e.target as HTMLSelectElement).value as QueueMode)}>
+												<option value="one-at-a-time">One at a time</option>
+												<option value="all">All queued</option>
+											</select>
+										</div>
 									</div>
-									<select class="settings-select" .value=${this.state.followUpMode} @change=${(e: Event) => this.setFollowUpMode((e.target as HTMLSelectElement).value as QueueMode)}>
-										<option value="one-at-a-time">One at a time</option>
-										<option value="all">All queued</option>
-									</select>
-								</div>
-							</div>
-						</section>
+								</section>
 
-						<section class="settings-group">
-							<div class="settings-section">
-								<div class="settings-section-title">Account</div>
-								${this.authLoading
-									? html`<div class="settings-desc">Checking account status…</div>`
-									: html`
-										<div class="settings-desc">
-											${this.authStatus && this.authStatus.configured_providers.length > 0
-												? `Connected providers: ${this.authStatus.configured_providers.length}`
-												: "No provider connected yet."}
-										</div>
-										<div class="settings-actions">
-											<button class="ghost-btn" @click=${() => this.refreshAuthStatus()}>Refresh account status</button>
-										</div>
-										${this.authStatus && this.authStatus.configured_providers.length > 0
-											? html`
-												<div class="account-chips">
-													${this.authStatus.configured_providers.map(
-														(p) => html`<span class="account-chip">${p.provider} · ${p.source === "environment" ? "env" : p.kind}</span>`,
-													)}
+								<section class="settings-group">
+									<div class="settings-section">
+										<div class="settings-section-title">Account</div>
+										${this.authLoading
+											? html`<div class="settings-desc">Checking account status…</div>`
+											: html`
+												<div class="settings-desc">
+													${authProviders.length > 0
+														? `Connected providers: ${authProviders.length}`
+														: "No provider connected yet."}
 												</div>
-											`
-											: null}
-										<div class="settings-desc">Tip: run <code>/login</code> in terminal once, then restart desktop.</div>
-										${this.authStatus?.auth_file
-											? html`
-												<details class="settings-advanced">
-													<summary>Advanced account details</summary>
-													<div class="settings-desc">Auth file: <code>${this.authStatus.auth_file}</code></div>
-												</details>
-											`
-											: null}
-									`}
-							</div>
-							<div class="settings-section">
-								<div class="settings-section-title">Package configuration</div>
-								<div class="settings-desc">Package-specific settings are managed in <strong>Packages</strong> (gear icon on installed packages).</div>
-								<div class="settings-desc">Desktop stays capability-driven: packages can expose config commands, and those run via the normal chat/runtime flow.</div>
-							</div>
-						</section>
+												<div class="settings-actions">
+													<button class="ghost-btn" @click=${() => this.refreshAuthStatus()}>Refresh account status</button>
+												</div>
+												${authProviders.length > 0
+													? html`
+														<div class="account-chips">
+															${authProviders.map((p) => html`<span class="account-chip">${p.provider} · ${p.source === "environment" ? "env" : p.kind}</span>`)}
+														</div>
+													`
+													: null}
+												<div class="settings-desc">Tip: run <code>/login</code> in terminal once, then restart desktop.</div>
+												${this.authStatus?.auth_file
+													? html`
+														<details class="settings-advanced">
+															<summary>Advanced account details</summary>
+															<div class="settings-desc">Auth file: <code>${this.authStatus.auth_file}</code></div>
+														</details>
+													`
+													: null}
+											`}
+									</div>
+									<div class="settings-section">
+										<div class="settings-section-title">Package configuration</div>
+										<div class="settings-desc">Package-specific settings are managed in <strong>Packages</strong> (gear icon on installed packages).</div>
+										<div class="settings-desc">Desktop stays capability-driven: packages can expose config commands, and those run via the normal chat/runtime flow.</div>
+									</div>
+								</section>
+							`
+							: html`
+								<section class="settings-group">
+									<div class="settings-section">
+										<div class="settings-section-title">Runtime</div>
+										<div class="settings-desc">Open a project to enable assistant runtime, account, and compatibility settings.</div>
+									</div>
+								</section>
+							`}
 
 						<section class="settings-group settings-group-full">
 							<div class="settings-section">
@@ -1281,25 +1430,29 @@ export class SettingsPanel {
 									</button>
 								</div>
 								${this.cliActionMessage ? html`<div class="settings-desc">${this.cliActionMessage}</div>` : null}
-								<details class="settings-advanced">
-									<summary>Advanced CLI diagnostics</summary>
-									<div class="settings-desc">Discovery: <code>${this.cliStatus?.discovery || rpcBridge.discoveryInfo || "unknown"}</code></div>
-									${this.cliStatus?.update_command ? html`<div class="settings-desc">Manual update: <code>${this.cliStatus.update_command}</code></div>` : null}
-									<div class="settings-actions">
-										<button class="ghost-btn" ?disabled=${this.compatibilityLoading} @click=${() => this.refreshCompatibilityStatus()}>
-											${this.compatibilityLoading ? "Checking RPC…" : "Run RPC compatibility check"}
-										</button>
-									</div>
-									${this.compatibilityReport
-										? html`
-											<div class="settings-desc">
-												RPC compatibility: ${this.compatibilityReport.ok ? "OK" : "Failed"}
-												${this.compatibilityReport.checks.length > 0 ? html` (${this.compatibilityReport.checks.join(", ")})` : null}
+								${runtimeControlsEnabled
+									? html`
+										<details class="settings-advanced">
+											<summary>Advanced CLI diagnostics</summary>
+											<div class="settings-desc">Discovery: <code>${this.cliStatus?.discovery || rpcBridge.discoveryInfo || "unknown"}</code></div>
+											${this.cliStatus?.update_command ? html`<div class="settings-desc">Manual update: <code>${this.cliStatus.update_command}</code></div>` : null}
+											<div class="settings-actions">
+												<button class="ghost-btn" ?disabled=${this.compatibilityLoading} @click=${() => this.refreshCompatibilityStatus()}>
+													${this.compatibilityLoading ? "Checking RPC…" : "Run RPC compatibility check"}
+												</button>
 											</div>
-											${this.compatibilityReport.error ? html`<div class="settings-desc">${this.compatibilityReport.error}</div>` : null}
-										`
-										: null}
-								</details>
+											${this.compatibilityReport
+												? html`
+													<div class="settings-desc">
+														RPC compatibility: ${this.compatibilityReport.ok ? "OK" : "Failed"}
+														${compatibilityChecks.length > 0 ? html` (${compatibilityChecks.join(", ")})` : null}
+													</div>
+													${this.compatibilityReport.error ? html`<div class="settings-desc">${this.compatibilityReport.error}</div>` : null}
+												`
+												: null}
+										</details>
+									`
+									: html`<div class="settings-desc">Runtime diagnostics become available after opening a project.</div>`}
 							</div>
 						</section>
 					</div>
@@ -1308,7 +1461,18 @@ export class SettingsPanel {
 			</div>
 		`;
 
-		render(template, this.container);
+			render(template, this.container);
+		} catch (err) {
+			console.error("Settings panel render failed:", err);
+			try {
+				this.renderBasicSettingsShell(
+					"Advanced runtime settings are temporarily unavailable. You can still use appearance settings.",
+					{ showAddProject: false, warning: "Open another session or reopen settings once runtime stabilizes." },
+				);
+			} catch {
+				this.container.innerHTML = "<div class=\"settings-view-root\"><div class=\"settings-view-body\"><div class=\"settings-desc\">Unable to render settings right now.</div></div></div>";
+			}
+		}
 	}
 
 	destroy(): void {

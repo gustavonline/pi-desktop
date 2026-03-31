@@ -110,6 +110,12 @@ interface WelcomeDashboardSummary {
 	updatedAt: number;
 }
 
+interface WelcomeProjectSummary {
+	id: string;
+	name: string;
+	path: string;
+}
+
 interface ComposerSkillDraft {
 	name: string;
 	commandText: string;
@@ -137,6 +143,10 @@ function joinFsPath(base: string, child: string): string {
 	const sep = base.includes("\\") ? "\\" : "/";
 	const cleanBase = base.replace(/[\\/]+$/, "");
 	return `${cleanBase}${sep}${child}`;
+}
+
+function normalizeComparablePath(value: string | null | undefined): string {
+	return (value ?? "").replace(/\\/g, "/").replace(/\/+$|\s+$/g, "").toLowerCase();
 }
 
 function formatUsd(value: number): string {
@@ -358,6 +368,7 @@ export class ChatView {
 	private onAddProject: (() => void) | null = null;
 	private onOpenSettings: (() => void) | null = null;
 	private onOpenPackages: (() => void) | null = null;
+	private onSelectWelcomeProject: ((projectId: string) => void) | null = null;
 	private onPromptSubmitted: (() => void) | null = null;
 	private onRunStateChange: ((running: boolean) => void) | null = null;
 	private availableModels: ModelOption[] = [];
@@ -467,6 +478,12 @@ export class ChatView {
 		error: null,
 		updatedAt: 0,
 	};
+	private welcomeProjectMenuOpen = false;
+	private welcomeProjects: WelcomeProjectSummary[] = [];
+	private welcomeActiveProjectId: string | null = null;
+	private welcomeHeadlineTimer: ReturnType<typeof setInterval> | null = null;
+	private welcomeHeadlineIndex = 0;
+	private readonly welcomeHeadlines = ["Ready when you are", "Your move when you’re back", "Come back when you want, I’m here", "I’m waiting for you"];
 
 	constructor(container: HTMLElement) {
 		this.container = container;
@@ -492,6 +509,18 @@ export class ChatView {
 		this.onOpenPackages = cb;
 	}
 
+	setOnSelectWelcomeProject(cb: (projectId: string) => void): void {
+		this.onSelectWelcomeProject = cb;
+	}
+
+	setWelcomeProjects(projects: Array<{ id: string; name: string; path: string }>, activeProjectId: string | null): void {
+		this.welcomeProjects = projects
+			.filter((entry) => Boolean(entry?.id) && Boolean(entry?.name) && Boolean(entry?.path))
+			.map((entry) => ({ id: entry.id, name: entry.name, path: entry.path }));
+		this.welcomeActiveProjectId = activeProjectId;
+		if (!this.projectPath) this.render();
+	}
+
 	setOnPromptSubmitted(cb: () => void): void {
 		this.onPromptSubmitted = cb;
 	}
@@ -509,6 +538,7 @@ export class ChatView {
 		}).__PI_DESKTOP_PUSH_TRACE__;
 		push?.(`chat:setProjectPath ${previous ?? "-"} -> ${path ?? "-"}`);
 		this.gitMenuOpen = false;
+		this.welcomeProjectMenuOpen = false;
 		this.modelPickerOpen = false;
 		this.selectedSkillDraft = null;
 		this.slashPaletteOpen = false;
@@ -517,6 +547,7 @@ export class ChatView {
 		this.slashSkillsUpdatedAt = 0;
 		if (!path) {
 			this.bindingStatusText = null;
+			this.welcomeHeadlineIndex = (this.welcomeHeadlineIndex + 1) % this.welcomeHeadlines.length;
 			this.modelLoadRequestSeq += 1;
 			this.loadingModels = false;
 			this.runHasAssistantText = false;
@@ -904,6 +935,10 @@ export class ChatView {
 		this.cancelStreamingUiReconcile();
 		this.runHasAssistantText = false;
 		this.clearWorkingStatusTimer(true);
+		if (this.welcomeHeadlineTimer) {
+			clearInterval(this.welcomeHeadlineTimer);
+			this.welcomeHeadlineTimer = null;
+		}
 		for (const unlisten of this.nativeFileDropUnlisteners) {
 			unlisten();
 		}
@@ -3566,21 +3601,7 @@ export class ChatView {
 	}
 
 	private renderEmptyState(): TemplateResult {
-		return html`
-			<div class="chat-row assistant-row intro-row">
-				<div class="message-shell assistant-message-shell">
-					<div class="assistant-block intro-block">
-						<div class="assistant-content intro-text">Hey! How can I help you today?</div>
-					</div>
-				</div>
-			</div>
-			<div class="chat-row intro-actions-row">
-				<div class="intro-actions">
-					<button class="ghost-btn intro-chip" @click=${() => this.setInputText("Summarize this repository and suggest the top 5 improvements")}>Summarize repository</button>
-					<button class="ghost-btn intro-chip" @click=${() => this.setInputText("Find bugs and propose a prioritized fix plan")}>Find bugs</button>
-				</div>
-			</div>
-		`;
+		return this.renderCenteredWelcome();
 	}
 
 	private async openExternalUrl(url: string): Promise<void> {
@@ -3722,56 +3743,75 @@ export class ChatView {
 	}
 
 	private renderWelcomeDashboard(): TemplateResult {
+		return this.renderCenteredWelcome();
+	}
+
+	private renderCenteredWelcome(): TemplateResult {
 		const snapshot = this.welcomeDashboard;
-		const modelProvider = normalizeText(this.state?.model?.provider);
-		const modelId = normalizeText(this.state?.model?.id);
-		const modelLabel = modelProvider && modelId ? `${modelProvider}/${modelId}` : "No active model";
-		const highlights = [
-			...snapshot.skills.slice(0, 4).map((item) => `Skill · ${item}`),
-			...snapshot.extensions.slice(0, 4).map((item) => `Extension · ${item}`),
-		].slice(0, 8);
-		const cliLabel = snapshot.currentCliVersion ? `v${snapshot.currentCliVersion}` : "Unavailable";
-		const updateLabel = snapshot.updateAvailable
-			? `Update available${snapshot.latestCliVersion ? ` · v${snapshot.latestCliVersion}` : ""}`
-			: "CLI up to date";
+		const brandIconUrl = new URL("../../assets/branding/pi-desktop-icon.svg", import.meta.url).href;
+		const comparableProjectPath = normalizeComparablePath(this.projectPath);
+		const activeProject =
+			this.welcomeProjects.find((project) => project.id === this.welcomeActiveProjectId) ??
+			this.welcomeProjects.find((project) => normalizeComparablePath(project.path) === comparableProjectPath) ??
+			null;
+		const hasProject = Boolean(activeProject || this.projectPath);
+		const projectLabel = activeProject?.name ?? (this.projectPath ? this.fileNameFromPath(this.projectPath) : "Add project");
+		const welcomeHeadline = this.welcomeHeadlines[this.welcomeHeadlineIndex] ?? this.welcomeHeadlines[0];
 
 		return html`
-			<div class="welcome-dashboard">
-				<div class="welcome-hero">
-					<div class="welcome-eyebrow">No project open</div>
-					<h2>Open a project to start a Pi workspace</h2>
-					<p>Chat, files, terminal, and packages become available as soon as you add a project.</p>
-					<div class="welcome-actions">
-						<button class="welcome-action primary" @click=${() => this.onAddProject?.()}>Add project</button>
-						<button class="welcome-action" @click=${() => this.onOpenPackages?.()}>Open packages</button>
-						<button class="welcome-action" @click=${() => this.onOpenSettings?.()}>Settings</button>
-					</div>
+			<div class="welcome-dashboard welcome-dashboard-minimal">
+				<div class="welcome-brand-lockup" aria-hidden="true">
+					<div class="welcome-brand-mark"><img src=${brandIconUrl} alt="Pi Desktop" /></div>
 				</div>
-
-				<div class="welcome-grid minimal">
-					<section class="welcome-card compact">
-						<div class="welcome-card-title">Local Pi environment</div>
-						<div class="welcome-kpis compact">
-							<div><span>Skills</span><strong>${snapshot.skills.length}</strong></div>
-							<div><span>Extensions</span><strong>${snapshot.extensions.length}</strong></div>
-							<div><span>Themes</span><strong>${snapshot.themes.length}</strong></div>
-							<div><span>CLI</span><strong>${cliLabel}</strong></div>
-						</div>
-						${snapshot.loading
-							? html`<div class="welcome-empty">Refreshing local Pi inventory…</div>`
-							: highlights.length > 0
-								? html`<div class="welcome-chip-list">${highlights.map((item) => html`<span class="welcome-chip">${item}</span>`)}</div>`
-								: html`<div class="welcome-empty">No extra skills or extensions detected yet.</div>`}
-						<div class="welcome-runtime-row"><span>Model</span><strong>${modelLabel}</strong></div>
-						<div class="welcome-runtime-row"><span>Status</span><strong>${updateLabel}</strong></div>
-						<div class="welcome-actions compact">
-							<button class="welcome-action" @click=${() => void this.refreshWelcomeDashboard(true)}>Refresh</button>
-							<button class="welcome-action" @click=${() => void this.openExternalUrl("https://github.com/mariozechner/pi-coding-agent")}>Pi docs</button>
-						</div>
-						${snapshot.error ? html`<div class="welcome-error">${snapshot.error}</div>` : nothing}
-						<div class="welcome-updated">Updated ${formatAge(snapshot.updatedAt)}</div>
-					</section>
+				<h2>${welcomeHeadline}</h2>
+				<div class="welcome-project-wrap">
+					<button
+						class="welcome-project-trigger ${hasProject ? "active" : ""}"
+						@click=${() => {
+							this.welcomeProjectMenuOpen = !this.welcomeProjectMenuOpen;
+							this.render();
+						}}
+					>
+						<span>${projectLabel}</span>
+						<span class="welcome-project-caret ${this.welcomeProjectMenuOpen ? "open" : ""}">⌄</span>
+					</button>
+					${this.welcomeProjectMenuOpen
+						? html`
+							<div class="welcome-project-menu">
+								${this.welcomeProjects.map((project) => {
+									const isCurrent = project.id === activeProject?.id;
+									return html`
+										<button class="welcome-project-item ${isCurrent ? "current" : ""}" @click=${() => {
+											this.welcomeProjectMenuOpen = false;
+											if (!isCurrent) this.onSelectWelcomeProject?.(project.id);
+										}}>
+											<span>${project.name}</span>
+											<span>${isCurrent ? "✓" : ""}</span>
+										</button>
+									`;
+								})}
+								${this.welcomeProjects.length > 0 ? html`<div class="welcome-project-sep"></div>` : nothing}
+								<button class="welcome-project-item" @click=${() => {
+									this.welcomeProjectMenuOpen = false;
+									this.onAddProject?.();
+								}}>Add new project</button>
+								<div class="welcome-project-sep"></div>
+								<button class="welcome-project-item" @click=${() => {
+									this.welcomeProjectMenuOpen = false;
+									this.onOpenPackages?.();
+								}}>Packages</button>
+								<button class="welcome-project-item" @click=${() => {
+									this.welcomeProjectMenuOpen = false;
+									this.onOpenSettings?.();
+								}}>Settings</button>
+							</div>
+						`
+						: nothing}
 				</div>
+				<div class="welcome-meta-line muted ${this.welcomeProjectMenuOpen ? "hidden" : ""}">
+					${snapshot.loading ? "Refreshing local Pi inventory…" : `${snapshot.skills.length} skills · ${snapshot.extensions.length} extensions · ${snapshot.themes.length} themes`}
+				</div>
+				${snapshot.error ? html`<div class="welcome-error">${snapshot.error}</div>` : nothing}
 			</div>
 		`;
 	}
@@ -4589,6 +4629,16 @@ export class ChatView {
 
 	private doRender(): void {
 		const hasProject = Boolean(this.projectPath);
+		if (!hasProject && !this.welcomeHeadlineTimer) {
+			this.welcomeHeadlineTimer = setInterval(() => {
+				if (this.projectPath || this.welcomeProjectMenuOpen) return;
+				this.welcomeHeadlineIndex = (this.welcomeHeadlineIndex + 1) % this.welcomeHeadlines.length;
+				this.render();
+			}, 10000);
+		} else if (hasProject && this.welcomeHeadlineTimer) {
+			clearInterval(this.welcomeHeadlineTimer);
+			this.welcomeHeadlineTimer = null;
+		}
 		const hasMessages = this.messages.length > 0;
 		const showWorkingIndicator = hasProject && this.shouldShowWorkingIndicator();
 		if (!hasProject && !this.welcomeDashboard.loading && this.welcomeDashboard.updatedAt === 0) {
@@ -4610,6 +4660,11 @@ export class ChatView {
 					if (this.gitMenuOpen && !target.closest(".git-branch-wrap")) {
 						this.gitMenuOpen = false;
 						this.gitBranchQuery = "";
+						changed = true;
+					}
+
+					if (this.welcomeProjectMenuOpen && !target.closest(".welcome-project-wrap")) {
+						this.welcomeProjectMenuOpen = false;
 						changed = true;
 					}
 
@@ -4653,7 +4708,9 @@ export class ChatView {
 
 	render(): void {
 		this.doRender();
-		this.scrollToBottom();
+		if (this.projectPath) {
+			this.scrollToBottom();
+		}
 		this.syncWorkingStatusAnimation();
 		this.ensureActiveSlashItemVisible();
 	}

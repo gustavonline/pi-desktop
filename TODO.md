@@ -173,13 +173,15 @@ The app should feel native while still reflecting Pi’s actual resource model.
 - [x] Remove animated/dot unread styling; keep static unread emphasis (bold + italic)
 - [x] Add first-run onboarding card when Pi CLI is missing (install + copy command + retry)
 - [x] Add in-app Pi CLI update signaling (startup + daily reminder + sidebar hint + settings update path)
+- [x] Harden settings pane open/render lifecycle across no-project + project-switch states (#69)
+- [x] Refine no-project/new-thread welcome dashboard toward clean Codex-inspired centered flow (#63, partial)
 - [ ] Final new-file draft UX polish pass
 - [ ] Final session delete/select stability polish pass
 
 ### Manual smoke tests that still matter
 - [ ] Parallel runs in separate session tabs with different models
 - [ ] Legacy session restore / old session reopen after restart
-- [ ] Remove all projects => immediate clean no-project dashboard
+- [x] Remove all projects => immediate clean no-project dashboard
 - [ ] Packages pane navigation from no-project state
 - [ ] Package install/remove/update/list flow in real Tauri app
 - [ ] Command-backed resources actually reflect installed extensions/skills/prompts on machine

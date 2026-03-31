@@ -130,6 +130,8 @@ let desktopUpdateChecking = false;
 
 let projectSwitchTask: Promise<void> = Promise.resolve();
 let projectSwitchVersion = 0;
+let workspacePaneApplyVersion = 0;
+let settingsPaneRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
 
 class StaleProjectTaskError extends Error {
 	constructor() {
@@ -918,6 +920,7 @@ function resetWorkspaceContentTabs(
 	workspace: WorkspaceState,
 	project: { id?: string | null; path?: string | null } | null = { id: workspace.activeProjectId, path: workspace.activeProjectPath },
 ): void {
+	const previousPane = workspace.pane;
 	setWorkspaceActiveProject(workspace, project);
 	workspace.sessionTabs = [createSessionTab(NEW_SESSION_TAB_TITLE, null, workspace.activeProjectId, workspace.activeProjectPath)];
 	workspace.activeSessionTabId = workspace.sessionTabs[0].id;
@@ -925,7 +928,7 @@ function resetWorkspaceContentTabs(
 	workspace.activeFileTabId = null;
 	workspace.filePath = null;
 	workspace.sessionTitle = NEW_SESSION_TAB_TITLE;
-	workspace.pane = "chat";
+	workspace.pane = previousPane === "settings" || previousPane === "packages" ? previousPane : "chat";
 }
 
 function createAndActivateEmptySessionTab(
@@ -1600,7 +1603,10 @@ function ensureDebugOverlayPolling(): void {
 }
 
 function syncSidebarSelectionFromWorkspace(workspace: WorkspaceState | null = getActiveWorkspace()): void {
-	if (!sidebar) return;
+	if (!sidebar) {
+		chatView?.setWelcomeProjects([], workspace?.activeProjectId ?? null);
+		return;
+	}
 	if (!workspace) {
 		sidebar.clearActiveProject();
 		sidebar.setActiveSessionPath(null);
@@ -1608,6 +1614,7 @@ function syncSidebarSelectionFromWorkspace(workspace: WorkspaceState | null = ge
 		sidebar.setSuppressedSessionPaths([]);
 		sidebar.setAttentionSessions([]);
 		sidebar.setTransientSessionDraft(null);
+		chatView?.setWelcomeProjects(sidebar.listProjects(), null);
 		return;
 	}
 
@@ -1623,6 +1630,7 @@ function syncSidebarSelectionFromWorkspace(workspace: WorkspaceState | null = ge
 	} else {
 		sidebar.clearActiveProject();
 	}
+	chatView?.setWelcomeProjects(sidebar.listProjects(), getWorkspaceActiveProjectId(workspace));
 
 	const suppressedDraftSessionPaths = workspace.sessionTabs
 		.filter((tab) => isEphemeralSessionTab(tab) && Boolean(tab.sessionPath))
@@ -1759,10 +1767,19 @@ function setPaneVisibility(pane: WorkspaceState["pane"]): void {
 	settingsPane.classList.toggle("hidden-pane", pane !== "settings");
 }
 
+function resolveSettingsRuntimeProjectPath(workspace: WorkspaceState | null): string | null {
+	if (!workspace) return null;
+	return getWorkspaceActiveProjectPath(workspace);
+}
+
 async function applyWorkspacePane(workspace: WorkspaceState | null = getActiveWorkspace()): Promise<void> {
+	const applyVersion = ++workspacePaneApplyVersion;
+	const isStale = (): boolean => applyVersion !== workspacePaneApplyVersion;
+
 	syncWorkspaceContextChrome(workspace);
 	syncSidebarSelectionFromWorkspace(workspace);
 	syncContentTabsBar(workspace);
+	if (isStale()) return;
 
 	if (!workspace) {
 		const resolved = getResolvedDesktopTheme();
@@ -1770,7 +1787,8 @@ async function applyWorkspacePane(workspace: WorkspaceState | null = getActiveWo
 		void syncDesktopThemeWithPiTheme(null).finally(() => {
 			applyDesktopAppearanceProfileToRoot(resolved, profiles);
 		});
-		settingsPanel?.close(false);
+		if (isStale()) return;
+		settingsPanel?.hideWithoutClearing();
 		syncRunningSessionIndicators();
 		setPaneVisibility("chat");
 		return;
@@ -1783,15 +1801,18 @@ async function applyWorkspacePane(workspace: WorkspaceState | null = getActiveWo
 	void syncDesktopThemeWithPiTheme(workspaceProjectPath).finally(() => {
 		applyDesktopAppearanceProfileToRoot(resolved, profiles);
 	});
+	if (isStale()) return;
+
 	chatView?.setProjectPath(workspaceProjectPath);
 	packagesView?.setProjectPath(workspaceProjectPath);
 	terminalPanel?.setProjectPath(workspaceProjectPath);
 	if (workspace.pane !== "settings") {
-		settingsPanel?.close(false);
+		settingsPanel?.hideWithoutClearing();
 	}
 	if (workspace.pane !== "file") {
 		fileViewer?.setProjectPath(workspaceProjectPath);
 	}
+	if (isStale()) return;
 
 	if (workspace.pane === "file") {
 		const activeFileTab = getActiveFileTab(workspace);
@@ -1800,6 +1821,7 @@ async function applyWorkspacePane(workspace: WorkspaceState | null = getActiveWo
 		setPaneVisibility("file");
 		if (activeFileTab?.path) {
 			await fileViewer?.openFile(activeFileTab.path);
+			if (isStale()) return;
 		} else {
 			const draftId = activeFileTab?.id ?? "draft";
 			const draftTitle = activeFileTab?.title || NEW_FILE_TAB_TITLE;
@@ -1810,34 +1832,47 @@ async function applyWorkspacePane(workspace: WorkspaceState | null = getActiveWo
 
 	if (workspace.pane === "terminal" && workspace.terminalOpen) {
 		terminalPanel?.setProjectPath(getWorkspaceActiveProjectPath(workspace));
+		if (isStale()) return;
 		setPaneVisibility("terminal");
 		terminalPanel?.focusInput();
 		return;
 	}
 
 	if (workspace.pane === "packages") {
-		settingsPanel?.close(false);
+		settingsPanel?.hideWithoutClearing();
 		packagesView?.setProjectPath(getWorkspaceActiveProjectPath(workspace));
+		if (isStale()) return;
 		setPaneVisibility("packages");
 		await packagesView?.open();
+		if (isStale()) return;
 		workspaceTabsBar?.setPackagesSearchQuery(packagesView?.getQuery() ?? "");
 		syncDebugOverlay();
 		return;
 	}
 
 	if (workspace.pane === "settings") {
+		if (isStale()) return;
 		setPaneVisibility("settings");
-		const panel = mountSettingsPanel();
-		if (!panel.isVisible()) {
+		try {
+			const panel = mountSettingsPanel();
+			panel.setRuntimeProjectPath(resolveSettingsRuntimeProjectPath(workspace));
 			await panel.open();
-		} else {
-			panel.render();
+			if (isStale()) return;
+		} catch (err) {
+			console.error("Failed to render settings pane:", err);
+			settingsPanel = null;
+			const panel = mountSettingsPanel();
+			panel.setRuntimeProjectPath(resolveSettingsRuntimeProjectPath(workspace));
+			await panel.open();
+			if (isStale()) return;
 		}
+		scheduleSettingsPaneRecovery("apply-settings");
 		syncDebugOverlay();
 		return;
 	}
 
-	settingsPanel?.close(false);
+	if (isStale()) return;
+	settingsPanel?.hideWithoutClearing();
 	syncActiveChatRuntimeBinding(workspace);
 	setPaneVisibility("chat");
 	chatView?.focusInput();
@@ -2344,6 +2379,9 @@ async function initialize(): Promise<void> {
 			syncWorkspaceTabsBar();
 			void applyWorkspacePane(workspace);
 		});
+		chatView.setOnSelectWelcomeProject((projectId) => {
+			sidebar?.setActiveProject(projectId, true);
+		});
 		chatView.setOnPromptSubmitted(() => {
 			startSidebarSessionsWarmRefresh();
 		});
@@ -2403,10 +2441,13 @@ async function initialize(): Promise<void> {
 }
 
 function mountSettingsPanel(): SettingsPanel {
-	if (settingsPanel) return settingsPanel;
 	const settingsContainer = document.getElementById("settings-pane");
 	if (!settingsContainer) {
 		throw new Error("Settings pane container not found");
+	}
+	if (settingsPanel) {
+		settingsPanel.setContainer(settingsContainer);
+		return settingsPanel;
 	}
 	const panel = new SettingsPanel(settingsContainer);
 	panel.setOnDesktopStatusChange((status) => {
@@ -2424,6 +2465,9 @@ function mountSettingsPanel(): SettingsPanel {
 		persistWorkspaces();
 		syncWorkspaceTabsBar();
 		void applyWorkspacePane(workspace);
+	});
+	panel.setOnRequestAddProject(() => {
+		void sidebar?.openFolder();
 	});
 	settingsPanel = panel;
 	return panel;
@@ -2615,14 +2659,56 @@ function wireCommandPaletteBuiltins(): void {
 	]);
 }
 
+function scheduleSettingsPaneRecovery(reason: string, delayMs = 80): void {
+	if (settingsPaneRecoveryTimer) {
+		clearTimeout(settingsPaneRecoveryTimer);
+	}
+	settingsPaneRecoveryTimer = setTimeout(() => {
+		settingsPaneRecoveryTimer = null;
+		void recoverSettingsPaneIfBlank(reason);
+	}, delayMs);
+}
+
+async function recoverSettingsPaneIfBlank(reason: string): Promise<void> {
+	const workspace = getActiveWorkspace();
+	if (!workspace || workspace.pane !== "settings") return;
+	const settingsContainer = document.getElementById("settings-pane");
+	if (!settingsContainer) return;
+	if (settingsContainer.childElementCount > 0 && settingsPanel?.isVisible()) return;
+	recordDebugTrace(`settings-recover reason=${reason}`);
+	try {
+		settingsPanel = null;
+		const panel = mountSettingsPanel();
+		panel.setRuntimeProjectPath(resolveSettingsRuntimeProjectPath(workspace));
+		await panel.open();
+	} catch (err) {
+		console.error("Settings pane blank recovery failed:", err);
+	}
+}
+
 function requestOpenSettingsPanel(): void {
 	const workspace = getActiveWorkspace();
 	if (!workspace) return;
-	mountSettingsPanel();
 	workspace.pane = "settings";
 	persistWorkspaces();
 	syncWorkspaceTabsBar();
-	void applyWorkspacePane(workspace);
+	setPaneVisibility("settings");
+	void applyWorkspacePane(workspace)
+		.catch((err) => {
+			console.error("Failed to open settings pane:", err);
+			try {
+				settingsPanel = null;
+				setPaneVisibility("settings");
+				const panel = mountSettingsPanel();
+				panel.setRuntimeProjectPath(resolveSettingsRuntimeProjectPath(workspace));
+				void panel.open();
+			} catch (innerErr) {
+				console.error("Settings pane recovery failed:", innerErr);
+			}
+		})
+		.finally(() => {
+			scheduleSettingsPaneRecovery("request-open");
+		});
 }
 
 function openSettings(): void {
@@ -2869,6 +2955,18 @@ function renderApp(): void {
 		`,
 		app,
 	);
+	const settingsPaneContainer = document.getElementById("settings-pane");
+	if (settingsPanel && settingsPaneContainer) {
+		settingsPanel.setContainer(settingsPaneContainer);
+		if (settingsPanel.isVisible() && !settingsPanel.hasRenderedContent()) {
+			settingsPanel.render();
+		}
+	}
+	const activeWorkspace = getActiveWorkspace();
+	if (activeWorkspace?.pane === "settings" && settingsPaneContainer && settingsPaneContainer.childElementCount === 0) {
+		scheduleSettingsPaneRecovery("render-app");
+	}
+
 	applySidebarWidth();
 	setupSidebarResize();
 	syncSidebarCollapseToggleButton();
