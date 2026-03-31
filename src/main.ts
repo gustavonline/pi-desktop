@@ -1845,12 +1845,14 @@ async function applyWorkspacePane(workspace: WorkspaceState | null = getActiveWo
 		setPaneVisibility("settings");
 		try {
 			const panel = mountSettingsPanel();
+			panel.setRuntimeProjectPath(getWorkspaceActiveProjectPath(workspace));
 			await panel.open();
 			if (isStale()) return;
 		} catch (err) {
 			console.error("Failed to render settings pane:", err);
 			settingsPanel = null;
 			const panel = mountSettingsPanel();
+			panel.setRuntimeProjectPath(getWorkspaceActiveProjectPath(workspace));
 			await panel.open();
 			if (isStale()) return;
 		}
@@ -2661,6 +2663,7 @@ async function recoverSettingsPaneIfBlank(reason: string): Promise<void> {
 	try {
 		settingsPanel = null;
 		const panel = mountSettingsPanel();
+		panel.setRuntimeProjectPath(getWorkspaceActiveProjectPath(workspace));
 		await panel.open();
 	} catch (err) {
 		console.error("Settings pane blank recovery failed:", err);
@@ -2681,6 +2684,7 @@ function requestOpenSettingsPanel(): void {
 				settingsPanel = null;
 				setPaneVisibility("settings");
 				const panel = mountSettingsPanel();
+				panel.setRuntimeProjectPath(getWorkspaceActiveProjectPath(workspace));
 				void panel.open();
 			} catch (innerErr) {
 				console.error("Settings pane recovery failed:", innerErr);

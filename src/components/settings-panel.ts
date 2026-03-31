@@ -87,6 +87,7 @@ export class SettingsPanel {
 	private createThemeDialogName = "";
 	private createThemeDialogSaving = false;
 	private createThemeDialogError = "";
+	private runtimeProjectPath: string | null = null;
 	private colorDrafts: Record<ThemeVariant, ThemeColorDraft> = {
 		light: { accent: "", background: "", foreground: "" },
 		dark: { accent: "", background: "", foreground: "" },
@@ -118,6 +119,10 @@ export class SettingsPanel {
 
 	setOnCliStatusChange(callback: (status: CliUpdateStatus | null) => void): void {
 		this.onCliStatusChange = callback;
+	}
+
+	setRuntimeProjectPath(projectPath: string | null): void {
+		this.runtimeProjectPath = typeof projectPath === "string" && projectPath.trim().length > 0 ? projectPath : null;
 	}
 
 	isVisible(): boolean {
@@ -182,6 +187,11 @@ export class SettingsPanel {
 	}
 
 	private getProfile(theme: ThemeVariant): DesktopAppearanceProfile {
+		const candidate = theme === "light" ? this.appearanceProfiles?.light : this.appearanceProfiles?.dark;
+		if (candidate && typeof candidate === "object") {
+			return candidate;
+		}
+		this.appearanceProfiles = loadDesktopAppearanceProfiles();
 		return theme === "light" ? this.appearanceProfiles.light : this.appearanceProfiles.dark;
 	}
 
@@ -488,10 +498,16 @@ export class SettingsPanel {
 		return this.availableThemes.filter((entry) => entry.variant === theme);
 	}
 
-	private lookupThemeOption(themeName: string): ThemeOption | null {
+	private lookupThemeOption(themeName: unknown): ThemeOption | null {
+		if (typeof themeName !== "string") return null;
 		const normalized = themeName.trim().toLowerCase();
 		if (!normalized) return null;
-		return this.availableThemes.find((entry) => entry.id.toLowerCase() === normalized || entry.label.toLowerCase() === normalized) ?? null;
+		if (!Array.isArray(this.availableThemes)) return null;
+		return this.availableThemes.find((entry) => {
+			const id = typeof entry?.id === "string" ? entry.id.toLowerCase() : "";
+			const label = typeof entry?.label === "string" ? entry.label.toLowerCase() : "";
+			return id === normalized || label === normalized;
+		}) ?? null;
 	}
 
 	private resolveDefaultThemeId(theme: ThemeVariant): string {
@@ -594,7 +610,8 @@ export class SettingsPanel {
 		this.render();
 	}
 
-	private normalizeHex6(value: string): string | null {
+	private normalizeHex6(value: unknown): string | null {
+		if (typeof value !== "string") return null;
 		const trimmed = value.trim();
 		const short = trimmed.match(/^#([0-9a-f]{3})$/i);
 		if (short) {
@@ -606,11 +623,11 @@ export class SettingsPanel {
 		return null;
 	}
 
-	private coercePickerColor(value: string): string {
+	private coercePickerColor(value: unknown): string {
 		return this.normalizeHex6(value) ?? "#7A818F";
 	}
 
-	private setProfileColor(theme: ThemeVariant, key: "accent" | "background" | "foreground", value: string): void {
+	private setProfileColor(theme: ThemeVariant, key: "accent" | "background" | "foreground", value: unknown): void {
 		const normalized = this.normalizeHex6(value);
 		if (!normalized) return;
 		this.colorDrafts[theme][key] = normalized;
@@ -620,7 +637,8 @@ export class SettingsPanel {
 		this.render();
 	}
 
-	private setProfileFont(theme: ThemeVariant, key: "uiFont" | "codeFont", value: string): void {
+	private setProfileFont(theme: ThemeVariant, key: "uiFont" | "codeFont", value: unknown): void {
+		if (typeof value !== "string") return;
 		const next = value.trim();
 		if (!next) return;
 		const profile = this.getProfile(theme);
@@ -736,13 +754,19 @@ export class SettingsPanel {
 	}
 
 	private async loadState(): Promise<void> {
-		try {
-			const sessionState = await rpcBridge.getState();
-			this.state.autoCompactionEnabled = sessionState.autoCompactionEnabled;
-			this.state.steeringMode = sessionState.steeringMode;
-			this.state.followUpMode = sessionState.followUpMode;
-		} catch {
-			// ignore
+		const hasRuntimeProject = Boolean(this.runtimeProjectPath);
+		if (hasRuntimeProject) {
+			try {
+				const sessionState = await rpcBridge.getState();
+				this.state.autoCompactionEnabled = Boolean(sessionState.autoCompactionEnabled);
+				this.state.steeringMode = sessionState.steeringMode === "all" ? "all" : "one-at-a-time";
+				this.state.followUpMode = sessionState.followUpMode === "all" ? "all" : "one-at-a-time";
+			} catch {
+				// ignore
+			}
+		} else {
+			this.authStatus = null;
+			this.compatibilityReport = null;
 		}
 
 		try {
@@ -762,13 +786,11 @@ export class SettingsPanel {
 			// ignore missing persisted settings
 		}
 
-		await Promise.all([
-			this.refreshAuthStatus(),
-			this.refreshDesktopStatus(),
-			this.refreshCliStatus(),
-			this.refreshCompatibilityStatus(),
-			this.refreshThemeCatalog(),
-		]);
+		const tasks: Promise<void>[] = [this.refreshDesktopStatus(), this.refreshCliStatus(), this.refreshThemeCatalog()];
+		if (hasRuntimeProject) {
+			tasks.push(this.refreshAuthStatus(), this.refreshCompatibilityStatus());
+		}
+		await Promise.all(tasks);
 		this.applyAppearanceProfileForCurrentResolvedTheme(false);
 	}
 
@@ -1137,6 +1159,7 @@ export class SettingsPanel {
 
 		const authProviders = Array.isArray(this.authStatus?.configured_providers) ? this.authStatus.configured_providers : [];
 		const compatibilityChecks = Array.isArray(this.compatibilityReport?.checks) ? this.compatibilityReport.checks : [];
+		const runtimeControlsEnabled = Boolean(this.runtimeProjectPath);
 
 		try {
 			const template = html`
@@ -1177,85 +1200,96 @@ export class SettingsPanel {
 							</div>
 						</section>
 
-						<section class="settings-group">
-							<div class="settings-section">
-								<div class="settings-section-title">Assistant</div>
-								${this.renderToggle(
-									"Auto-compaction",
-									"Summarize older context automatically when conversations get long.",
-									this.state.autoCompactionEnabled,
-									(v) => this.setAutoCompaction(v),
-								)}
-								${this.renderToggle(
-									"Auto-retry",
-									"Retry temporary provider errors automatically.",
-									this.state.autoRetryEnabled,
-									(v) => this.setAutoRetry(v),
-								)}
-							</div>
-							<div class="settings-section">
-								<div class="settings-section-title">Message queue</div>
-								<div class="settings-row">
-									<div>
-										<div class="settings-label">Steering messages</div>
-										<div class="settings-desc">How queued steering messages are sent while a response is streaming.</div>
+						${runtimeControlsEnabled
+							? html`
+								<section class="settings-group">
+									<div class="settings-section">
+										<div class="settings-section-title">Assistant</div>
+										${this.renderToggle(
+											"Auto-compaction",
+											"Summarize older context automatically when conversations get long.",
+											this.state.autoCompactionEnabled,
+											(v) => this.setAutoCompaction(v),
+										)}
+										${this.renderToggle(
+											"Auto-retry",
+											"Retry temporary provider errors automatically.",
+											this.state.autoRetryEnabled,
+											(v) => this.setAutoRetry(v),
+										)}
 									</div>
-									<select class="settings-select" .value=${this.state.steeringMode} @change=${(e: Event) => this.setSteeringMode((e.target as HTMLSelectElement).value as QueueMode)}>
-										<option value="one-at-a-time">One at a time</option>
-										<option value="all">All queued</option>
-									</select>
-								</div>
-								<div class="settings-row">
-									<div>
-										<div class="settings-label">Follow-up messages</div>
-										<div class="settings-desc">How queued follow-up prompts are sent after each run.</div>
+									<div class="settings-section">
+										<div class="settings-section-title">Message queue</div>
+										<div class="settings-row">
+											<div>
+												<div class="settings-label">Steering messages</div>
+												<div class="settings-desc">How queued steering messages are sent while a response is streaming.</div>
+											</div>
+											<select class="settings-select" .value=${this.state.steeringMode} @change=${(e: Event) => this.setSteeringMode((e.target as HTMLSelectElement).value as QueueMode)}>
+												<option value="one-at-a-time">One at a time</option>
+												<option value="all">All queued</option>
+											</select>
+										</div>
+										<div class="settings-row">
+											<div>
+												<div class="settings-label">Follow-up messages</div>
+												<div class="settings-desc">How queued follow-up prompts are sent after each run.</div>
+											</div>
+											<select class="settings-select" .value=${this.state.followUpMode} @change=${(e: Event) => this.setFollowUpMode((e.target as HTMLSelectElement).value as QueueMode)}>
+												<option value="one-at-a-time">One at a time</option>
+												<option value="all">All queued</option>
+											</select>
+										</div>
 									</div>
-									<select class="settings-select" .value=${this.state.followUpMode} @change=${(e: Event) => this.setFollowUpMode((e.target as HTMLSelectElement).value as QueueMode)}>
-										<option value="one-at-a-time">One at a time</option>
-										<option value="all">All queued</option>
-									</select>
-								</div>
-							</div>
-						</section>
+								</section>
 
-						<section class="settings-group">
-							<div class="settings-section">
-								<div class="settings-section-title">Account</div>
-								${this.authLoading
-									? html`<div class="settings-desc">Checking account status…</div>`
-									: html`
-										<div class="settings-desc">
-											${authProviders.length > 0
-												? `Connected providers: ${authProviders.length}`
-												: "No provider connected yet."}
-										</div>
-										<div class="settings-actions">
-											<button class="ghost-btn" @click=${() => this.refreshAuthStatus()}>Refresh account status</button>
-										</div>
-										${authProviders.length > 0
-											? html`
-												<div class="account-chips">
-													${authProviders.map((p) => html`<span class="account-chip">${p.provider} · ${p.source === "environment" ? "env" : p.kind}</span>`)}
+								<section class="settings-group">
+									<div class="settings-section">
+										<div class="settings-section-title">Account</div>
+										${this.authLoading
+											? html`<div class="settings-desc">Checking account status…</div>`
+											: html`
+												<div class="settings-desc">
+													${authProviders.length > 0
+														? `Connected providers: ${authProviders.length}`
+														: "No provider connected yet."}
 												</div>
-											`
-											: null}
-										<div class="settings-desc">Tip: run <code>/login</code> in terminal once, then restart desktop.</div>
-										${this.authStatus?.auth_file
-											? html`
-												<details class="settings-advanced">
-													<summary>Advanced account details</summary>
-													<div class="settings-desc">Auth file: <code>${this.authStatus.auth_file}</code></div>
-												</details>
-											`
-											: null}
-									`}
-							</div>
-							<div class="settings-section">
-								<div class="settings-section-title">Package configuration</div>
-								<div class="settings-desc">Package-specific settings are managed in <strong>Packages</strong> (gear icon on installed packages).</div>
-								<div class="settings-desc">Desktop stays capability-driven: packages can expose config commands, and those run via the normal chat/runtime flow.</div>
-							</div>
-						</section>
+												<div class="settings-actions">
+													<button class="ghost-btn" @click=${() => this.refreshAuthStatus()}>Refresh account status</button>
+												</div>
+												${authProviders.length > 0
+													? html`
+														<div class="account-chips">
+															${authProviders.map((p) => html`<span class="account-chip">${p.provider} · ${p.source === "environment" ? "env" : p.kind}</span>`)}
+														</div>
+													`
+													: null}
+												<div class="settings-desc">Tip: run <code>/login</code> in terminal once, then restart desktop.</div>
+												${this.authStatus?.auth_file
+													? html`
+														<details class="settings-advanced">
+															<summary>Advanced account details</summary>
+															<div class="settings-desc">Auth file: <code>${this.authStatus.auth_file}</code></div>
+														</details>
+													`
+													: null}
+											`}
+									</div>
+									<div class="settings-section">
+										<div class="settings-section-title">Package configuration</div>
+										<div class="settings-desc">Package-specific settings are managed in <strong>Packages</strong> (gear icon on installed packages).</div>
+										<div class="settings-desc">Desktop stays capability-driven: packages can expose config commands, and those run via the normal chat/runtime flow.</div>
+									</div>
+								</section>
+							`
+							: html`
+								<section class="settings-group">
+									<div class="settings-section">
+										<div class="settings-section-title">Runtime</div>
+										<div class="settings-desc">Open a project to enable assistant runtime, account, and compatibility settings.</div>
+									</div>
+								</section>
+							`}
 
 						<section class="settings-group settings-group-full">
 							<div class="settings-section">
@@ -1310,25 +1344,29 @@ export class SettingsPanel {
 									</button>
 								</div>
 								${this.cliActionMessage ? html`<div class="settings-desc">${this.cliActionMessage}</div>` : null}
-								<details class="settings-advanced">
-									<summary>Advanced CLI diagnostics</summary>
-									<div class="settings-desc">Discovery: <code>${this.cliStatus?.discovery || rpcBridge.discoveryInfo || "unknown"}</code></div>
-									${this.cliStatus?.update_command ? html`<div class="settings-desc">Manual update: <code>${this.cliStatus.update_command}</code></div>` : null}
-									<div class="settings-actions">
-										<button class="ghost-btn" ?disabled=${this.compatibilityLoading} @click=${() => this.refreshCompatibilityStatus()}>
-											${this.compatibilityLoading ? "Checking RPC…" : "Run RPC compatibility check"}
-										</button>
-									</div>
-									${this.compatibilityReport
-										? html`
-											<div class="settings-desc">
-												RPC compatibility: ${this.compatibilityReport.ok ? "OK" : "Failed"}
-												${compatibilityChecks.length > 0 ? html` (${compatibilityChecks.join(", ")})` : null}
+								${runtimeControlsEnabled
+									? html`
+										<details class="settings-advanced">
+											<summary>Advanced CLI diagnostics</summary>
+											<div class="settings-desc">Discovery: <code>${this.cliStatus?.discovery || rpcBridge.discoveryInfo || "unknown"}</code></div>
+											${this.cliStatus?.update_command ? html`<div class="settings-desc">Manual update: <code>${this.cliStatus.update_command}</code></div>` : null}
+											<div class="settings-actions">
+												<button class="ghost-btn" ?disabled=${this.compatibilityLoading} @click=${() => this.refreshCompatibilityStatus()}>
+													${this.compatibilityLoading ? "Checking RPC…" : "Run RPC compatibility check"}
+												</button>
 											</div>
-											${this.compatibilityReport.error ? html`<div class="settings-desc">${this.compatibilityReport.error}</div>` : null}
-										`
-										: null}
-								</details>
+											${this.compatibilityReport
+												? html`
+													<div class="settings-desc">
+														RPC compatibility: ${this.compatibilityReport.ok ? "OK" : "Failed"}
+														${compatibilityChecks.length > 0 ? html` (${compatibilityChecks.join(", ")})` : null}
+													</div>
+													${this.compatibilityReport.error ? html`<div class="settings-desc">${this.compatibilityReport.error}</div>` : null}
+												`
+												: null}
+										</details>
+									`
+									: html`<div class="settings-desc">Runtime diagnostics become available after opening a project.</div>`}
 							</div>
 						</section>
 					</div>
