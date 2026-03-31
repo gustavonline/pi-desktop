@@ -4285,13 +4285,15 @@ body.sidebar-resizing {
 	height: 100%;
 	width: 100%;
 	background: var(--bg);
+	--composer-offset: 196px;
 }
 
 .chat-scroll {
 	flex: 1;
 	min-height: 0;
 	overflow-y: auto;
-	padding: 24px 0 192px;
+	overflow-x: hidden;
+	padding: 24px 0 calc(var(--composer-offset, 196px) + 10px);
 	scrollbar-gutter: stable;
 }
 
@@ -4299,7 +4301,7 @@ body.sidebar-resizing {
 	position: absolute;
 	left: 50%;
 	transform: translateX(-50%);
-	bottom: 194px;
+	bottom: calc(var(--composer-offset, 196px) + 2px);
 	width: 32px;
 	height: 32px;
 	padding: 0;
@@ -4457,6 +4459,8 @@ body.sidebar-resizing {
 	font-size: 13px;
 	line-height: 1.5;
 	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	word-break: break-word;
 }
 
 .attachment-grid {
@@ -4489,6 +4493,8 @@ body.sidebar-resizing {
 	font-size: 14px;
 	line-height: 1.62;
 	color: color-mix(in srgb, var(--text) 92%, var(--muted));
+	overflow-wrap: anywhere;
+	word-break: break-word;
 }
 
 :root.light .assistant-content {
@@ -4946,109 +4952,238 @@ body.sidebar-resizing {
 	}
 }
 
-.tool-card {
-	margin-top: 10px;
-	background: color-mix(in srgb, var(--bg-soft) 34%, transparent);
-	border: none;
-	border-radius: 10px;
-	overflow: hidden;
+.tool-workflow {
+	margin: 6px 0 10px;
 }
 
-:root.light .tool-card {
-	background: color-mix(in srgb, var(--bg-soft) 82%, #fff 18%);
-}
-
-.tool-header {
+.tool-workflow-summary {
 	width: 100%;
-	height: 30px;
-	padding: 0 10px;
-	display: flex;
-	align-items: center;
-	gap: 8px;
 	border: none;
 	background: transparent;
-	color: color-mix(in srgb, var(--text) 90%, var(--muted));
-	font-size: 12px;
+	padding: 0;
+	display: grid;
+	grid-template-columns: 1fr auto auto auto 1fr;
+	align-items: center;
+	gap: 10px;
 	cursor: pointer;
+	color: color-mix(in srgb, var(--text) 76%, var(--muted));
 }
 
-.tool-header:hover {
-	background: color-mix(in srgb, var(--bg-soft) 70%, transparent);
+.workflow-divider {
+	height: 1px;
+	background: color-mix(in srgb, var(--border) 66%, transparent);
 }
 
-.status-dot {
-	width: 8px;
-	height: 8px;
-	border-radius: 999px;
-	flex-shrink: 0;
-}
-
-.status-dot.status-running {
-	background: var(--accent);
-	animation: pulseDot 1.2s ease-in-out infinite;
-}
-
-.status-dot.status-error {
-	background: var(--danger);
-}
-
-.status-dot.status-ok {
-	background: var(--success);
-}
-
-@keyframes pulseDot {
-	0%,
-	100% {
-		opacity: 1;
-	}
-	50% {
-		opacity: 0.3;
-	}
-}
-
-.tool-name {
-	font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+.workflow-summary-label {
 	font-size: 11px;
-	font-weight: 600;
-	color: color-mix(in srgb, var(--text) 94%, var(--muted));
-}
-
-.tool-hint {
-	color: color-mix(in srgb, var(--muted) 86%, var(--text));
+	font-weight: 560;
+	color: color-mix(in srgb, var(--text) 82%, var(--muted));
 	white-space: nowrap;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	flex: 1;
-	text-align: left;
-	font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-	font-size: 10px;
 }
 
-.tool-chevron {
+.workflow-summary-meta {
+	font-size: 11px;
+	color: color-mix(in srgb, var(--muted) 90%, var(--text));
+	white-space: nowrap;
+}
+
+.workflow-summary-caret {
+	font-size: 11px;
 	color: color-mix(in srgb, var(--muted) 88%, var(--text));
 }
 
-.tool-output {
-	margin: 0;
-	padding: 8px 12px 10px;
-	background: color-mix(in srgb, var(--bg-elev) 28%, transparent);
-	border-top: none;
+.tool-workflow-summary:hover .workflow-summary-label,
+.tool-workflow-summary:hover .workflow-summary-meta {
+	color: color-mix(in srgb, var(--text) 90%, var(--muted));
+}
+
+.tool-workflow-list {
+	margin-top: 8px;
+	display: grid;
+	gap: 2px;
+}
+
+.tool-workflow-item {
+	border-radius: 8px;
+}
+
+.tool-workflow-line {
+	width: 100%;
+	border: none;
+	background: transparent;
+	padding: 5px 0;
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto auto auto;
+	align-items: center;
+	gap: 8px;
+	cursor: pointer;
+	text-align: left;
+}
+
+.tool-workflow-line:hover {
+	color: var(--text);
+}
+
+.tool-workflow-line-text {
+	font-size: 12px;
+	color: color-mix(in srgb, var(--text) 74%, var(--muted));
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.tool-workflow-count {
 	font-size: 11px;
-	line-height: 1.45;
+	color: color-mix(in srgb, var(--muted) 88%, var(--text));
+	font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.tool-workflow-state {
+	font-size: 10px;
+	text-transform: lowercase;
+	letter-spacing: 0.01em;
+}
+
+.tool-workflow-state.running {
+	color: var(--accent);
+}
+
+.tool-workflow-state.error {
+	color: var(--danger);
+}
+
+.tool-workflow-state.done {
+	color: color-mix(in srgb, var(--success) 78%, var(--text));
+}
+
+.tool-workflow-caret {
+	font-size: 11px;
+	color: color-mix(in srgb, var(--muted) 86%, var(--text));
+}
+
+.tool-workflow-details {
+	margin: 4px 0 6px;
+	padding: 0 0 0 8px;
+	display: grid;
+	gap: 8px;
+	border-left: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+}
+
+.tool-workflow-detail-label {
+	font-size: 10px;
+	color: var(--muted);
+	text-transform: uppercase;
+	letter-spacing: 0.07em;
+	margin-bottom: 4px;
+}
+
+.tool-workflow-output {
+	margin: 0;
+	padding: 8px 10px;
+	background: color-mix(in srgb, var(--bg-muted) 56%, transparent);
+	border-radius: 8px;
+	font-size: 11px;
+	line-height: 1.42;
 	white-space: pre-wrap;
 	color: color-mix(in srgb, var(--text) 78%, var(--muted));
-	max-height: 360px;
+	max-height: 260px;
 	overflow: auto;
 }
 
-.tool-output.tool-output-empty {
+.tool-output-empty {
 	font-style: italic;
 	color: color-mix(in srgb, var(--muted) 90%, var(--text));
 }
 
-:root.light .tool-output {
-	background: color-mix(in srgb, var(--bg-elev) 70%, transparent);
-	color: color-mix(in srgb, var(--text) 74%, var(--muted));
+.assistant-final-divider {
+	margin: 8px 0 10px;
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	color: color-mix(in srgb, var(--text) 72%, var(--muted));
+	font-size: 12px;
+}
+
+.assistant-final-divider::before,
+.assistant-final-divider::after {
+	content: "";
+	height: 1px;
+	background: color-mix(in srgb, var(--border) 64%, transparent);
+	flex: 1;
+}
+
+.compaction-row {
+	margin-top: 8px;
+}
+
+.compaction-card {
+	width: min(720px, 100%);
+	border-radius: 10px;
+	background: color-mix(in srgb, var(--bg-elev) 82%, transparent);
+	border: 1px solid color-mix(in srgb, var(--border) 54%, transparent);
+	overflow: hidden;
+}
+
+.compaction-card.running {
+	border-color: color-mix(in srgb, var(--accent) 46%, var(--border));
+}
+
+.compaction-card.error {
+	border-color: color-mix(in srgb, var(--danger) 48%, var(--border));
+}
+
+.compaction-card.done {
+	border-color: color-mix(in srgb, var(--success) 38%, var(--border));
+}
+
+.compaction-header {
+	width: 100%;
+	border: none;
+	background: transparent;
+	padding: 8px 10px;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	cursor: pointer;
+	text-align: left;
+}
+
+.compaction-title {
+	font-size: 12px;
+	font-weight: 600;
+	color: color-mix(in srgb, var(--text) 84%, var(--muted));
+}
+
+.compaction-meta {
+	font-size: 11px;
+	color: var(--muted);
+	margin-left: auto;
+}
+
+.compaction-caret {
+	font-size: 11px;
+	color: color-mix(in srgb, var(--muted) 84%, var(--text));
+}
+
+.compaction-details {
+	padding: 0 10px 10px;
+	display: grid;
+	gap: 5px;
+}
+
+.compaction-summary {
+	font-size: 12px;
+	color: color-mix(in srgb, var(--text) 78%, var(--muted));
+}
+
+.compaction-error {
+	font-size: 12px;
+	color: color-mix(in srgb, var(--danger) 84%, var(--text));
+}
+
+.compaction-line {
+	font-size: 11px;
+	color: color-mix(in srgb, var(--muted) 86%, var(--text));
 }
 
 .system-row {
@@ -7252,6 +7387,13 @@ body.sidebar-resizing {
 markdown-block {
 	line-height: 1.62;
 	color: inherit;
+	overflow-wrap: anywhere;
+	word-break: break-word;
+}
+
+markdown-block :not(pre):not(code):not(code *) {
+	overflow-wrap: anywhere;
+	word-break: break-word;
 }
 
 markdown-block p {
@@ -7304,6 +7446,23 @@ markdown-block pre {
 markdown-block code-block > div {
 	background: color-mix(in srgb, var(--bg-soft) 34%, transparent);
 	border: none !important;
+}
+
+.assistant-content markdown-block code-block copy-button,
+markdown-block code-block copy-button {
+	opacity: 0;
+	pointer-events: none;
+	transition: opacity 0.14s ease;
+}
+
+.assistant-content markdown-block code-block:hover copy-button,
+.assistant-content markdown-block code-block:focus-within copy-button,
+.assistant-content markdown-block code-block copy-button:focus-within,
+markdown-block code-block:hover copy-button,
+markdown-block code-block:focus-within copy-button,
+markdown-block code-block copy-button:focus-within {
+	opacity: 1;
+	pointer-events: auto;
 }
 
 :root.light .assistant-content markdown-block code-block > div,

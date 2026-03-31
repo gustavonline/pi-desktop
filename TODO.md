@@ -9,15 +9,15 @@ Scope (deduped): **#49, #50, #52, #53, #54, #55, #63, #70, #72**
 ### A) Markdown/code rendering integrity + readability
 Issues: #49, #50, #54
 
-- [ ] #49 Ensure fenced code blocks always render in chat and file markdown contexts.
-  - [ ] Verify `CodeBlock` component registration/import in all markdown hosts.
+- [x] #49 Ensure fenced code blocks always render in chat and file markdown contexts.
+  - [x] Verify `CodeBlock` component registration/import in all markdown hosts.
   - [ ] Add regression check for language-tagged and plain fenced blocks.
-- [ ] #50 Make code-block copy actions hover/focus-only (keyboard accessible).
-  - [ ] No layout jump when action appears.
-  - [ ] Keep inline code behavior unchanged.
-- [ ] #54 Remove chat-level horizontal overflow for normal text flow.
-  - [ ] Add robust wrapping (`overflow-wrap`) for long tokens/pasted formatted text.
-  - [ ] Preserve horizontal scroll only inside code blocks.
+- [x] #50 Make code-block copy actions hover/focus-only (keyboard accessible).
+  - [x] No layout jump when action appears.
+  - [x] Keep inline code behavior unchanged.
+- [x] #54 Remove chat-level horizontal overflow for normal text flow.
+  - [x] Add robust wrapping (`overflow-wrap`) for long tokens/pasted formatted text.
+  - [x] Preserve horizontal scroll only inside code blocks.
 
 Acceptance gate:
 - [ ] No missing code blocks
@@ -27,14 +27,14 @@ Acceptance gate:
 ### B) Chat canvas tool/compaction noise reduction
 Issues: #52, #55, #72
 
-- [ ] #52 Compact tool rows by default with meaningful action preview text.
-  - [ ] Progressive disclosure for full details.
-  - [ ] Group repeated consecutive same-tool runs (`tool × N`).
-- [ ] #55 Use a single collapsible compaction status element per cycle.
-  - [ ] State transitions in-place (`running -> done -> error`) with no duplicate blocks.
-- [ ] #72 Investigate/fix weird tool result rows after steer message.
+- [x] #52 Compact tool rows by default with meaningful action preview text.
+  - [x] Progressive disclosure for full details.
+  - [x] Group repeated consecutive same-tool runs (`tool × N`).
+- [x] #55 Use a single collapsible compaction status element per cycle.
+  - [x] State transitions in-place (`running -> done -> error`) with no duplicate blocks.
+- [x] #72 Investigate/fix weird tool result rows after steer message.
   - [ ] Reproduce from screenshot scenario.
-  - [ ] Add guard/normalization for post-steer tool event/result mapping.
+  - [x] Add guard/normalization for post-steer tool event/result mapping.
 
 Acceptance gate:
 - [ ] Assistant text remains dominant in tool-heavy runs
@@ -44,12 +44,12 @@ Acceptance gate:
 ### C) Composer/scroll/actions behavior
 Issues: #53, #70
 
-- [ ] #53 Dynamic composer offset so latest content is always visible.
-  - [ ] Measure composer with `ResizeObserver`.
-  - [ ] Drive chat bottom padding and jump-to-latest offset via CSS variable.
+- [x] #53 Dynamic composer offset so latest content is always visible.
+  - [x] Measure composer with `ResizeObserver`.
+  - [x] Drive chat bottom padding and jump-to-latest offset via CSS variable.
 - [ ] #70 Audit slash actions (`/`) and keep only meaningful chat-surface actions.
   - [ ] Verify `/compact` and other supported actions are functional.
-  - [ ] Remove/disable slash actions already covered by better UX entrypoints.
+  - [x] Remove/disable slash actions already covered by better UX entrypoints.
 
 Acceptance gate:
 - [ ] Bottom-most assistant content never hidden by tall composer
@@ -64,10 +64,10 @@ Issue: #63 (umbrella)
 
 ### Execution order (recommended PR slicing)
 
-- [ ] PR-1: Rendering integrity baseline (#49, #54)
-- [ ] PR-2: Code block UX polish (#50)
-- [ ] PR-3: Composer offset + scroll correctness (#53)
-- [ ] PR-4: Tool/compaction timeline cleanup (#52, #55, #72)
+- [x] PR-1: Rendering integrity baseline (#49, #54)
+- [x] PR-2: Code block UX polish (#50)
+- [x] PR-3: Composer offset + scroll correctness (#53)
+- [x] PR-4: Tool/compaction timeline cleanup (#52, #55, #72)
 - [ ] PR-5: Slash action audit/cleanup (#70)
 - [ ] PR-6: #63 rollout summary + visual QA pass
 

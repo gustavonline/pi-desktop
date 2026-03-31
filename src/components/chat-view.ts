@@ -2,6 +2,7 @@
  * ChatView - rich RPC chat surface for Pi Desktop
  */
 
+import "@mariozechner/mini-lit/dist/CodeBlock.js";
 import "@mariozechner/mini-lit/dist/MarkdownBlock.js";
 import { html, nothing, render, type TemplateResult } from "lit";
 import {
@@ -33,6 +34,8 @@ interface ToolCallBlock {
 	isError?: boolean;
 	isRunning: boolean;
 	isExpanded: boolean;
+	startedAt?: number;
+	endedAt?: number;
 }
 
 interface UiMessage {
@@ -130,6 +133,24 @@ interface SlashPaletteItem {
 	skillName?: string;
 }
 
+interface ToolCallGroup {
+	id: string;
+	toolName: string;
+	preview: string;
+	calls: ToolCallBlock[];
+}
+
+interface CompactionCycleState {
+	id: string;
+	status: "running" | "done" | "aborted" | "error";
+	startedAt: number;
+	endedAt: number | null;
+	summary: string;
+	errorMessage: string | null;
+	details: string[];
+	expanded: boolean;
+}
+
 function uid(prefix = "id"): string {
 	return `${prefix}_${Math.random().toString(36).slice(2, 8)}_${Date.now().toString(36)}`;
 }
@@ -164,6 +185,16 @@ function formatAge(ts: number): string {
 	if (diff < hour) return `${Math.floor(diff / minute)}m ago`;
 	if (diff < day) return `${Math.floor(diff / hour)}h ago`;
 	return `${Math.floor(diff / day)}d ago`;
+}
+
+function formatDuration(ms: number): string {
+	const totalSeconds = Math.max(1, Math.round(ms / 1000));
+	const hours = Math.floor(totalSeconds / 3600);
+	const minutes = Math.floor((totalSeconds % 3600) / 60);
+	const seconds = totalSeconds % 60;
+	if (hours > 0) return `${hours}h ${minutes}m`;
+	if (minutes > 0) return `${minutes}m ${seconds}s`;
+	return `${seconds}s`;
 }
 
 function readNumberPath(source: Record<string, unknown>, path: string): number | null {
@@ -387,7 +418,7 @@ export class ChatView {
 	private notices: Notice[] = [];
 	private allThinkingExpanded = false;
 	private retryStatus = "";
-	private compactionStatus = "";
+	private compactionCycle: CompactionCycleState | null = null;
 	private lastRuntimeNoticeSignature = "";
 	private lastRuntimeNoticeAt = 0;
 	private pendingDeliveryMode: DeliveryMode = "prompt";
@@ -405,6 +436,7 @@ export class ChatView {
 	private historyQuery = "";
 	private historyRoleFilter: UiRole | "all" = "all";
 	private autoFollowChat = true;
+	private expandedToolWorkflowMessageIds = new Set<string>();
 	private selectedSkillDraft: ComposerSkillDraft | null = null;
 	private slashPaletteOpen = false;
 	private slashPaletteQuery = "";
@@ -437,6 +469,9 @@ export class ChatView {
 	private workingStatusTimer: ReturnType<typeof setTimeout> | null = null;
 	private disconnectNoticeTimer: ReturnType<typeof setTimeout> | null = null;
 	private streamingReconcileTimer: ReturnType<typeof setTimeout> | null = null;
+	private composerResizeObserver: ResizeObserver | null = null;
+	private observedComposerElement: HTMLElement | null = null;
+	private composerOffsetPx = 196;
 	private sessionStats: SessionStatsSummary = {
 		tokens: null,
 		lifetimeTokens: null,
@@ -545,6 +580,8 @@ export class ChatView {
 		this.slashPaletteQuery = "";
 		this.slashPaletteIndex = 0;
 		this.slashSkillsUpdatedAt = 0;
+		this.expandedToolWorkflowMessageIds.clear();
+		this.compactionCycle = null;
 		if (!path) {
 			this.bindingStatusText = null;
 			this.welcomeHeadlineIndex = (this.welcomeHeadlineIndex + 1) % this.welcomeHeadlines.length;
@@ -573,6 +610,8 @@ export class ChatView {
 		this.slashPaletteOpen = false;
 		this.slashPaletteQuery = "";
 		this.slashPaletteIndex = 0;
+		this.expandedToolWorkflowMessageIds.clear();
+		this.compactionCycle = null;
 		this.runHasAssistantText = false;
 		this.clearWorkingStatusTimer(true);
 		this.bindingStatusText = projectPath ? (statusText ?? "Loading session…") : null;
@@ -753,7 +792,6 @@ export class ChatView {
 			{ id: "action:rename-session", section: "Actions" as const, label: "Rename session", hint: "Rename current session" },
 			{ id: "action:open-terminal", section: "Actions" as const, label: "Open terminal", hint: "Switch to terminal pane" },
 			{ id: "action:compact", section: "Actions" as const, label: "Compact context", hint: "Run session compaction now" },
-			{ id: "action:fork", section: "Actions" as const, label: "Fork from message", hint: "Create fork from session history" },
 			{ id: "action:history", section: "Actions" as const, label: "Open history", hint: "Browse current session history" },
 			{ id: "action:copy-last", section: "Actions" as const, label: "Copy last answer", hint: "Copy latest assistant response" },
 			{ id: "action:export-html", section: "Actions" as const, label: "Export HTML", hint: "Export conversation to HTML" },
@@ -818,9 +856,6 @@ export class ChatView {
 				return;
 			case "action:compact":
 				void this.compactNow();
-				return;
-			case "action:fork":
-				this.openHistoryViewerForFork({ loading: false, sessionName: this.state?.sessionName ?? null });
 				return;
 			case "action:history":
 				this.openHistoryViewer();
@@ -944,6 +979,9 @@ export class ChatView {
 		}
 		this.nativeFileDropUnlisteners = [];
 		this.unbindModelPickerGlobalListeners();
+		this.composerResizeObserver?.disconnect();
+		this.composerResizeObserver = null;
+		this.observedComposerElement = null;
 	}
 
 	async refreshFromBackend(options: { throwOnError?: boolean } = {}): Promise<void> {
@@ -978,6 +1016,7 @@ export class ChatView {
 			this.lastBackendRefreshError = null;
 			this.onStateChange?.(state);
 			this.messages = this.mapBackendMessages(backendMessages);
+			this.expandedToolWorkflowMessageIds.clear();
 			this.forkEntryIdByMessageId.clear();
 			this.lastAssistantContextTokens = this.deriveLatestAssistantContextTokens(backendMessages);
 			if (state.isStreaming) {
@@ -1080,6 +1119,8 @@ export class ChatView {
 								args: (p.arguments as Record<string, unknown>) ?? {},
 								isRunning: false,
 								isExpanded: false,
+								startedAt: pickNumber(p, ["startedAt", "startTime", "timestamp", "ts"]) ?? undefined,
+								endedAt: pickNumber(p, ["endedAt", "endTime"]) ?? undefined,
 							};
 							toolCalls.push(tc);
 							toolCallMap.set(tc.id, tc);
@@ -1107,15 +1148,32 @@ export class ChatView {
 						tool.isError = isError;
 						tool.isRunning = false;
 						tool.isExpanded = false;
+						tool.endedAt = Date.now();
+						if (!tool.startedAt) tool.startedAt = tool.endedAt;
 					} else {
-						mapped.push({
-							id: uid("toolResult"),
-							sessionEntryId,
-							role: "system",
-							text: `Tool result${isError ? " (error)" : ""}:\n${content || "(no output)"}`,
-							label: "tool-result",
-							toolCalls: [],
-						});
+						const target = [...mapped].reverse().find((entry) => entry.role === "assistant");
+						if (target) {
+							target.toolCalls.push({
+								id: toolCallId || uid("tc"),
+								name: (typeof raw.toolName === "string" && raw.toolName.trim().length > 0 ? raw.toolName : "tool") as string,
+								args: {},
+								result: content || "(no output)",
+								isError,
+								isRunning: false,
+								isExpanded: false,
+								startedAt: Date.now(),
+								endedAt: Date.now(),
+							});
+						} else {
+							mapped.push({
+								id: uid("toolResult"),
+								sessionEntryId,
+								role: "system",
+								text: `Tool result${isError ? " (error)" : ""}:\n${content || "(no output)"}`,
+								label: "tool-result",
+								toolCalls: [],
+							});
+						}
 					}
 					break;
 				}
@@ -2267,14 +2325,10 @@ export class ChatView {
 						tool.isRunning = false;
 						tool.streamingOutput = undefined;
 						tool.isExpanded = false;
+						tool.endedAt = Date.now();
+						if (!tool.startedAt) tool.startedAt = tool.endedAt;
 					} else {
-						this.messages.push({
-							id: uid("toolResult"),
-							role: "system",
-							text: `Tool result${isError ? " (error)" : ""}:\n${output || "(no output)"}`,
-							label: "tool-result",
-							toolCalls: [],
-						});
+						this.attachOrphanToolResult(toolName, output, isError);
 					}
 					this.render();
 					this.scrollToBottom();
@@ -2326,6 +2380,8 @@ export class ChatView {
 							existing.args = ((tc.arguments ?? existing.args) as Record<string, unknown>) || existing.args;
 							existing.isRunning = true;
 							existing.isExpanded = false;
+							existing.startedAt = existing.startedAt ?? Date.now();
+							existing.endedAt = undefined;
 						} else {
 							last.toolCalls.push({
 								id,
@@ -2333,6 +2389,7 @@ export class ChatView {
 								args: ((tc.arguments ?? {}) as Record<string, unknown>) || {},
 								isRunning: true,
 								isExpanded: false,
+								startedAt: Date.now(),
 							});
 						}
 						this.render();
@@ -2379,6 +2436,8 @@ export class ChatView {
 				if (tool) {
 					tool.isRunning = true;
 					tool.isExpanded = false;
+					tool.startedAt = tool.startedAt ?? Date.now();
+					tool.endedAt = undefined;
 					this.render();
 				}
 				break;
@@ -2420,29 +2479,75 @@ export class ChatView {
 					tool.result = tool.result || "(no output)";
 				}
 				tool.isExpanded = false;
+				tool.endedAt = Date.now();
+				if (!tool.startedAt) tool.startedAt = tool.endedAt;
 				this.render();
 				this.scrollToBottom();
 				break;
 			}
 
 			case "auto_compaction_start": {
-				this.compactionStatus = "Compacting context…";
-				this.appendRuntimeSystemLine("Compacting context…");
+				this.compactionCycle = {
+					id: uid("compaction"),
+					status: "running",
+					startedAt: Date.now(),
+					endedAt: null,
+					summary: "Compacting context…",
+					errorMessage: null,
+					details: ["Compaction started"],
+					expanded: true,
+				};
+				this.render();
+				break;
+			}
+
+			case "auto_compaction_update":
+			case "auto_compaction_progress": {
+				if (!this.compactionCycle) break;
+				const detail =
+					pickString(event, ["message", "status", "phase", "step", "detail"]) ||
+					this.extractToolOutput(event.detail ?? event.payload ?? event).trim();
+				if (detail) {
+					const cleaned = truncate(detail.replace(/\s+/g, " ").trim(), 220);
+					if (cleaned && this.compactionCycle.details[this.compactionCycle.details.length - 1] !== cleaned) {
+						this.compactionCycle.details.push(cleaned);
+					}
+				}
 				this.render();
 				break;
 			}
 
 			case "auto_compaction_end": {
-				this.compactionStatus = "";
 				const aborted = Boolean(event.aborted);
 				const errorMessage = this.extractRuntimeErrorMessage(event);
+				if (!this.compactionCycle) {
+					this.compactionCycle = {
+						id: uid("compaction"),
+						status: "running",
+						startedAt: Date.now(),
+						endedAt: null,
+						summary: "Compacting context…",
+						errorMessage: null,
+						details: [],
+						expanded: true,
+					};
+				}
+				this.compactionCycle.endedAt = Date.now();
 				if (aborted) {
-					this.appendRuntimeSystemLine("Auto-compaction aborted");
+					this.compactionCycle.status = "aborted";
+					this.compactionCycle.summary = "Compaction aborted";
+					this.compactionCycle.details.push("Compaction was aborted before completion.");
 					this.pushNotice("Auto-compaction aborted", "info");
 				} else if (errorMessage) {
+					this.compactionCycle.status = "error";
+					this.compactionCycle.summary = "Compaction failed";
+					this.compactionCycle.errorMessage = truncate(errorMessage, 220);
+					this.compactionCycle.details.push(`Failure: ${truncate(errorMessage, 220)}`);
 					this.pushRuntimeNotice(`Auto-compaction failed: ${truncate(errorMessage, 180)}`, "error", 2600);
 				} else {
-					this.appendRuntimeSystemLine("Auto-compaction complete");
+					this.compactionCycle.status = "done";
+					this.compactionCycle.summary = "Compaction complete";
+					this.compactionCycle.details.push("Compaction completed successfully.");
 					this.pushNotice("Auto-compaction complete", "success");
 				}
 				this.render();
@@ -2556,6 +2661,39 @@ export class ChatView {
 			}
 		}
 		return null;
+	}
+
+	private findMostRecentAssistantMessage(): UiMessage | null {
+		for (let i = this.messages.length - 1; i >= 0; i--) {
+			const message = this.messages[i];
+			if (message.role === "assistant") return message;
+		}
+		return null;
+	}
+
+	private attachOrphanToolResult(toolName: string, output: string, isError: boolean): void {
+		const assistantMessage = this.findMostRecentAssistantMessage();
+		if (!assistantMessage) {
+			this.messages.push({
+				id: uid("toolResult"),
+				role: "system",
+				text: `Tool result${isError ? " (error)" : ""}:\n${output || "(no output)"}`,
+				label: "tool-result",
+				toolCalls: [],
+			});
+			return;
+		}
+		assistantMessage.toolCalls.push({
+			id: uid("tc"),
+			name: toolName || "tool",
+			args: {},
+			result: output || "(no output)",
+			isError,
+			isRunning: false,
+			isExpanded: false,
+			startedAt: Date.now(),
+			endedAt: Date.now(),
+		});
 	}
 
 	private pushNotice(text: string, kind: Notice["kind"]): void {
@@ -3037,6 +3175,12 @@ export class ChatView {
 			}
 		}
 		this.retryStatus = "";
+		if (this.compactionCycle?.status === "running") {
+			this.compactionCycle.status = "aborted";
+			this.compactionCycle.summary = "Compaction interrupted";
+			this.compactionCycle.endedAt = Date.now();
+			this.compactionCycle.details.push("Compaction was interrupted before completion.");
+		}
 		this.pendingDeliveryMode = "prompt";
 		this.runHasAssistantText = false;
 		this.onRunStateChange?.(false);
@@ -3320,6 +3464,38 @@ export class ChatView {
 		});
 	}
 
+	private updateComposerOffset(): void {
+		const chatRoot = this.container.querySelector<HTMLElement>(".chat-root");
+		if (!chatRoot) return;
+		const composer = this.container.querySelector<HTMLElement>(".composer-shell");
+		if (!this.projectPath || !composer) {
+			chatRoot.style.setProperty("--composer-offset", "196px");
+			this.composerOffsetPx = 196;
+			this.composerResizeObserver?.disconnect();
+			this.composerResizeObserver = null;
+			this.observedComposerElement = null;
+			return;
+		}
+
+		const apply = () => {
+			const measured = Math.max(140, Math.ceil(composer.getBoundingClientRect().height) + 18);
+			if (Math.abs(measured - this.composerOffsetPx) < 2) return;
+			this.composerOffsetPx = measured;
+			chatRoot.style.setProperty("--composer-offset", `${measured}px`);
+			if (this.autoFollowChat) this.scrollToBottom();
+		};
+
+		apply();
+		if (!this.composerResizeObserver) {
+			this.composerResizeObserver = new ResizeObserver(() => apply());
+		}
+		if (this.observedComposerElement !== composer) {
+			this.composerResizeObserver.disconnect();
+			this.composerResizeObserver.observe(composer);
+			this.observedComposerElement = composer;
+		}
+	}
+
 	private renderNotices(): TemplateResult | typeof nothing {
 		if (this.notices.length === 0) return nothing;
 		return html`
@@ -3509,32 +3685,136 @@ export class ChatView {
 		`;
 	}
 
-	private renderToolCall(tc: ToolCallBlock): TemplateResult {
-		const statusClass = tc.isRunning ? "status-running" : tc.isError ? "status-error" : "status-ok";
-		const titleHint = tc.name === "bash" && typeof tc.args.command === "string" ? (tc.args.command as string) : "";
-		const output = (tc.streamingOutput ?? tc.result ?? "").trimEnd();
-		const hasOutput = output.length > 0;
-		const placeholder = tc.isRunning ? "Waiting for tool output…" : "No output reported.";
+	private pickToolArg(args: Record<string, unknown>, keys: string[]): string {
+		for (const key of keys) {
+			const value = args[key];
+			if (typeof value === "string" && value.trim().length > 0) return value.trim();
+		}
+		return "";
+	}
+
+	private summarizeToolCall(tc: ToolCallBlock): string {
+		const name = tc.name.trim().toLowerCase();
+		const command = this.pickToolArg(tc.args, ["command", "cmd", "shell", "script"]);
+		const path = this.pickToolArg(tc.args, ["path", "filePath", "targetPath", "from", "to"]);
+		const query = this.pickToolArg(tc.args, ["query", "pattern", "glob", "name"]);
+		if (name === "bash" && command) return `Ran ${truncate(command, 140)}`;
+		if ((name === "read" || name === "readfile") && path) return `Read ${truncate(path, 120)}`;
+		if ((name === "write" || name === "writefile") && path) return `Wrote ${truncate(path, 120)}`;
+		if (name === "edit" && path) return `Edited ${truncate(path, 120)}`;
+		if (name.includes("search") && query) return `Explored ${truncate(query, 120)}`;
+		if ((name === "list" || name.includes("ls")) && path) return `Explored ${truncate(path, 120)}`;
+		if (path) return `${tc.name} ${truncate(path, 120)}`;
+		return `Ran ${tc.name}`;
+	}
+
+	private buildToolCallGroups(toolCalls: ToolCallBlock[]): ToolCallGroup[] {
+		const groups: ToolCallGroup[] = [];
+		for (const tc of toolCalls) {
+			const preview = this.summarizeToolCall(tc);
+			const previous = groups[groups.length - 1];
+			if (previous && previous.toolName === tc.name && previous.preview === preview) {
+				previous.calls.push(tc);
+				continue;
+			}
+			groups.push({
+				id: `${tc.id}-group`,
+				toolName: tc.name,
+				preview,
+				calls: [tc],
+			});
+		}
+		return groups;
+	}
+
+	private isToolWorkflowExpanded(msg: UiMessage): boolean {
+		if (this.expandedToolWorkflowMessageIds.has(msg.id)) return true;
+		return msg.toolCalls.some((tc) => tc.isRunning);
+	}
+
+	private toggleToolWorkflowExpanded(msg: UiMessage): void {
+		if (this.isToolWorkflowExpanded(msg)) {
+			this.expandedToolWorkflowMessageIds.delete(msg.id);
+			for (const tc of msg.toolCalls) tc.isExpanded = false;
+		} else {
+			this.expandedToolWorkflowMessageIds.add(msg.id);
+		}
+		this.render();
+	}
+
+	private toggleToolCallGroupExpanded(group: ToolCallGroup): void {
+		const expanded = group.calls.some((tc) => tc.isExpanded);
+		for (const tc of group.calls) tc.isExpanded = !expanded;
+		this.render();
+	}
+
+	private renderToolWorkflow(msg: UiMessage): TemplateResult | typeof nothing {
+		if (msg.toolCalls.length === 0) return nothing;
+		const total = msg.toolCalls.length;
+		const running = msg.toolCalls.filter((tc) => tc.isRunning).length;
+		const failed = msg.toolCalls.filter((tc) => tc.isError).length;
+		const expanded = this.isToolWorkflowExpanded(msg);
+		const groups = this.buildToolCallGroups(msg.toolCalls);
+		const startedAt = msg.toolCalls.reduce((min, tc) => {
+			if (!tc.startedAt) return min;
+			return min === 0 ? tc.startedAt : Math.min(min, tc.startedAt);
+		}, 0);
+		const endedAt = msg.toolCalls.reduce((max, tc) => {
+			if (!tc.endedAt) return max;
+			return Math.max(max, tc.endedAt);
+		}, 0);
+		const duration = startedAt > 0 ? formatDuration((running > 0 ? Date.now() : Math.max(endedAt, startedAt)) - startedAt) : null;
+		const primaryLabel = running > 0 ? `Working with ${total} tool call${total === 1 ? "" : "s"}` : duration ? `Worked for ${duration}` : `Worked with ${total} tool call${total === 1 ? "" : "s"}`;
+		const secondaryLabel = running > 0 ? "in progress" : failed > 0 ? `${failed} failed` : `${total} complete`;
 
 		return html`
-			<div class="tool-card">
-				<button
-					class="tool-header"
-					@click=${() => {
-						tc.isExpanded = !tc.isExpanded;
-						this.render();
-					}}
-				>
-					<span class="status-dot ${statusClass}"></span>
-					<span class="tool-name">${tc.name}</span>
-					${titleHint ? html`<span class="tool-hint" title=${titleHint}>${truncate(titleHint, 56)}</span>` : nothing}
-					<span class="tool-chevron">${tc.isExpanded ? "▾" : "▸"}</span>
+			<div class="tool-workflow ${expanded ? "expanded" : ""}">
+				<button class="tool-workflow-summary" @click=${() => this.toggleToolWorkflowExpanded(msg)}>
+					<span class="workflow-divider" aria-hidden="true"></span>
+					<span class="workflow-summary-label">${primaryLabel}</span>
+					<span class="workflow-summary-meta">${secondaryLabel}</span>
+					<span class="workflow-summary-caret">${expanded ? "▾" : "▸"}</span>
+					<span class="workflow-divider" aria-hidden="true"></span>
 				</button>
-				${tc.isExpanded
+				${expanded
 					? html`
-						<pre class="tool-output ${hasOutput ? "" : "tool-output-empty"}">${hasOutput ? output : placeholder}${tc.isRunning
-							? html`<span class="streaming-inline"></span>`
-							: nothing}</pre>
+						<div class="tool-workflow-list">
+							${groups.map((group) => {
+								const count = group.calls.length;
+								const groupExpanded = group.calls.some((tc) => tc.isExpanded);
+								const groupRunning = group.calls.some((tc) => tc.isRunning);
+								const groupFailed = group.calls.some((tc) => tc.isError);
+								return html`
+									<div class="tool-workflow-item ${groupExpanded ? "expanded" : ""}">
+										<button class="tool-workflow-line" @click=${() => this.toggleToolCallGroupExpanded(group)}>
+											<span class="tool-workflow-line-text">${group.preview}</span>
+											${count > 1 ? html`<span class="tool-workflow-count">×${count}</span>` : nothing}
+											<span class="tool-workflow-state ${groupRunning ? "running" : groupFailed ? "error" : "done"}">${groupRunning ? "running" : groupFailed ? "failed" : "done"}</span>
+											<span class="tool-workflow-caret">${groupExpanded ? "▾" : "▸"}</span>
+										</button>
+										${groupExpanded
+											? html`
+												<div class="tool-workflow-details">
+													${group.calls.map((call, index) => {
+														const output = (call.streamingOutput ?? call.result ?? "").trimEnd();
+														const hasOutput = output.length > 0;
+														const placeholder = call.isRunning ? "Waiting for tool output…" : "No output reported.";
+														return html`
+															<div class="tool-workflow-detail-run">
+																${group.calls.length > 1 ? html`<div class="tool-workflow-detail-label">Run ${index + 1}</div>` : nothing}
+																<pre class="tool-workflow-output ${hasOutput ? "" : "tool-output-empty"}">${hasOutput ? output : placeholder}${call.isRunning
+																	? html`<span class="streaming-inline"></span>`
+																	: nothing}</pre>
+															</div>
+														`;
+													})}
+												</div>
+											`
+											: nothing}
+									</div>
+								`;
+							})}
+						</div>
 					`
 					: nothing}
 			</div>
@@ -3552,11 +3832,16 @@ export class ChatView {
 		const formattedErrorLine = errorLine
 			? (/^error\b[:\s-]*/i.test(errorLine) ? errorLine : `Error: ${errorLine}`)
 			: "";
+		const hasToolWorkflow = msg.toolCalls.length > 0;
 		return html`
 			<div class="chat-row assistant-row" data-message-id=${msg.id}>
 				<div class="message-shell assistant-message-shell">
 					<div class="assistant-block">
+						${hasToolWorkflow ? this.renderToolWorkflow(msg) : nothing}
 						${this.renderThinking(msg)}
+						${msg.text && hasToolWorkflow
+							? html`<div class="assistant-final-divider"><span>Final message</span></div>`
+							: nothing}
 						${msg.text
 							? html`
 								<div class="assistant-content ${msg.isStreaming ? "streaming-cursor" : ""}">
@@ -3565,7 +3850,6 @@ export class ChatView {
 							`
 							: nothing}
 						${formattedErrorLine ? html`<div class="assistant-error-line">${formattedErrorLine}</div>` : nothing}
-						${msg.toolCalls.map((tc) => this.renderToolCall(tc))}
 					</div>
 					<div class="message-actions">
 						${canCopy
@@ -3583,6 +3867,47 @@ export class ChatView {
 				<div class="system-message">
 					${msg.label ? html`<div class="system-label">${msg.label}</div>` : nothing}
 					<div class="system-text">${msg.text}</div>
+				</div>
+			</div>
+		`;
+	}
+
+	private renderCompactionCycle(): TemplateResult | typeof nothing {
+		if (!this.compactionCycle) return nothing;
+		const cycle = this.compactionCycle;
+		const completed = cycle.endedAt ?? Date.now();
+		const elapsed = formatDuration(completed - cycle.startedAt);
+		const statusText =
+			cycle.status === "running"
+				? "running"
+				: cycle.status === "error"
+					? "failed"
+					: cycle.status === "aborted"
+						? "aborted"
+						: "done";
+		return html`
+			<div class="chat-row system-row compaction-row" data-message-id=${cycle.id}>
+				<div class="compaction-card ${cycle.status}">
+					<button
+						class="compaction-header"
+						@click=${() => {
+							cycle.expanded = !cycle.expanded;
+							this.render();
+						}}
+					>
+						<span class="compaction-title">Context compaction</span>
+						<span class="compaction-meta">${elapsed} · ${statusText}</span>
+						<span class="compaction-caret">${cycle.expanded ? "▾" : "▸"}</span>
+					</button>
+					${cycle.expanded
+						? html`
+							<div class="compaction-details">
+								<div class="compaction-summary">${cycle.summary}</div>
+								${cycle.errorMessage ? html`<div class="compaction-error">${cycle.errorMessage}</div>` : nothing}
+								${cycle.details.map((line) => html`<div class="compaction-line">${line}</div>`)}
+							</div>
+						`
+						: nothing}
 				</div>
 			</div>
 		`;
@@ -4170,7 +4495,8 @@ export class ChatView {
 			this.slashPaletteIndex = slashItems.length - 1;
 		}
 		const connectivityStatus = this.bindingStatusText || (!this.isConnected && this.projectPath ? "RPC disconnected" : "");
-		const statusText = [connectivityStatus, this.compactionStatus, this.retryStatus].filter(Boolean).join(" · ");
+		const liveCompactionStatus = this.compactionCycle?.status === "running" ? "Compacting context…" : "";
+		const statusText = [connectivityStatus, liveCompactionStatus, this.retryStatus].filter(Boolean).join(" · ");
 		const ratio = Math.min(1, Math.max(0, this.sessionStats.usageRatio ?? 0));
 		const ratioPercent = `${Math.round(ratio * 100)}%`;
 		const ringRadius = 9;
@@ -4692,6 +5018,7 @@ export class ChatView {
 							: this.bindingStatusText
 								? this.renderBindingState()
 								: this.renderEmptyState()}
+					${hasProject ? this.renderCompactionCycle() : nothing}
 					${showWorkingIndicator ? this.renderWorkingIndicatorRow() : nothing}
 				</div>
 				${hasProject ? this.renderComposer() : nothing}
@@ -4704,6 +5031,7 @@ export class ChatView {
 
 		render(template, this.container);
 		this.scrollContainer = this.container.querySelector("#chat-scroll");
+		this.updateComposerOffset();
 	}
 
 	render(): void {

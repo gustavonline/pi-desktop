@@ -2,6 +2,7 @@
  * FileViewer - lightweight file surface (view + basic edit + draft create)
  */
 
+import "@mariozechner/mini-lit/dist/CodeBlock.js";
 import "@mariozechner/mini-lit/dist/MarkdownBlock.js";
 import { invoke } from "@tauri-apps/api/core";
 import { html, nothing, render } from "lit";
