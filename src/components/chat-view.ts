@@ -3723,7 +3723,7 @@ export class ChatView {
 	private renderThinking(msg: UiMessage): TemplateResult | typeof nothing {
 		if (!msg.thinking) return nothing;
 		const expanded = msg.thinkingExpanded ?? false;
-		const label = "thinking…";
+		const label = "Thinking…";
 		const toggleClass = `thinking-toggle ${msg.isStreaming ? "animating" : "done"}`;
 		const thinkingText = this.normalizeThinkingText(msg.thinking.replace(/^\s+/, ""));
 		if (!thinkingText) return nothing;
@@ -3855,6 +3855,14 @@ export class ChatView {
 		return html`${verb} <span class="tool-file-target">${target}</span>`;
 	}
 
+	private isThinkingOnlyAssistantMessage(message: UiMessage | undefined): boolean {
+		if (!message || message.role !== "assistant") return false;
+		if (message.toolCalls.length > 0) return false;
+		if (message.text.trim().length > 0) return false;
+		if ((message.errorText ?? "").trim().length > 0) return false;
+		return Boolean((message.thinking ?? "").trim());
+	}
+
 	private collectAssistantWorkflow(startIndex: number): {
 		workflow: {
 			id: string;
@@ -3878,6 +3886,14 @@ export class ChatView {
 		let sawTools = false;
 		let consumedFinalMessage = false;
 		let cursor = startIndex;
+
+		const leadingThinking: UiMessage[] = [];
+		for (let index = startIndex - 1; index >= 0; index -= 1) {
+			const candidate = this.messages[index];
+			if (!this.isThinkingOnlyAssistantMessage(candidate)) break;
+			leadingThinking.unshift(candidate);
+		}
+		grouped.push(...leadingThinking);
 
 		while (cursor < this.messages.length) {
 			const candidate = this.messages[cursor];
@@ -3937,8 +3953,7 @@ export class ChatView {
 			.map((entry) => (entry.errorText ?? "").trim())
 			.filter(Boolean)
 			.join("\n");
-		const firstId = grouped[0]?.id ?? uid("workflow");
-		const workflowId = `workflow-${firstId}`;
+		const workflowId = `workflow-${start.id}`;
 
 		const nextIndex = Math.max(startIndex + 1, cursor);
 		return {
@@ -4016,9 +4031,9 @@ export class ChatView {
 								${workflow.thinkingText
 									? html`
 										<div class="tool-workflow-thinking">
-											<button class="tool-workflow-thinking-toggle ${autoExpanded ? "animating" : "done"}" @click=${() => this.toggleWorkflowThinkingExpanded(workflow.id)}>
+											<button class="tool-workflow-thinking-toggle ${running > 0 ? "animating" : "done"}" @click=${() => this.toggleWorkflowThinkingExpanded(workflow.id)}>
 												<span class="tool-workflow-thinking-caret">${thinkingExpanded ? "▾" : "▸"}</span>
-												${"thinking…".split("").map((char, index) => html`<span class="thinking-char" style=${`--thinking-char-index:${index};`}>${char}</span>`)}
+												<span class="tool-workflow-thinking-text">Thinking…</span>
 											</button>
 											${thinkingExpanded ? html`<div class="tool-workflow-thinking-content">${workflow.thinkingText}</div>` : nothing}
 										</div>
@@ -4079,6 +4094,16 @@ export class ChatView {
 		const rows: TemplateResult[] = [];
 		for (let index = 0; index < this.messages.length; index += 1) {
 			const msg = this.messages[index];
+			if (this.isThinkingOnlyAssistantMessage(msg)) {
+				let lookahead = index + 1;
+				while (lookahead < this.messages.length && this.isThinkingOnlyAssistantMessage(this.messages[lookahead])) {
+					lookahead += 1;
+				}
+				const next = this.messages[lookahead];
+				if (next?.role === "assistant" && next.toolCalls.length > 0) {
+					continue;
+				}
+			}
 			if (msg.role === "assistant" && msg.toolCalls.length > 0) {
 				const workflowCandidate = this.collectAssistantWorkflow(index);
 				if (workflowCandidate) {

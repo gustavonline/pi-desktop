@@ -5113,20 +5113,19 @@ body.sidebar-resizing {
 	flex-shrink: 0;
 }
 
-.tool-workflow-thinking-toggle .thinking-char {
+.tool-workflow-thinking-text {
 	font-size: 11px;
 	line-height: 1.3;
 	color: var(--thinking-idle);
 }
 
-.tool-workflow-thinking-toggle.animating .thinking-char {
+.tool-workflow-thinking-toggle.animating .tool-workflow-thinking-text {
 	animation: thinkingCharSweep 1.8s ease-in-out infinite;
-	animation-delay: calc(var(--thinking-char-index, 0) * 0.12s);
 }
 
-.tool-workflow-thinking-toggle.done .thinking-char,
-.tool-workflow-thinking-toggle:hover .thinking-char,
-.tool-workflow-thinking-toggle:focus-visible .thinking-char {
+.tool-workflow-thinking-toggle.done .tool-workflow-thinking-text,
+.tool-workflow-thinking-toggle:hover .tool-workflow-thinking-text,
+.tool-workflow-thinking-toggle:focus-visible .tool-workflow-thinking-text {
 	color: var(--thinking-active);
 }
 
