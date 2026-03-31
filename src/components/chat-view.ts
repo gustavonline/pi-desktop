@@ -438,6 +438,7 @@ export class ChatView {
 	private autoFollowChat = true;
 	private expandedToolWorkflowIds = new Set<string>();
 	private expandedToolGroupByWorkflowId = new Map<string, string>();
+	private expandedWorkflowThinkingIds = new Set<string>();
 	private selectedSkillDraft: ComposerSkillDraft | null = null;
 	private slashPaletteOpen = false;
 	private slashPaletteQuery = "";
@@ -585,6 +586,7 @@ export class ChatView {
 		this.slashSkillsUpdatedAt = 0;
 		this.expandedToolWorkflowIds.clear();
 		this.expandedToolGroupByWorkflowId.clear();
+		this.expandedWorkflowThinkingIds.clear();
 		this.compactionCycle = null;
 		this.keepWorkflowExpandedUntilAssistantText = false;
 		if (!path) {
@@ -618,6 +620,7 @@ export class ChatView {
 		this.slashPaletteIndex = 0;
 		this.expandedToolWorkflowIds.clear();
 		this.expandedToolGroupByWorkflowId.clear();
+		this.expandedWorkflowThinkingIds.clear();
 		this.compactionCycle = null;
 		this.runHasAssistantText = false;
 		this.runSawToolActivity = false;
@@ -1029,6 +1032,7 @@ export class ChatView {
 			this.messages = this.mapBackendMessages(backendMessages);
 			this.expandedToolWorkflowIds.clear();
 			this.expandedToolGroupByWorkflowId.clear();
+			this.expandedWorkflowThinkingIds.clear();
 			this.forkEntryIdByMessageId.clear();
 			this.lastAssistantContextTokens = this.deriveLatestAssistantContextTokens(backendMessages);
 			if (state.isStreaming) {
@@ -3811,8 +3815,22 @@ export class ChatView {
 		if (this.expandedToolWorkflowIds.has(workflowId)) {
 			this.expandedToolWorkflowIds.delete(workflowId);
 			this.expandedToolGroupByWorkflowId.delete(workflowId);
+			this.expandedWorkflowThinkingIds.delete(workflowId);
 		} else {
 			this.expandedToolWorkflowIds.add(workflowId);
+		}
+		this.render();
+	}
+
+	private isWorkflowThinkingExpanded(workflowId: string): boolean {
+		return this.expandedWorkflowThinkingIds.has(workflowId);
+	}
+
+	private toggleWorkflowThinkingExpanded(workflowId: string): void {
+		if (this.expandedWorkflowThinkingIds.has(workflowId)) {
+			this.expandedWorkflowThinkingIds.delete(workflowId);
+		} else {
+			this.expandedWorkflowThinkingIds.add(workflowId);
 		}
 		this.render();
 	}
@@ -3968,8 +3986,10 @@ export class ChatView {
 		const manualExpanded = this.isToolWorkflowExpanded(workflow.id);
 		const autoExpanded = workflow.isTerminal && this.keepWorkflowExpandedUntilAssistantText && (running > 0 || this.runSawToolActivity);
 		const expanded = autoExpanded || manualExpanded;
+		const thinkingExpanded = this.isWorkflowThinkingExpanded(workflow.id);
 		if (!expanded) {
 			this.expandedToolGroupByWorkflowId.delete(workflow.id);
+			this.expandedWorkflowThinkingIds.delete(workflow.id);
 		}
 
 		return html`
@@ -3996,10 +4016,11 @@ export class ChatView {
 								${workflow.thinkingText
 									? html`
 										<div class="tool-workflow-thinking">
-											<div class="tool-workflow-thinking-label ${autoExpanded ? "animating" : "done"}">
+											<button class="tool-workflow-thinking-toggle ${autoExpanded ? "animating" : "done"}" @click=${() => this.toggleWorkflowThinkingExpanded(workflow.id)}>
+												<span class="tool-workflow-thinking-caret">${thinkingExpanded ? "▾" : "▸"}</span>
 												${"thinking…".split("").map((char, index) => html`<span class="thinking-char" style=${`--thinking-char-index:${index};`}>${char}</span>`)}
-											</div>
-											<div class="tool-workflow-thinking-content">${workflow.thinkingText}</div>
+											</button>
+											${thinkingExpanded ? html`<div class="tool-workflow-thinking-content">${workflow.thinkingText}</div>` : nothing}
 										</div>
 									`
 									: nothing}

@@ -5089,27 +5089,49 @@ body.sidebar-resizing {
 .tool-workflow-thinking {
 	margin-top: 4px;
 	margin-bottom: 8px;
+	width: min(100%, 64ch);
+	max-width: 100%;
 }
 
-.tool-workflow-thinking-label {
-	font-size: 11px;
-	line-height: 1.3;
-	user-select: none;
+.tool-workflow-thinking-toggle {
+	width: 100%;
+	border: none;
+	background: transparent;
+	padding: 5px 8px;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	cursor: pointer;
+	text-align: left;
 	--thinking-idle: color-mix(in srgb, var(--muted) 88%, var(--text));
 	--thinking-active: color-mix(in srgb, var(--text) 80%, var(--muted));
 }
 
-.tool-workflow-thinking-label.animating .thinking-char {
+.tool-workflow-thinking-caret {
+	font-size: 11px;
+	color: color-mix(in srgb, var(--muted) 86%, var(--text));
+	flex-shrink: 0;
+}
+
+.tool-workflow-thinking-toggle .thinking-char {
+	font-size: 11px;
+	line-height: 1.3;
+	color: var(--thinking-idle);
+}
+
+.tool-workflow-thinking-toggle.animating .thinking-char {
 	animation: thinkingCharSweep 1.8s ease-in-out infinite;
 	animation-delay: calc(var(--thinking-char-index, 0) * 0.12s);
 }
 
-.tool-workflow-thinking-label.done .thinking-char {
+.tool-workflow-thinking-toggle.done .thinking-char,
+.tool-workflow-thinking-toggle:hover .thinking-char,
+.tool-workflow-thinking-toggle:focus-visible .thinking-char {
 	color: var(--thinking-active);
 }
 
 .tool-workflow-thinking-content {
-	margin-top: 4px;
+	margin: 4px 8px 0;
 	font-size: 12px;
 	line-height: 1.45;
 	color: color-mix(in srgb, var(--muted) 92%, var(--text));
