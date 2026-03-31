@@ -4747,6 +4747,13 @@ body.sidebar-resizing {
 	line-height: 1;
 	color: color-mix(in srgb, var(--text) 52%, var(--bg));
 	margin-top: 1px;
+	display: inline-block;
+	transform-origin: center;
+	transition: transform 120ms ease;
+}
+
+.welcome-project-caret.open {
+	transform: rotate(180deg);
 }
 
 .welcome-project-menu {
@@ -4838,7 +4845,9 @@ body.sidebar-resizing {
 }
 
 .welcome-meta-line.hidden {
-	display: none;
+	opacity: 0;
+	visibility: hidden;
+	pointer-events: none;
 }
 
 .welcome-link-row {

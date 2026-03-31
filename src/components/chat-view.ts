@@ -3743,7 +3743,7 @@ export class ChatView {
 						}}
 					>
 						<span>${projectLabel}</span>
-						<span class="welcome-project-caret">${this.welcomeProjectMenuOpen ? "⌃" : "⌄"}</span>
+						<span class="welcome-project-caret ${this.welcomeProjectMenuOpen ? "open" : ""}">⌄</span>
 					</button>
 					${this.welcomeProjectMenuOpen
 						? html`
