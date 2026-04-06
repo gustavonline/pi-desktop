@@ -16,6 +16,13 @@ export interface SidebarWorkspaceItem {
 	closable?: boolean;
 }
 
+export interface SidebarSettingsNavItem {
+	id: string;
+	label: string;
+	description?: string;
+	disabled?: boolean;
+}
+
 interface SidebarSession {
 	id: string;
 	name: string;
@@ -228,6 +235,9 @@ export class Sidebar {
 	private projectDragStartY = 0;
 	private projectDragSuppressClickUntil = 0;
 	private mode: SidebarMode = "projects";
+	private settingsShellActive = false;
+	private settingsNavItems: SidebarSettingsNavItem[] = [];
+	private activeSettingsNavId: string | null = null;
 	private query = "";
 	private collapsed = false;
 	private storageKey = workspaceStorageKey("workspace_default");
@@ -276,6 +286,7 @@ export class Sidebar {
 	private onFileOpen: ((projectId: string, filePath: string) => void) | null = null;
 	private onFileDelete: ((projectId: string, filePath: string) => void) | null = null;
 	private onModeChange: ((mode: SidebarMode) => void) | null = null;
+	private onSettingsNavSelect: ((id: string) => void) | null = null;
 	private onCollapsedChange: ((collapsed: boolean) => void) | null = null;
 
 	constructor(container: HTMLElement) {
@@ -516,6 +527,30 @@ export class Sidebar {
 		this.onModeChange = cb;
 	}
 
+	setOnSettingsNavSelect(cb: ((id: string) => void) | null): void {
+		this.onSettingsNavSelect = cb;
+	}
+
+	setSettingsShellActive(active: boolean): void {
+		if (this.settingsShellActive === active) return;
+		this.settingsShellActive = active;
+		this.modeFilterMenuOpen = false;
+		this.openProjectMenuId = null;
+		this.closeContextMenu(false);
+		this.render();
+	}
+
+	setSettingsNavigation(items: SidebarSettingsNavItem[], activeId: string | null): void {
+		this.settingsNavItems = items.map((item) => ({
+			id: item.id,
+			label: item.label,
+			description: item.description,
+			disabled: Boolean(item.disabled),
+		}));
+		this.activeSettingsNavId = activeId;
+		if (this.settingsShellActive) this.render();
+	}
+
 	setOnCollapsedChange(cb: (collapsed: boolean) => void): void {
 		this.onCollapsedChange = cb;
 	}
@@ -677,6 +712,16 @@ export class Sidebar {
 		if (this.activeSessionPath === normalized) return;
 		this.activeSessionPath = normalized;
 		this.render();
+	}
+
+	beginSessionRename(projectId: string, sessionPath: string): boolean {
+		const found = this.findSession(projectId, sessionPath);
+		if (!found) return false;
+		this.selectProject(found.project.id, false);
+		this.activeSessionPath = normalizePath(found.session.path);
+		this.activeFilePath = null;
+		this.startSessionRename(found.project, found.session);
+		return true;
 	}
 
 	setActiveFilePath(filePath: string | null): void {
@@ -3728,7 +3773,35 @@ export class Sidebar {
 		`;
 	}
 
+	private renderSettingsShellBody(): TemplateResult {
+		if (this.settingsNavItems.length === 0) {
+			return html`<div class="sidebar-empty">Loading settings sections…</div>`;
+		}
+
+		return html`
+			<div class="sidebar-settings-nav-list">
+				${this.settingsNavItems.map((item) => {
+					const active = item.id === this.activeSettingsNavId;
+					return html`
+						<button
+							class="sidebar-settings-nav-item ${active ? "active" : ""}"
+							?disabled=${Boolean(item.disabled)}
+							@click=${() => {
+								if (item.disabled) return;
+								this.onSettingsNavSelect?.(item.id);
+							}}
+						>
+							<span class="sidebar-settings-nav-label">${item.label}</span>
+							${item.description ? html`<span class="sidebar-settings-nav-desc">${item.description}</span>` : nothing}
+						</button>
+					`;
+				})}
+			</div>
+		`;
+	}
+
 	private renderModeBody(): TemplateResult {
+		if (this.settingsShellActive) return this.renderSettingsShellBody();
 		if (this.mode === "files") return this.renderFilesMode();
 		return this.renderProjectsMode();
 	}
@@ -3865,67 +3938,80 @@ export class Sidebar {
 				${this.renderWorkspaceWindowRow()}
 
 				<div class="sidebar-topbar" data-tauri-drag-region>
-					${this.renderWorkspaceHeader()}
-					${this.desktopUpdateAvailable
+					${this.settingsShellActive ? nothing : this.renderWorkspaceHeader()}
+					${this.settingsShellActive
 						? html`
-							<button class="sidebar-cli-update-banner sidebar-desktop-update-banner" @click=${() => this.onOpenSettings?.()}>
-								<span>
-									Desktop update available${this.desktopUpdateLatestVersion ? ` · v${this.desktopUpdateLatestVersion}` : ""}
-								</span>
-								<span class="sidebar-cli-update-cta">Open settings</span>
-							</button>
+							<div class="sidebar-settings-shell-header">
+								<div class="sidebar-mode-current">Settings</div>
+								<div class="sidebar-settings-shell-subtitle">Choose a section</div>
+							</div>
 						`
-						: nothing}
-					${this.cliUpdateAvailable
-						? html`
-							<button class="sidebar-cli-update-banner" @click=${() => this.onOpenSettings?.()}>
-								<span>
-									CLI update available${this.cliUpdateLatestVersion ? ` · v${this.cliUpdateLatestVersion}` : ""}
-								</span>
-								<span class="sidebar-cli-update-cta">Open settings</span>
-							</button>
-						`
-						: nothing}
-					<div class="sidebar-top-actions sidebar-top-actions-primary">
-						<button
-							class="sidebar-top-action-btn"
-							title=${this.mode === "files" ? "New file" : "New session"}
-							?disabled=${!hasActiveProject}
-							@click=${() => void this.triggerPrimaryTopAction()}
-						>
-							<span>${this.mode === "files" ? "New file" : "New session"}</span>
-						</button>
-						<button class="sidebar-top-action-btn ${this.packagesOpen ? "active" : ""}" title="Packages" @click=${() => this.onTogglePackages?.()}>
-							<span>Packages</span>
-						</button>
-					</div>
+						: html`
+							${this.desktopUpdateAvailable
+								? html`
+									<button class="sidebar-cli-update-banner sidebar-desktop-update-banner" @click=${() => this.onOpenSettings?.()}>
+										<span>
+											Desktop update available${this.desktopUpdateLatestVersion ? ` · v${this.desktopUpdateLatestVersion}` : ""}
+										</span>
+										<span class="sidebar-cli-update-cta">Open settings</span>
+									</button>
+								`
+								: nothing}
+							${this.cliUpdateAvailable
+								? html`
+									<button class="sidebar-cli-update-banner" @click=${() => this.onOpenSettings?.()}>
+										<span>
+											CLI update available${this.cliUpdateLatestVersion ? ` · v${this.cliUpdateLatestVersion}` : ""}
+										</span>
+										<span class="sidebar-cli-update-cta">Open settings</span>
+									</button>
+								`
+								: nothing}
+							<div class="sidebar-top-actions sidebar-top-actions-primary">
+								<button
+									class="sidebar-top-action-btn"
+									title=${this.mode === "files" ? "New file" : "New session"}
+									?disabled=${!hasActiveProject}
+									@click=${() => void this.triggerPrimaryTopAction()}
+								>
+									<span>${this.mode === "files" ? "New file" : "New session"}</span>
+								</button>
+								<button class="sidebar-top-action-btn ${this.packagesOpen ? "active" : ""}" title="Packages" @click=${() => this.onTogglePackages?.()}>
+									<span>Packages</span>
+								</button>
+							</div>
+						`}
 				</div>
 
 				<div class="sidebar-section-divider" aria-hidden="true"></div>
 
-				<div class="sidebar-mode-row">
-					<div class="sidebar-mode-meta">
-						<div class="sidebar-mode-current">${this.mode === "projects" ? "Sessions" : "Files"}</div>
-						<div class="sidebar-mode-switch">
-							${this.renderModeSwitch()}
+				${this.settingsShellActive
+					? nothing
+					: html`
+						<div class="sidebar-mode-row">
+							<div class="sidebar-mode-meta">
+								<div class="sidebar-mode-current">${this.mode === "projects" ? "Sessions" : "Files"}</div>
+								<div class="sidebar-mode-switch">
+									${this.renderModeSwitch()}
+								</div>
+							</div>
+							<div class="sidebar-mode-actions">
+								<button class="sidebar-mode-create-btn" title="Add project" @click=${() => void this.handleModeCreateAction()}>
+									<svg class="sidebar-icon-svg" viewBox="0 0 16 16" aria-hidden="true">
+										<path d="M2.5 4.5h4l1.3 1.5h5.7v5a1 1 0 0 1-1 1h-10a1 1 0 0 1-1-1v-5a1 1 0 0 1 1-1z" />
+										<path d="M8 7.2v3.6" />
+										<path d="M6.2 9h3.6" />
+									</svg>
+								</button>
+								<button class="sidebar-mode-filter-btn" title=${this.mode === "projects" ? "Organize sessions" : "Filter files"} @click=${() => this.toggleModeFilterMenu()}>
+									<svg class="sidebar-icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4h10"/><path d="M5 8h6"/><path d="M7 12h2"/></svg>
+								</button>
+								${this.renderModeFilterMenu()}
+							</div>
 						</div>
-					</div>
-					<div class="sidebar-mode-actions">
-						<button class="sidebar-mode-create-btn" title="Add project" @click=${() => void this.handleModeCreateAction()}>
-							<svg class="sidebar-icon-svg" viewBox="0 0 16 16" aria-hidden="true">
-								<path d="M2.5 4.5h4l1.3 1.5h5.7v5a1 1 0 0 1-1 1h-10a1 1 0 0 1-1-1v-5a1 1 0 0 1 1-1z" />
-								<path d="M8 7.2v3.6" />
-								<path d="M6.2 9h3.6" />
-							</svg>
-						</button>
-						<button class="sidebar-mode-filter-btn" title=${this.mode === "projects" ? "Organize sessions" : "Filter files"} @click=${() => this.toggleModeFilterMenu()}>
-							<svg class="sidebar-icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4h10"/><path d="M5 8h6"/><path d="M7 12h2"/></svg>
-						</button>
-						${this.renderModeFilterMenu()}
-					</div>
-				</div>
+					`}
 
-				<div class="sidebar-panel-body">
+				<div class="sidebar-panel-body ${this.settingsShellActive ? "sidebar-panel-body-settings" : ""}">
 					${this.renderModeBody()}
 				</div>
 

@@ -10,7 +10,7 @@ import { ExtensionUiHandler, normalizeExtensionUiRequest, type NotificationActio
 import { FileViewer } from "./components/file-viewer.js";
 import { PackagesView } from "./components/packages-view.js";
 import { SessionBrowser } from "./components/session-browser.js";
-import { SettingsPanel } from "./components/settings-panel.js";
+import { SettingsPanel, type SettingsSectionId } from "./components/settings-panel.js";
 import { ShortcutsPanel } from "./components/shortcuts-panel.js";
 import { Sidebar, type SidebarMode, type SidebarWorkspaceItem } from "./components/sidebar.js";
 import { TerminalPanel } from "./components/terminal-panel.js";
@@ -1153,6 +1153,120 @@ async function withRpcRetry<T>(label: string, run: () => Promise<T>, attempts = 
 	throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
+async function renameSessionFromWorkspace(projectId: string, sessionPath: string, nextName: string): Promise<boolean> {
+	const workspace = getActiveWorkspace();
+	const project = sidebar?.getProjectById(projectId);
+	const trimmedName = nextName.trim();
+	if (!workspace || !project || !trimmedName) return false;
+
+	ensureWorkspaceContentState(workspace);
+	const targetTab = workspace.sessionTabs.find((tab) => normalizeSessionPath(tab.sessionPath) === normalizeSessionPath(sessionPath));
+	if (targetTab) {
+		setSessionTabProject(targetTab, project.id, project.path);
+		targetTab.title = trimmedName;
+		if (workspace.activeSessionTabId === targetTab.id) {
+			workspace.sessionTitle = trimmedName;
+		}
+		persistWorkspaces();
+		syncContentTabsBar(workspace);
+	}
+
+	let failed = false;
+	await queueProjectTask(
+		async () => {
+			const normalizedTarget = normalizeSessionPath(sessionPath);
+			const openTargetTab = workspace.sessionTabs.find((tab) => normalizeSessionPath(tab.sessionPath) === normalizedTarget) ?? null;
+			const activeTarget = Boolean(openTargetTab && workspace.activeSessionTabId === openTargetTab.id);
+
+			if (openTargetTab) {
+				const targetRuntime = await ensureRuntimeForSessionTab(workspace, openTargetTab, project.path, activeTarget);
+				await targetRuntime.bridge.setSessionName(trimmedName);
+				if (activeTarget) {
+					await chatView?.refreshFromBackend({ throwOnError: true });
+				}
+			} else {
+				const maintenanceBridge = new RpcBridge(uid("rename_rpc"));
+				try {
+					await maintenanceBridge.start({ cliPath: findCliPath(), cwd: project.path });
+					const switched = await maintenanceBridge.switchSession(sessionPath);
+					if (switched.cancelled) return;
+					await maintenanceBridge.setSessionName(trimmedName);
+				} finally {
+					await maintenanceBridge.stop().catch(() => {
+						/* ignore */
+					});
+					await maintenanceBridge.teardownListeners().catch(() => {
+						/* ignore */
+					});
+				}
+			}
+
+			scheduleSidebarSessionsRefresh(0);
+			syncContentTabsBar(workspace);
+			await applyWorkspacePane(workspace);
+		},
+		(err) => {
+			failed = true;
+			console.error("Failed to rename session:", err);
+			chatView?.notify("Failed to rename session", "error");
+		},
+		{ label: "sidebar-session-rename" },
+	);
+
+	return !failed;
+}
+
+async function reloadActiveWorkspaceRuntime(): Promise<boolean> {
+	const workspace = getActiveWorkspace();
+	if (!workspace) return false;
+
+	ensureWorkspaceContentState(workspace);
+	const activeSession = getActiveSessionTab(workspace);
+	if (!activeSession) return false;
+	const projectPath = getSessionTabProjectPath(activeSession) ?? getWorkspaceActiveProjectPath(workspace);
+	if (!projectPath) return false;
+
+	syncActiveChatRuntimeBinding(workspace, { forceReset: true, statusText: "Reloading runtime…" });
+
+	let failed = false;
+	await queueProjectTask(
+		async (version) => {
+			assertProjectTaskCurrent(version);
+			const runtime = getRuntimeForTab(workspace.id, activeSession.id);
+			if (runtime?.bridge.isConnected) {
+				runtime.phase = "starting";
+				await runtime.bridge.stop().catch(() => {
+					/* ignore */
+				});
+				runtime.draftInitialized = false;
+				runtime.lastKnownSessionPath = null;
+				setRuntimeRunning(runtime, false, { suppressNotify: true });
+			}
+
+			assertProjectTaskCurrent(version);
+			await ensureRuntimeForSessionTab(workspace, activeSession, projectPath, true, version);
+			assertProjectTaskCurrent(version);
+			await chatView?.refreshFromBackend({ throwOnError: true });
+			assertProjectTaskCurrent(version);
+			await chatView?.refreshModels();
+			await packagesView?.refreshPackages(true).catch(() => {
+				/* ignore package refresh errors during reload */
+			});
+			scheduleSidebarSessionsRefresh(0);
+			syncContentTabsBar(workspace);
+			await applyWorkspacePane(workspace);
+		},
+		(err) => {
+			failed = true;
+			console.error("Failed to reload runtime:", err);
+			chatView?.notify("Failed to reload runtime", "error");
+		},
+		{ label: "slash-reload-runtime" },
+	);
+
+	return !failed;
+}
+
 function scheduleSidebarSessionsRefresh(delayMs = 180): void {
 	if (sidebarSessionsRefreshTimer) {
 		clearTimeout(sidebarSessionsRefreshTimer);
@@ -1532,10 +1646,31 @@ function syncWorkspaceTabsBar(): void {
 	sidebar?.setWorkspaces(workspaceItems, activeWorkspaceId);
 }
 
+function syncSidebarSettingsNavigation(): void {
+	if (!sidebar) return;
+	if (!settingsPanel) {
+		sidebar.setSettingsNavigation([], null);
+		return;
+	}
+	const navigation = settingsPanel.getNavigationState();
+	sidebar.setSettingsNavigation(
+		navigation.items.map((item) => ({
+			id: item.id,
+			label: item.label,
+			description: item.description,
+			disabled: item.disabled,
+		})),
+		navigation.activeSection,
+	);
+}
+
 function syncWorkspaceContextChrome(workspace: WorkspaceState | null = getActiveWorkspace()): void {
 	const packagesOpen = workspace?.pane === "packages";
+	const settingsOpen = workspace?.pane === "settings";
 	workspaceTabsBar?.setPackagesToolbarVisible(packagesOpen);
 	sidebar?.setPackagesOpen(packagesOpen);
+	sidebar?.setSettingsShellActive(Boolean(settingsOpen));
+	if (settingsOpen) syncSidebarSettingsNavigation();
 }
 
 function syncCliUpdateUiHint(): void {
@@ -2368,8 +2503,8 @@ async function initialize(): Promise<void> {
 		chatView.setOnAddProject(() => {
 			void sidebar?.openFolder();
 		});
-		chatView.setOnOpenSettings(() => {
-			requestOpenSettingsPanel();
+		chatView.setOnOpenSettings((sectionId) => {
+			requestOpenSettingsPanel(sectionId);
 		});
 		chatView.setOnOpenPackages(() => {
 			const workspace = getActiveWorkspace();
@@ -2378,6 +2513,79 @@ async function initialize(): Promise<void> {
 			persistWorkspaces();
 			syncWorkspaceTabsBar();
 			void applyWorkspacePane(workspace);
+		});
+		chatView.setOnOpenExtensionConfig(async (commandName) => {
+			if (commandName !== "name-ai-config") return false;
+			openPackagesPane();
+			return await (packagesView?.openExtensionConfigBySource("npm:pi-session-auto-rename") ?? false);
+		});
+		chatView.setOnBeginRenameCurrentSession(() => {
+			const workspace = getActiveWorkspace();
+			if (!workspace) return false;
+			const activeSession = getActiveSessionTab(workspace);
+			const projectId = getSessionTabProjectId(activeSession) ?? getWorkspaceActiveProjectId(workspace);
+			const sessionPath = normalizeSessionPath(chatView?.getState()?.sessionFile ?? activeSession.sessionPath ?? "");
+			if (!projectId || !sessionPath) return false;
+			return sidebar?.beginSessionRename(projectId, sessionPath) ?? false;
+		});
+		chatView.setOnRenameCurrentSession(async (nextName) => {
+			const workspace = getActiveWorkspace();
+			if (!workspace) return false;
+			const activeSession = getActiveSessionTab(workspace);
+			const projectId = getSessionTabProjectId(activeSession) ?? getWorkspaceActiveProjectId(workspace);
+			const sessionPath = normalizeSessionPath(chatView?.getState()?.sessionFile ?? activeSession.sessionPath ?? "");
+			if (projectId && sessionPath) {
+				return await renameSessionFromWorkspace(projectId, sessionPath, nextName);
+			}
+			try {
+				await rpcBridge.setSessionName(nextName);
+				activeSession.title = nextName;
+				if (workspace.activeSessionTabId === activeSession.id) {
+					workspace.sessionTitle = nextName;
+				}
+				persistWorkspaces();
+				syncContentTabsBar(workspace);
+				await chatView?.refreshFromBackend({ throwOnError: true });
+				return true;
+			} catch (err) {
+				console.error("Failed to rename current session:", err);
+				chatView?.notify("Failed to rename session", "error");
+				return false;
+			}
+		});
+		chatView.setOnCreateFreshSession(async () => {
+			const workspace = getActiveWorkspace();
+			if (!workspace) return false;
+			if (!getWorkspaceActiveProjectPath(workspace)) {
+				chatView?.notify("Add/select a project before creating a new session", "info");
+				return false;
+			}
+			await startFreshSessionTab();
+			return true;
+		});
+		chatView.setOnReloadRuntime(async () => {
+			const workspace = getActiveWorkspace();
+			if (!workspace || !getWorkspaceActiveProjectPath(workspace)) {
+				chatView?.notify("Add/select a project before reloading runtime", "info");
+				return false;
+			}
+			return await reloadActiveWorkspaceRuntime();
+		});
+		chatView.setOnOpenSessionBrowser((query) => {
+			void sessionBrowser?.open({ query });
+		});
+		chatView.setOnOpenShortcuts(() => {
+			shortcutsPanel?.open();
+		});
+		chatView.setOnQuitApp(() => {
+			void (async () => {
+				try {
+					const { getCurrentWindow } = await import("@tauri-apps/api/window");
+					await getCurrentWindow().close();
+				} catch {
+					window.close();
+				}
+			})();
 		});
 		chatView.setOnSelectWelcomeProject((projectId) => {
 			sidebar?.setActiveProject(projectId, true);
@@ -2447,6 +2655,7 @@ function mountSettingsPanel(): SettingsPanel {
 	}
 	if (settingsPanel) {
 		settingsPanel.setContainer(settingsContainer);
+		syncSidebarSettingsNavigation();
 		return settingsPanel;
 	}
 	const panel = new SettingsPanel(settingsContainer);
@@ -2469,7 +2678,11 @@ function mountSettingsPanel(): SettingsPanel {
 	panel.setOnRequestAddProject(() => {
 		void sidebar?.openFolder();
 	});
+	panel.setOnNavigationStateChange(() => {
+		syncSidebarSettingsNavigation();
+	});
 	settingsPanel = panel;
+	syncSidebarSettingsNavigation();
 	return panel;
 }
 
@@ -2654,7 +2867,9 @@ function wireCommandPaletteBuiltins(): void {
 		{
 			name: "compact",
 			description: "Compact current session context",
-			action: async () => chatView?.compactNow(),
+			action: async () => {
+				await chatView?.compactNow();
+			},
 		},
 	]);
 }
@@ -2686,13 +2901,36 @@ async function recoverSettingsPaneIfBlank(reason: string): Promise<void> {
 	}
 }
 
-function requestOpenSettingsPanel(): void {
+function normalizeSettingsSectionId(sectionId: string | null | undefined): SettingsSectionId | null {
+	switch ((sectionId || "").trim().toLowerCase()) {
+		case "general":
+			return "general";
+		case "appearance":
+			return "appearance";
+		case "account":
+			return "account";
+		case "updates":
+			return "updates";
+		default:
+			return null;
+	}
+}
+
+function requestOpenSettingsPanel(sectionId?: string): void {
 	const workspace = getActiveWorkspace();
 	if (!workspace) return;
+	const targetSection = normalizeSettingsSectionId(sectionId);
 	workspace.pane = "settings";
 	persistWorkspaces();
 	syncWorkspaceTabsBar();
 	setPaneVisibility("settings");
+	try {
+		const panel = mountSettingsPanel();
+		panel.setRuntimeProjectPath(resolveSettingsRuntimeProjectPath(workspace));
+		if (targetSection) panel.setActiveSection(targetSection);
+	} catch (mountErr) {
+		console.error("Failed to prepare settings panel before open:", mountErr);
+	}
 	void applyWorkspacePane(workspace)
 		.catch((err) => {
 			console.error("Failed to open settings pane:", err);
@@ -2701,6 +2939,7 @@ function requestOpenSettingsPanel(): void {
 				setPaneVisibility("settings");
 				const panel = mountSettingsPanel();
 				panel.setRuntimeProjectPath(resolveSettingsRuntimeProjectPath(workspace));
+				if (targetSection) panel.setActiveSection(targetSection);
 				void panel.open();
 			} catch (innerErr) {
 				console.error("Settings pane recovery failed:", innerErr);
@@ -3335,6 +3574,12 @@ function renderApp(): void {
 		syncWorkspaceTabsBar();
 	});
 
+	sidebar.setOnSettingsNavSelect((sectionId) => {
+		if (!settingsPanel) return;
+		settingsPanel.setActiveSection(sectionId as SettingsSectionId);
+		syncSidebarSettingsNavigation();
+	});
+
 	sidebar.setOnProjectSelect((project) => {
 		const workspace = getActiveWorkspace();
 		if (!workspace) return;
@@ -3604,61 +3849,7 @@ function renderApp(): void {
 	});
 
 	sidebar.setOnSessionRename((projectId, sessionPath, _currentName, nextName) => {
-		const workspace = getActiveWorkspace();
-		const project = sidebar?.getProjectById(projectId);
-		if (!workspace || !project) return;
-
-		ensureWorkspaceContentState(workspace);
-		const targetTab = workspace.sessionTabs.find((tab) => normalizeSessionPath(tab.sessionPath) === normalizeSessionPath(sessionPath));
-		if (targetTab) {
-			setSessionTabProject(targetTab, project.id, project.path);
-			targetTab.title = nextName;
-			if (workspace.activeSessionTabId === targetTab.id) {
-				workspace.sessionTitle = nextName;
-			}
-			persistWorkspaces();
-			syncContentTabsBar(workspace);
-		}
-
-		void queueProjectTask(
-			async () => {
-				const normalizedTarget = normalizeSessionPath(sessionPath);
-				const openTargetTab =
-					workspace.sessionTabs.find((tab) => normalizeSessionPath(tab.sessionPath) === normalizedTarget) ?? null;
-				const activeTarget = Boolean(openTargetTab && workspace.activeSessionTabId === openTargetTab.id);
-
-				if (openTargetTab) {
-					const targetRuntime = await ensureRuntimeForSessionTab(workspace, openTargetTab, project.path, activeTarget);
-					await targetRuntime.bridge.setSessionName(nextName);
-					if (activeTarget) {
-						await chatView?.refreshFromBackend({ throwOnError: true });
-					}
-				} else {
-					const maintenanceBridge = new RpcBridge(uid("rename_rpc"));
-					try {
-						await maintenanceBridge.start({ cliPath: findCliPath(), cwd: project.path });
-						const switched = await maintenanceBridge.switchSession(sessionPath);
-						if (switched.cancelled) return;
-						await maintenanceBridge.setSessionName(nextName);
-					} finally {
-						await maintenanceBridge.stop().catch(() => {
-							/* ignore */
-						});
-						await maintenanceBridge.teardownListeners().catch(() => {
-							/* ignore */
-						});
-					}
-				}
-
-				scheduleSidebarSessionsRefresh(0);
-				syncContentTabsBar(workspace);
-				await applyWorkspacePane(workspace);
-			},
-			(err) => {
-				console.error("Failed to rename session:", err);
-				chatView?.notify("Failed to rename session", "error");
-			},
-		);
+		void renameSessionFromWorkspace(projectId, sessionPath, nextName);
 	});
 
 	sidebar.setOnSessionDelete((projectId, sessionPath) => {

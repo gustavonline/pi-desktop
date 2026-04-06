@@ -53,6 +53,9 @@ interface UiMessage {
 	errorText?: string;
 	deliveryMode?: DeliveryMode;
 	label?: string;
+	renderAsMarkdown?: boolean;
+	collapsibleTitle?: string;
+	collapsibleExpanded?: boolean;
 }
 
 interface Notice {
@@ -79,6 +82,30 @@ interface ForkTimelineRow {
 	sourceIndex: number;
 	thinkingSnippets: string[];
 	tools: ToolCallBlock[];
+}
+
+interface SessionTreeEntryRecord {
+	id: string;
+	parentId: string | null;
+	type: string;
+	index: number;
+	role: UiRole;
+	entryLabel: string;
+	preview: string;
+	displayText: string;
+	canFork: boolean;
+}
+
+interface HistoryTreeRow {
+	entryId: string;
+	depth: number;
+	role: UiRole;
+	entryLabel: string;
+	preview: string;
+	displayText: string;
+	linePrefix: string;
+	onActivePath: boolean;
+	canFork: boolean;
 }
 
 interface SessionStatsSummary {
@@ -126,12 +153,22 @@ interface ComposerSkillDraft {
 	scope: string | null;
 }
 
+type SlashPaletteSection = "CLI" | "Extensions" | "Prompts" | "Skills";
+type SlashCommandSource = "builtin" | "extension" | "prompt" | "skill";
+
+interface RuntimeSlashCommand {
+	name: string;
+	description: string;
+	source: "extension" | "prompt" | "skill";
+}
+
 interface SlashPaletteItem {
 	id: string;
-	section: "Actions" | "Skills";
+	section: SlashPaletteSection;
 	label: string;
 	hint: string;
-	skillName?: string;
+	commandName: string;
+	source: SlashCommandSource;
 }
 
 interface ToolCallGroup {
@@ -151,6 +188,29 @@ interface CompactionCycleState {
 	details: string[];
 	expanded: boolean;
 }
+
+const BUILTIN_SLASH_COMMANDS: Array<{ name: string; description: string }> = [
+	{ name: "settings", description: "Open Desktop settings" },
+	{ name: "model", description: "No arg opens picker; exact arg sets model, otherwise opens picker near matches" },
+	{ name: "scoped-models", description: "Open Settings scoped-models editor (Ctrl+P model cycle scope)" },
+	{ name: "export", description: "No arg opens save dialog, /export <path> writes HTML directly" },
+	{ name: "import", description: "No arg opens file picker, /import <path> imports a session file" },
+	{ name: "share", description: "Create secret gist and post minimal links to pi.dev + GitHub gist" },
+	{ name: "copy", description: "Copy last assistant message" },
+	{ name: "name", description: "No arg opens inline rename, /name <text> sets name directly" },
+	{ name: "session", description: "Append detailed session info + token stats" },
+	{ name: "changelog", description: "Show latest changelog in collapsible row (/changelog all, /changelog refresh)" },
+	{ name: "hotkeys", description: "Open keyboard shortcuts" },
+	{ name: "fork", description: "Open fork flow, /fork <query> pre-fills message search" },
+	{ name: "tree", description: "Open full session tree across branches, /tree <query> pre-fills search" },
+	{ name: "login", description: "Terminal-only today: /login [provider] guidance" },
+	{ name: "logout", description: "Terminal-only today: /logout [provider] guidance" },
+	{ name: "new", description: "Start fresh session tab" },
+	{ name: "compact", description: "Manually compact context, /compact <instructions> optional" },
+	{ name: "resume", description: "Open session browser, /resume <query> pre-fills search" },
+	{ name: "reload", description: "Reload runtime (bridge restart + state/models/commands refresh)" },
+	{ name: "quit", description: "Quit Desktop app" },
+];
 
 function uid(prefix = "id"): string {
 	return `${prefix}_${Math.random().toString(36).slice(2, 8)}_${Date.now().toString(36)}`;
@@ -398,8 +458,16 @@ export class ChatView {
 	private onStateChange: ((state: RpcSessionState) => void) | null = null;
 	private onOpenTerminal: (() => void) | null = null;
 	private onAddProject: (() => void) | null = null;
-	private onOpenSettings: (() => void) | null = null;
+	private onOpenSettings: ((sectionId?: string) => void) | null = null;
 	private onOpenPackages: (() => void) | null = null;
+	private onOpenExtensionConfig: ((commandName: string) => boolean | Promise<boolean>) | null = null;
+	private onBeginRenameCurrentSession: (() => boolean | Promise<boolean>) | null = null;
+	private onRenameCurrentSession: ((nextName: string) => boolean | Promise<boolean>) | null = null;
+	private onCreateFreshSession: (() => boolean | Promise<boolean>) | null = null;
+	private onReloadRuntime: (() => boolean | Promise<boolean>) | null = null;
+	private onOpenSessionBrowser: ((query?: string) => void) | null = null;
+	private onOpenShortcuts: (() => void) | null = null;
+	private onQuitApp: (() => void) | null = null;
 	private onSelectWelcomeProject: ((projectId: string) => void) | null = null;
 	private onPromptSubmitted: (() => void) | null = null;
 	private onRunStateChange: ((running: boolean) => void) | null = null;
@@ -417,9 +485,13 @@ export class ChatView {
 	private sendingPrompt = false;
 	private pendingImages: PendingImage[] = [];
 	private notices: Notice[] = [];
+	private changelogCacheMarkdown: string | null = null;
+	private changelogCacheAt = 0;
+	private loadingChangelog = false;
 	private allThinkingExpanded = false;
 	private retryStatus = "";
 	private compactionCycle: CompactionCycleState | null = null;
+	private compactionInsertIndex: number | null = null;
 	private lastRuntimeNoticeSignature = "";
 	private lastRuntimeNoticeAt = 0;
 	private pendingDeliveryMode: DeliveryMode = "prompt";
@@ -430,6 +502,8 @@ export class ChatView {
 	private historyViewerMode: "browse" | "fork" = "browse";
 	private historyViewerLoading = false;
 	private historyViewerSessionLabel = "";
+	private historyTreeRows: HistoryTreeRow[] = [];
+	private historyTreeRequestSeq = 0;
 	private forkEntryIdByMessageId = new Map<string, string>();
 	private forkTargetsRequestSeq = 0;
 	private forkExpandedMessageRows = new Set<string>();
@@ -446,9 +520,12 @@ export class ChatView {
 	private slashPaletteQuery = "";
 	private slashPaletteIndex = 0;
 	private slashPaletteNavigationMode: "pointer" | "keyboard" = "pointer";
-	private slashSkills: string[] = [];
-	private slashSkillsLoading = false;
-	private slashSkillsUpdatedAt = 0;
+	private slashRuntimeCommands: RuntimeSlashCommand[] = [];
+	private slashCommandsLoading = false;
+	private slashCommandsUpdatedAt = 0;
+	private composerInputHistory: string[] = [];
+	private composerHistoryIndex = -1;
+	private composerHistoryDraft = "";
 	private runHasAssistantText = false;
 	private runSawToolActivity = false;
 	private keepWorkflowExpandedUntilAssistantText = false;
@@ -542,12 +619,44 @@ export class ChatView {
 		this.onAddProject = cb;
 	}
 
-	setOnOpenSettings(cb: () => void): void {
+	setOnOpenSettings(cb: (sectionId?: string) => void): void {
 		this.onOpenSettings = cb;
 	}
 
 	setOnOpenPackages(cb: () => void): void {
 		this.onOpenPackages = cb;
+	}
+
+	setOnOpenExtensionConfig(cb: (commandName: string) => boolean | Promise<boolean>): void {
+		this.onOpenExtensionConfig = cb;
+	}
+
+	setOnBeginRenameCurrentSession(cb: () => boolean | Promise<boolean>): void {
+		this.onBeginRenameCurrentSession = cb;
+	}
+
+	setOnRenameCurrentSession(cb: (nextName: string) => boolean | Promise<boolean>): void {
+		this.onRenameCurrentSession = cb;
+	}
+
+	setOnCreateFreshSession(cb: () => boolean | Promise<boolean>): void {
+		this.onCreateFreshSession = cb;
+	}
+
+	setOnReloadRuntime(cb: () => boolean | Promise<boolean>): void {
+		this.onReloadRuntime = cb;
+	}
+
+	setOnOpenSessionBrowser(cb: (query?: string) => void): void {
+		this.onOpenSessionBrowser = cb;
+	}
+
+	setOnOpenShortcuts(cb: () => void): void {
+		this.onOpenShortcuts = cb;
+	}
+
+	setOnQuitApp(cb: () => void): void {
+		this.onQuitApp = cb;
 	}
 
 	setOnSelectWelcomeProject(cb: (projectId: string) => void): void {
@@ -585,12 +694,14 @@ export class ChatView {
 		this.slashPaletteOpen = false;
 		this.slashPaletteQuery = "";
 		this.slashPaletteIndex = 0;
-		this.slashSkillsUpdatedAt = 0;
+		this.slashCommandsUpdatedAt = 0;
+		this.slashRuntimeCommands = [];
 		this.expandedToolWorkflowIds.clear();
 		this.expandedToolGroupByWorkflowId.clear();
 		this.expandedWorkflowThinkingIds.clear();
 		this.collapsedAutoWorkflowIds.clear();
 		this.compactionCycle = null;
+		this.compactionInsertIndex = null;
 		this.keepWorkflowExpandedUntilAssistantText = false;
 		if (!path) {
 			this.bindingStatusText = null;
@@ -621,11 +732,14 @@ export class ChatView {
 		this.slashPaletteOpen = false;
 		this.slashPaletteQuery = "";
 		this.slashPaletteIndex = 0;
+		this.slashCommandsUpdatedAt = 0;
+		this.slashRuntimeCommands = [];
 		this.expandedToolWorkflowIds.clear();
 		this.expandedToolGroupByWorkflowId.clear();
 		this.expandedWorkflowThinkingIds.clear();
 		this.collapsedAutoWorkflowIds.clear();
 		this.compactionCycle = null;
+		this.compactionInsertIndex = null;
 		this.runHasAssistantText = false;
 		this.runSawToolActivity = false;
 		this.keepWorkflowExpandedUntilAssistantText = false;
@@ -640,6 +754,7 @@ export class ChatView {
 
 	setInputText(text: string): void {
 		this.inputText = text;
+		this.resetComposerHistoryNavigation();
 		this.updateSlashPaletteStateFromInput();
 		this.render();
 		requestAnimationFrame(() => {
@@ -657,6 +772,7 @@ export class ChatView {
 		if (draft) {
 			this.selectedSkillDraft = draft;
 			this.inputText = "";
+			this.resetComposerHistoryNavigation();
 			this.updateSlashPaletteStateFromInput();
 			this.render();
 			requestAnimationFrame(() => {
@@ -667,6 +783,7 @@ export class ChatView {
 		}
 		this.selectedSkillDraft = null;
 		this.inputText = commandText;
+		this.resetComposerHistoryNavigation();
 		this.closeSlashPalette();
 		this.render();
 		requestAnimationFrame(() => {
@@ -728,14 +845,15 @@ export class ChatView {
 			this.slashPaletteNavigationMode = "pointer";
 			return;
 		}
+		const wasOpen = this.slashPaletteOpen;
 		const normalized = query.toLowerCase();
-		if (!this.slashPaletteOpen || normalized !== this.slashPaletteQuery) {
+		if (!wasOpen || normalized !== this.slashPaletteQuery) {
 			this.slashPaletteIndex = 0;
 			this.slashPaletteNavigationMode = "pointer";
 		}
 		this.slashPaletteOpen = true;
 		this.slashPaletteQuery = normalized;
-		void this.ensureSlashSkillsLoaded();
+		void this.ensureSlashCommandsLoaded(!wasOpen);
 	}
 
 	private closeSlashPalette(clearInput = false): void {
@@ -746,52 +864,125 @@ export class ChatView {
 		if (clearInput) this.inputText = "";
 	}
 
-	private normalizeSkillNameFromCommand(rawName: string): string | null {
-		const trimmed = rawName.trim();
-		if (!trimmed) return null;
-		const fromPrefixed = trimmed.match(/^\/?skill:([a-zA-Z0-9._-]+)\b/i);
-		if (fromPrefixed) return fromPrefixed[1] ?? null;
-		if (/^[a-zA-Z0-9._-]+$/.test(trimmed)) return trimmed;
-		return null;
-	}
-
-	private collectRuntimeSkillNames(commands: Array<Record<string, unknown>>): string[] {
-		const names = new Set<string>();
-		for (const raw of commands) {
-			const source = normalizeText((raw as Record<string, unknown>).source).toLowerCase();
-			if (source !== "skill") continue;
-			const name = this.normalizeSkillNameFromCommand(normalizeText((raw as Record<string, unknown>).name));
-			if (name) names.add(name);
+	private parseSlashInput(value: string): { commandText: string; commandName: string; args: string } | null {
+		const raw = value.trim();
+		if (!raw.startsWith("/")) return null;
+		if (raw.includes("\n")) return null;
+		const body = raw.slice(1).trim();
+		if (!body) return null;
+		const splitIndex = body.search(/\s/);
+		if (splitIndex < 0) {
+			const commandToken = body.trim();
+			const commandName = commandToken.toLowerCase();
+			return {
+				commandName,
+				args: "",
+				commandText: `/${commandToken}`,
+			};
 		}
-		return [...names].sort((a, b) => a.localeCompare(b));
+		const commandToken = body.slice(0, splitIndex).trim();
+		const commandName = commandToken.toLowerCase();
+		const args = body.slice(splitIndex + 1).trim();
+		return {
+			commandName,
+			args,
+			commandText: `/${commandToken}${args ? ` ${args}` : ""}`,
+		};
 	}
 
-	private async ensureSlashSkillsLoaded(force = false): Promise<void> {
-		if (this.slashSkillsLoading) return;
-		if (!force && this.slashSkills.length > 0 && Date.now() - this.slashSkillsUpdatedAt < 120_000) return;
-		this.slashSkillsLoading = true;
+	private normalizeRuntimeSlashCommand(raw: Record<string, unknown>): RuntimeSlashCommand | null {
+		const source = normalizeText(raw.source).toLowerCase();
+		if (source !== "extension" && source !== "prompt" && source !== "skill") return null;
+		const name = normalizeText(raw.name).replace(/^\/+/, "").trim().toLowerCase();
+		if (!name) return null;
+		const description = normalizeText(raw.description) || `Run /${name}`;
+		return {
+			name,
+			description,
+			source,
+		};
+	}
+
+	private async ensureSlashCommandsLoaded(force = false): Promise<void> {
+		if (this.slashCommandsLoading) return;
+		if (!force && this.slashRuntimeCommands.length > 0 && Date.now() - this.slashCommandsUpdatedAt < 15_000) return;
+		this.slashCommandsLoading = true;
 		if (this.slashPaletteOpen) this.render();
 		try {
 			const runtimeCommands = await rpcBridge.getCommands().catch(() => []);
-			const runtimeSkills = this.collectRuntimeSkillNames(runtimeCommands as Array<Record<string, unknown>>);
-
-			const { homeDir } = await import("@tauri-apps/api/path");
-			const home = await homeDir();
-			const roots = [joinFsPath(joinFsPath(joinFsPath(home, ".pi"), "agent"), "skills")];
-			const sets = await Promise.all(roots.map((root) => this.collectSkillNames(root)));
-			const merged = new Set<string>(runtimeSkills);
-			for (const list of sets) {
-				for (const name of list) merged.add(name);
+			const normalized: RuntimeSlashCommand[] = [];
+			const seen = new Set<string>();
+			for (const raw of runtimeCommands as Array<Record<string, unknown>>) {
+				const parsed = this.normalizeRuntimeSlashCommand(raw);
+				if (!parsed) continue;
+				const key = `${parsed.source}:${parsed.name}`;
+				if (seen.has(key)) continue;
+				seen.add(key);
+				normalized.push(parsed);
 			}
-			this.slashSkills = [...merged].sort((a, b) => a.localeCompare(b));
-			this.slashSkillsUpdatedAt = Date.now();
+			const sourceOrder: Record<RuntimeSlashCommand["source"], number> = {
+				extension: 0,
+				prompt: 1,
+				skill: 2,
+			};
+			normalized.sort((a, b) => {
+				const sourceDiff = sourceOrder[a.source] - sourceOrder[b.source];
+				if (sourceDiff !== 0) return sourceDiff;
+				return a.name.localeCompare(b.name);
+			});
+			this.slashRuntimeCommands = normalized;
+			this.slashCommandsUpdatedAt = Date.now();
 		} catch {
-			this.slashSkills = this.slashSkills.slice();
-			this.slashSkillsUpdatedAt = Date.now();
+			this.slashRuntimeCommands = this.slashRuntimeCommands.slice();
+			this.slashCommandsUpdatedAt = Date.now();
 		} finally {
-			this.slashSkillsLoading = false;
+			this.slashCommandsLoading = false;
 			if (this.slashPaletteOpen) this.render();
 		}
+	}
+
+	private slashSectionForSource(source: SlashCommandSource): SlashPaletteSection {
+		switch (source) {
+			case "builtin":
+				return "CLI";
+			case "extension":
+				return "Extensions";
+			case "prompt":
+				return "Prompts";
+			case "skill":
+			default:
+				return "Skills";
+		}
+	}
+
+	private buildAllSlashPaletteItems(): SlashPaletteItem[] {
+		const builtinItems: SlashPaletteItem[] = BUILTIN_SLASH_COMMANDS.map((command) => ({
+			id: `builtin:${command.name}`,
+			section: "CLI",
+			label: `/${command.name}`,
+			hint: command.description,
+			commandName: command.name,
+			source: "builtin",
+		}));
+		const builtinNames = new Set(builtinItems.map((item) => item.commandName));
+		const runtimeItems: SlashPaletteItem[] = this.slashRuntimeCommands
+			.filter((command) => !builtinNames.has(command.name))
+			.map((command) => ({
+				id: `${command.source}:${command.name}`,
+				section: this.slashSectionForSource(command.source),
+				label: `/${command.name}`,
+				hint: command.description,
+				commandName: command.name,
+				source: command.source,
+			}));
+		return [...builtinItems, ...runtimeItems];
+	}
+
+	private slashQueryToken(): string {
+		const raw = this.slashPaletteQuery.trim();
+		if (!raw) return "";
+		const [token] = raw.split(/\s+/, 1);
+		return (token || "").toLowerCase();
 	}
 
 	private matchesSlashQuery(query: string, ...values: string[]): boolean {
@@ -802,89 +993,515 @@ export class ChatView {
 
 	private getSlashPaletteItems(): SlashPaletteItem[] {
 		if (!this.slashPaletteOpen) return [];
-		const query = this.slashPaletteQuery;
-		const actions: SlashPaletteItem[] = [
-			{ id: "action:new-session", section: "Actions" as const, label: "New session", hint: "Create a fresh session tab" },
-			{ id: "action:rename-session", section: "Actions" as const, label: "Rename session", hint: "Rename current session" },
-			{ id: "action:open-terminal", section: "Actions" as const, label: "Open terminal", hint: "Switch to terminal pane" },
-			{ id: "action:compact", section: "Actions" as const, label: "Compact context", hint: "Run session compaction now" },
-			{ id: "action:history", section: "Actions" as const, label: "Open history", hint: "Browse current session history" },
-			{ id: "action:copy-last", section: "Actions" as const, label: "Copy last answer", hint: "Copy latest assistant response" },
-			{ id: "action:export-html", section: "Actions" as const, label: "Export HTML", hint: "Export conversation to HTML" },
-		].filter((item) => this.matchesSlashQuery(query, item.label, item.hint, item.id));
-
-		const skills = this.slashSkills
-			.filter((name) => this.matchesSlashQuery(query, name, "skill"))
-			.slice(0, 24)
-			.map((name) => ({
-				id: `skill:${name}`,
-				section: "Skills" as const,
-				label: name,
-				hint: "Use skill in composer",
-				skillName: name,
-			}));
-
-		if (query && query.startsWith("skill:") && skills.length === 0) {
-			const raw = query.slice("skill:".length).trim();
-			if (raw) {
-				skills.push({
-					id: `skill:${raw}`,
-					section: "Skills" as const,
-					label: raw,
-					hint: "Use typed skill name",
-					skillName: raw,
-				});
+		const query = this.slashQueryToken();
+		const allItems = this.buildAllSlashPaletteItems();
+		if (!query) return allItems;
+		const startsWith: SlashPaletteItem[] = [];
+		const contains: SlashPaletteItem[] = [];
+		for (const item of allItems) {
+			if (!this.matchesSlashQuery(query, item.commandName, item.label, item.hint, item.section)) continue;
+			if (item.commandName.startsWith(query) || item.label.toLowerCase().startsWith(`/${query}`)) {
+				startsWith.push(item);
+			} else {
+				contains.push(item);
 			}
 		}
+		return [...startsWith, ...contains];
+	}
 
-		return [...actions, ...skills];
+	private findSlashPaletteItemByName(commandName: string): SlashPaletteItem | null {
+		const normalized = commandName.trim().toLowerCase();
+		if (!normalized) return null;
+		return this.buildAllSlashPaletteItems().find((item) => item.commandName === normalized) ?? null;
+	}
+
+	private unwrapQuotedArg(value: string): string {
+		const trimmed = value.trim();
+		if (!trimmed) return "";
+		if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
+			return trimmed.slice(1, -1).trim();
+		}
+		return trimmed;
+	}
+
+	private normalizedAuthProviderArg(rawArgs: string): string {
+		const provider = this.unwrapQuotedArg(rawArgs).toLowerCase();
+		if (!provider) return "";
+		if (!/^[a-z0-9._-]+$/.test(provider)) return "";
+		return provider;
+	}
+
+	private showTerminalOnlyAuthGuidance(action: "login" | "logout", rawArgs: string): void {
+		const provider = this.normalizedAuthProviderArg(rawArgs);
+		const command = `/${action}${provider ? ` ${provider}` : ""}`;
+		this.appendSystemMessage(`Run in terminal: \`pi\` then \`${command}\``, {
+			label: "auth",
+			markdown: true,
+		});
+		this.pushNotice("OAuth commands are terminal-only in Desktop for now", "info");
+	}
+
+	private async pickSessionImportPathFromDialog(): Promise<string | null> {
+		try {
+			const { open } = await import("@tauri-apps/plugin-dialog");
+			const selected = await open({
+				multiple: false,
+				directory: false,
+				filters: [{ name: "Session JSONL", extensions: ["jsonl", "json"] }],
+				defaultPath: this.projectPath || undefined,
+			});
+			if (Array.isArray(selected)) {
+				const first = selected.find((entry) => typeof entry === "string" && entry.trim().length > 0);
+				return typeof first === "string" ? first : null;
+			}
+			if (typeof selected === "string" && selected.trim().length > 0) {
+				return selected;
+			}
+			return null;
+		} catch (err) {
+			console.error("Failed to open session import picker:", err);
+			this.pushNotice("Failed to open import picker", "error");
+			return null;
+		}
+	}
+
+	private async pickSessionExportPathFromDialog(): Promise<string | null> {
+		try {
+			const { save } = await import("@tauri-apps/plugin-dialog");
+			const basePath = this.projectPath ? `${this.projectPath.replace(/\\/g, "/")}/session.html` : "session.html";
+			const selected = await save({
+				title: "Export session",
+				defaultPath: basePath,
+				filters: [{ name: "HTML", extensions: ["html"] }],
+			});
+			if (typeof selected === "string" && selected.trim().length > 0) {
+				return selected;
+			}
+			return null;
+		} catch (err) {
+			console.error("Failed to open export picker:", err);
+			this.pushNotice("Failed to open export picker", "error");
+			return null;
+		}
+	}
+
+	private async executeSlashCommandFromComposer(): Promise<void> {
+		const slashQuery = this.slashQueryFromInput();
+		const parsed = this.parseSlashInput(this.inputText);
+		if (!parsed && slashQuery === null) return;
+		if (this.pendingImages.length > 0) {
+			this.pushNotice("Slash commands cannot be sent with image attachments", "info");
+			return;
+		}
+		await this.ensureSlashCommandsLoaded();
+		const liveItems = this.getSlashPaletteItems();
+		if (parsed) {
+			const exact = this.findSlashPaletteItemByName(parsed.commandName);
+			if (exact) {
+				await this.runSlashCommand(parsed.commandText, exact, parsed.args);
+				return;
+			}
+		}
+		if (this.slashPaletteOpen && liveItems.length > 0) {
+			const picked = liveItems[Math.max(0, Math.min(this.slashPaletteIndex, liveItems.length - 1))];
+			const pickedArgs = parsed && parsed.commandName === picked.commandName ? parsed.args : "";
+			const commandText = `/${picked.commandName}${pickedArgs ? ` ${pickedArgs}` : ""}`;
+			await this.runSlashCommand(commandText, picked, pickedArgs);
+			return;
+		}
+		if (parsed) {
+			this.pushNotice(`Unknown slash command: /${parsed.commandName}`, "error");
+			return;
+		}
+		this.pushNotice("Select a slash command from the menu", "info");
+	}
+
+	private async runSlashCommand(commandText: string, item: SlashPaletteItem, args: string): Promise<void> {
+		const trimmedCommandText = commandText.trim();
+		if (!trimmedCommandText) return;
+		this.rememberComposerHistoryEntry(trimmedCommandText);
+		this.clearComposer();
+		this.sendingPrompt = true;
+		this.render();
+		try {
+			if (item.source === "builtin") {
+				await this.executeBuiltinSlashCommand(item.commandName, args);
+			} else {
+				await this.executeRuntimeSlashCommand(trimmedCommandText, item.source, item.commandName);
+			}
+		} catch (err) {
+			console.error(`Slash command failed (${item.commandName}):`, err);
+			const message = err instanceof Error ? err.message : String(err);
+			this.pushNotice(message || `Failed to run /${item.commandName}`, "error");
+		} finally {
+			this.sendingPrompt = false;
+			this.render();
+		}
+	}
+
+	private async executeRuntimeSlashCommand(commandText: string, source: SlashCommandSource, commandName: string): Promise<void> {
+		if (source === "builtin") return;
+		if (source === "extension" && this.onOpenExtensionConfig && commandName.toLowerCase().endsWith("config")) {
+			const handled = await this.onOpenExtensionConfig(commandName.toLowerCase());
+			if (handled) return;
+		}
+		const options = this.currentIsStreaming() ? { streamingBehavior: "steer" as const } : {};
+		await rpcBridge.prompt(commandText, options);
+		this.onPromptSubmitted?.();
+	}
+
+	private openModelPicker(options: { preferredProvider?: string } = {}): void {
+		if (!this.loadingModels && this.availableModels.length === 0) {
+			void this.loadAvailableModels();
+		}
+		const preferred = normalizeText(options.preferredProvider).toLowerCase();
+		if (preferred) {
+			const exact = this.availableModels.find((model) => model.provider.toLowerCase() === preferred)?.provider;
+			if (exact) {
+				this.modelPickerActiveProvider = exact;
+			} else {
+				const partial = this.availableModels.find((model) => model.provider.toLowerCase().includes(preferred))?.provider;
+				if (partial) this.modelPickerActiveProvider = partial;
+			}
+		}
+		if (!this.modelPickerActiveProvider) {
+			const currentProvider = normalizeText(this.state?.model?.provider);
+			if (currentProvider) {
+				this.modelPickerActiveProvider = currentProvider;
+			}
+		}
+		this.modelPickerOpen = true;
+		this.render();
+	}
+
+	private resolveProviderHintFromModelArg(rawArg: string): string | null {
+		const arg = rawArg.trim().replace(/^\/+/, "");
+		if (!arg) return null;
+
+		const byDelim = arg.includes("/") ? arg.split("/")[0] : arg.includes("::") ? arg.split("::")[0] : arg;
+		const token = byDelim.trim().toLowerCase();
+		if (!token) return null;
+
+		const providers = [...new Set(this.availableModels.map((model) => model.provider))];
+		const exact = providers.find((provider) => provider.toLowerCase() === token);
+		if (exact) return exact;
+		const partial = providers.find((provider) => provider.toLowerCase().includes(token));
+		if (partial) return partial;
+
+		const fuzzy = this.availableModels.filter((model) => `${model.provider}/${model.id}`.toLowerCase().includes(token));
+		if (fuzzy.length > 0) {
+			const uniqueProviders = [...new Set(fuzzy.map((model) => model.provider))];
+			if (uniqueProviders.length === 1) return uniqueProviders[0];
+		}
+
+		return null;
+	}
+
+	private resolveModelCandidateFromArg(rawArg: string): ModelOption | null {
+		const arg = rawArg.trim();
+		if (!arg) return null;
+		const normalizedArg = arg.replace(/^\/+/, "").trim();
+		const viaDoubleColon = normalizedArg.split("::");
+		if (viaDoubleColon.length === 2) {
+			const provider = viaDoubleColon[0]?.trim().toLowerCase();
+			const id = viaDoubleColon[1]?.trim().toLowerCase();
+			if (provider && id) {
+				return this.availableModels.find((model) => model.provider.toLowerCase() === provider && model.id.toLowerCase() === id) ?? null;
+			}
+		}
+		const slashIndex = normalizedArg.indexOf("/");
+		if (slashIndex > 0) {
+			const provider = normalizedArg.slice(0, slashIndex).trim().toLowerCase();
+			const id = normalizedArg.slice(slashIndex + 1).trim().toLowerCase();
+			if (provider && id) {
+				const exact = this.availableModels.find((model) => model.provider.toLowerCase() === provider && model.id.toLowerCase() === id);
+				if (exact) return exact;
+			}
+		}
+		const lower = normalizedArg.toLowerCase();
+		const exactById = this.availableModels.find((model) => model.id.toLowerCase() === lower);
+		if (exactById) return exactById;
+		const fuzzy = this.availableModels.filter((model) => `${model.provider}/${model.id}`.toLowerCase().includes(lower));
+		if (fuzzy.length === 1) return fuzzy[0];
+		return null;
+	}
+
+	private getSessionMessageBreakdown(): {
+		user: number;
+		assistant: number;
+		toolCalls: number;
+		toolResults: number;
+	} {
+		let user = 0;
+		let assistant = 0;
+		let toolCalls = 0;
+		let toolResults = 0;
+		for (const message of this.messages) {
+			if (message.role === "user") {
+				user += 1;
+				continue;
+			}
+			if (message.role !== "assistant") continue;
+			assistant += 1;
+			toolCalls += message.toolCalls.length;
+			toolResults += message.toolCalls.filter((call) => typeof call.result === "string" && call.result.trim().length > 0).length;
+		}
+		return { user, assistant, toolCalls, toolResults };
+	}
+
+	private formatSessionInfoBlock(): string {
+		const lines: string[] = [];
+		const sessionName = normalizeText(this.state?.sessionName);
+		const sessionFile = normalizeText(this.state?.sessionFile);
+		const sessionId = normalizeText(this.state?.sessionId);
+		const modelProvider = normalizeText(this.state?.model?.provider);
+		const modelId = normalizeText(this.state?.model?.id);
+		const modelLabel = modelProvider && modelId ? `${modelProvider}/${modelId}` : "—";
+		const { user, assistant, toolCalls, toolResults } = this.getSessionMessageBreakdown();
+		const totalMessages = this.state?.messageCount ?? this.sessionStats.messageCount;
+		const pendingMessages = this.state?.pendingMessageCount ?? this.sessionStats.pendingCount;
+
+		lines.push("Session info");
+		lines.push("");
+		lines.push(`Name: ${sessionName || "(unnamed)"}`);
+		lines.push(`File: ${sessionFile || "In-memory"}`);
+		lines.push(`ID: ${sessionId || "—"}`);
+		lines.push(`Model: ${modelLabel}`);
+		lines.push(`Thinking: ${this.state?.thinkingLevel ?? "—"}`);
+		lines.push("");
+		lines.push("Messages");
+		lines.push(`User: ${user}`);
+		lines.push(`Assistant: ${assistant}`);
+		lines.push(`Tool calls: ${toolCalls}`);
+		lines.push(`Tool results: ${toolResults}`);
+		lines.push(`Total: ${Math.max(0, totalMessages)}`);
+		lines.push(`Pending: ${Math.max(0, pendingMessages)}`);
+		lines.push("");
+		lines.push("Tokens");
+		lines.push(
+			`Context: ${this.sessionStats.tokens !== null ? Math.round(this.sessionStats.tokens).toLocaleString() : "—"}`,
+		);
+		lines.push(
+			`Context window: ${this.sessionStats.contextWindow !== null ? Math.round(this.sessionStats.contextWindow).toLocaleString() : "—"}`,
+		);
+		lines.push(`Usage: ${this.sessionStats.usageRatio !== null ? `${(this.sessionStats.usageRatio * 100).toFixed(1)}%` : "—"}`);
+		lines.push(
+			`Session tokens total: ${this.sessionStats.lifetimeTokens !== null ? Math.round(this.sessionStats.lifetimeTokens).toLocaleString() : "—"}`,
+		);
+		lines.push(`Cost: ${this.sessionStats.costUsd !== null ? formatUsd(this.sessionStats.costUsd) : "—"}`);
+		return lines.join("\n");
+	}
+
+	private async executeBuiltinSlashCommand(commandName: string, args: string): Promise<void> {
+		switch (commandName) {
+			case "settings": {
+				if (!this.onOpenSettings) {
+					this.pushNotice("Settings panel is unavailable", "error");
+					return;
+				}
+				this.onOpenSettings();
+				return;
+			}
+			case "model": {
+				const rawArg = args.trim();
+				if (!rawArg) {
+					this.openModelPicker();
+					return;
+				}
+				if (this.availableModels.length === 0) {
+					await this.loadAvailableModels();
+				}
+				const candidate = this.resolveModelCandidateFromArg(rawArg);
+				if (!candidate) {
+					const providerHint = this.resolveProviderHintFromModelArg(rawArg) ?? undefined;
+					this.openModelPicker({ preferredProvider: providerHint });
+					return;
+				}
+				await this.setModel(candidate.provider, candidate.id);
+				return;
+			}
+			case "scoped-models": {
+				if (this.onOpenSettings) {
+					this.onOpenSettings("general");
+				} else {
+					this.pushNotice("Settings panel is unavailable", "error");
+				}
+				return;
+			}
+			case "export": {
+				let outputPath = this.unwrapQuotedArg(args);
+				if (!outputPath) {
+					outputPath = (await this.pickSessionExportPathFromDialog()) || "";
+				}
+				if (!outputPath) {
+					this.pushNotice("Export cancelled", "info");
+					return;
+				}
+				const result = await rpcBridge.exportHtml(outputPath);
+				this.pushNotice(`Exported session to ${truncate(result.path, 70)}`, "success");
+				return;
+			}
+			case "import": {
+				let target = this.unwrapQuotedArg(args);
+				if (!target) {
+					target = (await this.pickSessionImportPathFromDialog()) || "";
+				}
+				if (!target) {
+					this.pushNotice("Import cancelled", "info");
+					return;
+				}
+				const result = await rpcBridge.switchSession(target);
+				if (!result.cancelled) {
+					await this.refreshFromBackend();
+					this.pushNotice(`Session imported from ${truncate(target, 56)}`, "success");
+				} else {
+					this.pushNotice("Import cancelled", "info");
+				}
+				return;
+			}
+			case "share": {
+				await this.shareAsGist();
+				return;
+			}
+			case "copy": {
+				await this.copyLastMessage();
+				return;
+			}
+			case "name": {
+				const nextName = args.trim();
+				if (!nextName) {
+					if (this.onBeginRenameCurrentSession) {
+						const handled = await this.onBeginRenameCurrentSession();
+						if (handled) return;
+					}
+					await this.renameSession();
+					return;
+				}
+				await this.renameSessionTo(nextName);
+				return;
+			}
+			case "session": {
+				await this.refreshSessionStats(true);
+				this.appendSystemMessage(this.formatSessionInfoBlock(), { label: "session" });
+				return;
+			}
+			case "changelog": {
+				const tokens = args
+					.split(/\s+/)
+					.map((token) => token.trim().toLowerCase())
+					.filter(Boolean);
+				const forceRefresh = tokens.includes("refresh");
+				const showAll = tokens.includes("all") || tokens.includes("full");
+				const markdownFull = await this.loadPiAgentChangelogMarkdown(forceRefresh);
+				const markdown = showAll ? markdownFull : this.extractLatestChangelogSections(markdownFull, 2);
+				this.appendSystemMessage(markdown, {
+					label: "changelog",
+					markdown: true,
+					collapsibleTitle: showAll ? "Changelog · all" : "Changelog · latest",
+					collapsedByDefault: true,
+				});
+				return;
+			}
+			case "hotkeys": {
+				if (this.onOpenShortcuts) {
+					this.onOpenShortcuts();
+				} else {
+					this.pushNotice("Keyboard shortcuts panel is unavailable", "info");
+				}
+				return;
+			}
+			case "fork": {
+				this.openHistoryViewerForFork({
+					loading: false,
+					sessionName: this.state?.sessionName ?? null,
+					query: args.trim() || undefined,
+				});
+				return;
+			}
+			case "tree": {
+				this.openHistoryViewer({ query: args.trim() || undefined });
+				return;
+			}
+			case "login": {
+				this.showTerminalOnlyAuthGuidance("login", args);
+				return;
+			}
+			case "logout": {
+				this.showTerminalOnlyAuthGuidance("logout", args);
+				return;
+			}
+			case "new": {
+				if (this.onCreateFreshSession) {
+					const handled = await this.onCreateFreshSession();
+					if (handled) return;
+				}
+				await this.newSession();
+				return;
+			}
+			case "compact": {
+				await this.compactNow(args.trim() || undefined);
+				return;
+			}
+			case "resume": {
+				if (this.onOpenSessionBrowser) {
+					this.onOpenSessionBrowser(args.trim() || undefined);
+				} else {
+					this.pushNotice("Session browser is unavailable", "info");
+				}
+				return;
+			}
+			case "reload": {
+				if (this.onReloadRuntime) {
+					const handled = await this.onReloadRuntime();
+					if (handled) {
+						await this.ensureSlashCommandsLoaded(true);
+						this.pushNotice("Reloaded runtime state", "success");
+						return;
+					}
+				}
+				await this.ensureSlashCommandsLoaded(true);
+				await this.refreshFromBackend();
+				await this.loadAvailableModels();
+				this.pushNotice("Reloaded runtime state", "success");
+				return;
+			}
+			case "quit": {
+				if (this.onQuitApp) {
+					this.onQuitApp();
+				} else {
+					this.pushNotice("Quit is unavailable in this context", "info");
+				}
+				return;
+			}
+			default: {
+				this.pushNotice(`Unknown slash command: /${commandName}`, "error");
+				return;
+			}
+		}
+	}
+
+	private previewSlashPaletteItem(item: SlashPaletteItem): void {
+		const parsed = this.parseSlashInput(this.inputText);
+		const args = parsed && parsed.commandName === item.commandName ? parsed.args : "";
+		const commandText = `/${item.commandName}${args ? ` ${args}` : ""}`;
+		if (this.inputText === commandText) return;
+		this.inputText = commandText;
+		requestAnimationFrame(() => {
+			const textarea = this.container.querySelector("#chat-input") as HTMLTextAreaElement | null;
+			if (!textarea) return;
+			textarea.value = commandText;
+			textarea.style.height = "auto";
+			textarea.style.height = `${Math.min(textarea.scrollHeight, 220)}px`;
+			const end = commandText.length;
+			textarea.setSelectionRange(end, end);
+		});
 	}
 
 	private selectSlashPaletteItem(item: SlashPaletteItem): void {
-		if (item.section === "Skills" && item.skillName) {
-			this.selectedSkillDraft = {
-				name: item.skillName,
-				commandText: `/skill:${item.skillName}`,
-				scope: null,
-			};
-			this.inputText = "";
-			this.closeSlashPalette();
-			this.render();
-			requestAnimationFrame(() => {
-				const textarea = this.container.querySelector("#chat-input") as HTMLTextAreaElement | null;
-				textarea?.focus();
-			});
-			return;
-		}
-
-		this.inputText = "";
-		this.closeSlashPalette();
-		this.render();
-		switch (item.id) {
-			case "action:new-session":
-				void this.newSession();
-				return;
-			case "action:rename-session":
-				void this.renameSession();
-				return;
-			case "action:open-terminal":
-				this.onOpenTerminal?.();
-				return;
-			case "action:compact":
-				void this.compactNow();
-				return;
-			case "action:history":
-				this.openHistoryViewer();
-				return;
-			case "action:copy-last":
-				void this.copyLastMessage();
-				return;
-			case "action:export-html":
-				void this.exportToHtml();
-				return;
-			default:
-				return;
-		}
+		const parsed = this.parseSlashInput(this.inputText);
+		const args = parsed && parsed.commandName === item.commandName ? parsed.args : "";
+		const commandText = `/${item.commandName}${args ? ` ${args}` : ""}`;
+		void this.runSlashCommand(commandText, item, args);
 	}
 
 	private async bindNativeFileDropListener(): Promise<void> {
@@ -1030,10 +1647,18 @@ export class ChatView {
 					usageRatio: null,
 					updatedAt: 0,
 				};
+				if (this.historyViewerOpen && this.historyViewerMode === "browse") {
+					this.historyTreeRows = [];
+					this.historyViewerLoading = true;
+					void this.loadSessionTreeForHistory();
+				}
 			}
 			this.lastBackendRefreshError = null;
 			this.onStateChange?.(state);
 			this.messages = this.mapBackendMessages(backendMessages);
+			if (this.compactionInsertIndex !== null) {
+				this.compactionInsertIndex = Math.max(0, Math.min(this.compactionInsertIndex, this.messages.length));
+			}
 			this.expandedToolWorkflowIds.clear();
 			this.expandedToolGroupByWorkflowId.clear();
 			this.expandedWorkflowThinkingIds.clear();
@@ -1486,8 +2111,8 @@ export class ChatView {
 		}
 	}
 
-	private async setModel(provider: string, modelId: string): Promise<void> {
-		if (this.settingModel) return;
+	private async setModel(provider: string, modelId: string): Promise<boolean> {
+		if (this.settingModel) return false;
 		this.modelPickerOpen = false;
 		this.settingModel = true;
 		this.render();
@@ -1497,9 +2122,11 @@ export class ChatView {
 			if (this.state) this.onStateChange?.(this.state);
 			void this.refreshSessionStats(true);
 			this.pushNotice(`Switched to ${provider}/${modelId}`, "success");
+			return true;
 		} catch (err) {
 			console.error("Failed to set model:", err);
 			this.pushNotice("Failed to switch model", "error");
+			return false;
 		} finally {
 			this.settingModel = false;
 			this.render();
@@ -1772,7 +2399,8 @@ export class ChatView {
 
 	private parseBashResult(raw: unknown): { stdout: string; stderr: string; exitCode: number } {
 		const source = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
-		const stdout = typeof source.stdout === "string" ? source.stdout : "";
+		const output = typeof source.output === "string" ? source.output : "";
+		const stdout = typeof source.stdout === "string" ? source.stdout : output;
 		const stderr = typeof source.stderr === "string" ? source.stderr : "";
 		const exit = source.exitCode ?? source.exit_code;
 		if (typeof exit === "number" && Number.isFinite(exit)) {
@@ -1783,6 +2411,53 @@ export class ChatView {
 			if (Number.isFinite(parsed)) return { stdout, stderr, exitCode: parsed };
 		}
 		return { stdout, stderr, exitCode: 0 };
+	}
+
+	private extractLatestChangelogSections(markdown: string, maxSections = 2): string {
+		const lines = markdown.split(/\r?\n/);
+		const firstSectionIndex = lines.findIndex((line) => line.startsWith("## "));
+		if (firstSectionIndex < 0) return markdown;
+
+		const header = lines.slice(0, firstSectionIndex).join("\n").trim();
+		const sections: string[] = [];
+		let index = firstSectionIndex;
+		while (index < lines.length && sections.length < maxSections) {
+			if (!lines[index].startsWith("## ")) {
+				index += 1;
+				continue;
+			}
+			let end = index + 1;
+			while (end < lines.length && !lines[end].startsWith("## ")) {
+				end += 1;
+			}
+			sections.push(lines.slice(index, end).join("\n").trimEnd());
+			index = end;
+		}
+
+		const body = sections.join("\n\n").trim();
+		return `${header ? `${header}\n\n` : ""}${body}`.trim();
+	}
+
+	private async loadPiAgentChangelogMarkdown(force = false): Promise<string> {
+		if (this.loadingChangelog) {
+			return this.changelogCacheMarkdown ?? "";
+		}
+		if (!force && this.changelogCacheMarkdown && Date.now() - this.changelogCacheAt < 45_000) {
+			return this.changelogCacheMarkdown;
+		}
+		this.loadingChangelog = true;
+		try {
+			const result = await rpcBridge.getPiChangelog();
+			const markdown = (result.content || "").trim();
+			if (!markdown) {
+				throw new Error("Pi Coding Agent changelog is empty");
+			}
+			this.changelogCacheMarkdown = markdown;
+			this.changelogCacheAt = Date.now();
+			return markdown;
+		} finally {
+			this.loadingChangelog = false;
+		}
 	}
 
 	private parseNumstat(output: string): { additions: number; deletions: number } {
@@ -2250,13 +2925,21 @@ export class ChatView {
 		return `Error: ${stripped || raw}`;
 	}
 
-	private appendRuntimeSystemLine(text: string): void {
+	private appendSystemMessage(
+		text: string,
+		options: { label?: string; idPrefix?: string; markdown?: boolean; collapsibleTitle?: string; collapsedByDefault?: boolean } = {},
+	): void {
 		const line = text.trim();
 		if (!line) return;
+		const isCollapsible = Boolean(options.collapsibleTitle && options.collapsibleTitle.trim().length > 0);
 		this.messages.push({
-			id: uid("runtimeError"),
+			id: uid(options.idPrefix ?? "system"),
 			role: "system",
 			text: line,
+			label: options.label,
+			renderAsMarkdown: options.markdown,
+			collapsibleTitle: isCollapsible ? options.collapsibleTitle : undefined,
+			collapsibleExpanded: isCollapsible ? !(options.collapsedByDefault ?? true) : undefined,
 			toolCalls: [],
 		});
 		this.render();
@@ -2274,7 +2957,7 @@ export class ChatView {
 		this.lastRuntimeNoticeAt = now;
 		const inlineLine = this.toRuntimeInlineLine(text);
 		if (inlineLine) {
-			this.appendRuntimeSystemLine(inlineLine);
+			this.appendSystemMessage(inlineLine, { idPrefix: "runtimeError" });
 		}
 		this.pushNotice(text, kind);
 	}
@@ -2557,6 +3240,7 @@ export class ChatView {
 			}
 
 			case "auto_compaction_start": {
+				this.compactionInsertIndex = this.messages.length;
 				this.compactionCycle = {
 					id: uid("compaction"),
 					status: "running",
@@ -2565,7 +3249,7 @@ export class ChatView {
 					summary: "Compacting context…",
 					errorMessage: null,
 					details: ["Compaction started"],
-					expanded: true,
+					expanded: false,
 				};
 				this.render();
 				break;
@@ -2591,6 +3275,7 @@ export class ChatView {
 				const aborted = Boolean(event.aborted);
 				const errorMessage = this.extractRuntimeErrorMessage(event);
 				if (!this.compactionCycle) {
+					this.compactionInsertIndex = this.messages.length;
 					this.compactionCycle = {
 						id: uid("compaction"),
 						status: "running",
@@ -2599,7 +3284,7 @@ export class ChatView {
 						summary: "Compacting context…",
 						errorMessage: null,
 						details: [],
-						expanded: true,
+						expanded: false,
 					};
 				}
 				this.compactionCycle.endedAt = Date.now();
@@ -2617,6 +3302,10 @@ export class ChatView {
 				} else {
 					this.compactionCycle.status = "done";
 					this.compactionCycle.summary = "Compaction complete";
+					const tokensBefore = pickNumber(event, ["result.tokensBefore", "tokensBefore", "tokens_before"]);
+					if (typeof tokensBefore === "number" && Number.isFinite(tokensBefore)) {
+						this.compactionCycle.details.push(`Context before compaction: ${Math.round(tokensBefore).toLocaleString()} tokens`);
+					}
 					this.compactionCycle.details.push("Compaction completed successfully.");
 					this.pushNotice("Auto-compaction complete", "success");
 				}
@@ -2633,7 +3322,7 @@ export class ChatView {
 				const retryLine = errorMessage
 					? `Retry ${attempt}/${maxAttempts} in ${(delayMs / 1000).toFixed(1)}s · ${truncate(errorMessage, 150)}`
 					: `Retry ${attempt}/${maxAttempts} in ${(delayMs / 1000).toFixed(1)}s`;
-				this.appendRuntimeSystemLine(retryLine);
+				this.appendSystemMessage(retryLine, { idPrefix: "runtime" });
 				this.render();
 				break;
 			}
@@ -2646,7 +3335,7 @@ export class ChatView {
 					const finalError = this.extractRuntimeErrorMessage(event) || "Unknown retry failure";
 					this.pushRuntimeNotice(`Retry failed: ${truncate(finalError, 180)}`, "error", 2600);
 				} else {
-					this.appendRuntimeSystemLine(attempt ? `Retry succeeded on attempt ${attempt}` : "Retry succeeded");
+					this.appendSystemMessage(attempt ? `Retry succeeded on attempt ${attempt}` : "Retry succeeded", { idPrefix: "runtime" });
 				}
 				this.render();
 				break;
@@ -3092,10 +3781,81 @@ export class ChatView {
 		this.scrollToBottom(true);
 	}
 
+	private resetComposerHistoryNavigation(): void {
+		this.composerHistoryIndex = -1;
+		this.composerHistoryDraft = "";
+	}
+
+	private rememberComposerHistoryEntry(rawText: string): void {
+		const text = rawText.trim();
+		if (!text) return;
+		const last = this.composerInputHistory[this.composerInputHistory.length - 1] ?? "";
+		if (last !== text) {
+			this.composerInputHistory.push(text);
+			if (this.composerInputHistory.length > 120) {
+				this.composerInputHistory.splice(0, this.composerInputHistory.length - 120);
+			}
+		}
+		this.resetComposerHistoryNavigation();
+	}
+
+	private shouldHandleComposerHistoryKey(event: KeyboardEvent, textarea: HTMLTextAreaElement, direction: "up" | "down"): boolean {
+		if (event.altKey || event.ctrlKey || event.metaKey) return false;
+		if (textarea.selectionStart !== textarea.selectionEnd) return false;
+		const caret = textarea.selectionStart;
+		if (direction === "up") {
+			return textarea.value.slice(0, caret).indexOf("\n") === -1;
+		}
+		if (this.composerHistoryIndex < 0) return false;
+		return textarea.value.indexOf("\n", caret) === -1;
+	}
+
+	private applyComposerText(text: string): void {
+		this.inputText = text;
+		this.updateSlashPaletteStateFromInput();
+		this.render();
+		requestAnimationFrame(() => {
+			const textarea = this.container.querySelector("#chat-input") as HTMLTextAreaElement | null;
+			if (!textarea) return;
+			textarea.value = text;
+			textarea.style.height = "auto";
+			textarea.style.height = `${Math.min(textarea.scrollHeight, 220)}px`;
+			const end = text.length;
+			textarea.setSelectionRange(end, end);
+			textarea.focus();
+		});
+	}
+
+	private navigateComposerHistory(direction: "up" | "down"): void {
+		if (this.composerInputHistory.length === 0) return;
+		if (direction === "up") {
+			if (this.composerHistoryIndex < 0) {
+				this.composerHistoryDraft = this.inputText;
+				this.composerHistoryIndex = this.composerInputHistory.length - 1;
+			} else if (this.composerHistoryIndex > 0) {
+				this.composerHistoryIndex -= 1;
+			}
+			const entry = this.composerInputHistory[this.composerHistoryIndex] ?? "";
+			this.applyComposerText(entry);
+			return;
+		}
+		if (this.composerHistoryIndex < 0) return;
+		if (this.composerHistoryIndex < this.composerInputHistory.length - 1) {
+			this.composerHistoryIndex += 1;
+			const entry = this.composerInputHistory[this.composerHistoryIndex] ?? "";
+			this.applyComposerText(entry);
+			return;
+		}
+		const draft = this.composerHistoryDraft;
+		this.resetComposerHistoryNavigation();
+		this.applyComposerText(draft);
+	}
+
 	private clearComposer(): void {
 		this.inputText = "";
 		this.pendingImages = [];
 		this.selectedSkillDraft = null;
+		this.resetComposerHistoryNavigation();
 		this.closeSlashPalette();
 		this.render();
 		const textarea = this.container.querySelector("#chat-input") as HTMLTextAreaElement | null;
@@ -3116,7 +3876,12 @@ export class ChatView {
 			? (promptText ? `${selectedSkillCommand}\n\n${promptText}` : selectedSkillCommand)
 			: promptText;
 		const images = [...this.pendingImages];
+		if (!selectedSkillCommand && images.length === 0 && this.slashQueryFromInput() !== null) {
+			await this.executeSlashCommandFromComposer();
+			return;
+		}
 		if (!text && images.length === 0) return;
+		if (text) this.rememberComposerHistoryEntry(text);
 
 		let streaming = this.currentIsStreaming();
 		if (streaming) {
@@ -3198,18 +3963,20 @@ export class ChatView {
 		this.pushNotice("Message loaded. Press send to resend", "info");
 	}
 
-	async copyLastMessage(): Promise<void> {
+	async copyLastMessage(): Promise<boolean> {
 		try {
 			const text = await rpcBridge.getLastAssistantText();
 			if (!text) {
 				this.pushNotice("No assistant message to copy", "info");
-				return;
+				return false;
 			}
 			await navigator.clipboard.writeText(text);
 			this.pushNotice("Copied last assistant message", "success");
+			return true;
 		} catch (err) {
 			console.error("Failed to copy:", err);
 			this.pushNotice("Failed to copy message", "error");
+			return false;
 		}
 	}
 
@@ -3252,16 +4019,24 @@ export class ChatView {
 		}
 	}
 
-	async shareAsGist(): Promise<void> {
+	async shareAsGist(): Promise<boolean> {
 		try {
-			const { path } = await rpcBridge.exportHtml();
-			const { readTextFile } = await import("@tauri-apps/plugin-fs");
-			const html = await readTextFile(path);
-			await navigator.clipboard.writeText(html);
-			this.pushNotice("Copied exported HTML to clipboard", "success");
+			const { tempDir } = await import("@tauri-apps/api/path");
+			const tempRoot = (await tempDir()).replace(/\\/g, "/").replace(/\/+$/, "");
+			const exportPath = `${tempRoot}/session.html`;
+			const { path } = await rpcBridge.exportHtml(exportPath);
+			const shared = await rpcBridge.createShareGist(path);
+			this.appendSystemMessage(`[Open shared session](${shared.preview_url}) · [Open gist](${shared.gist_url})`, {
+				label: "share",
+				markdown: true,
+			});
+			this.pushNotice("Session shared as secret gist", "success");
+			return true;
 		} catch (err) {
-			console.error("Failed to copy exported HTML:", err);
-			this.pushNotice("Failed to copy exported HTML", "error");
+			console.error("Failed to share as gist:", err);
+			const message = err instanceof Error ? err.message : String(err);
+			this.pushNotice(truncate(message || "Failed to share session", 180), "error");
+			return false;
 		}
 	}
 
@@ -3333,26 +4108,96 @@ export class ChatView {
 		}
 	}
 
-	async newSession(): Promise<void> {
+	async newSession(): Promise<boolean> {
 		try {
 			await rpcBridge.newSession();
 			this.messages = [];
 			await this.refreshFromBackend();
 			this.pushNotice("Started new session", "success");
+			return true;
 		} catch (err) {
 			console.error("Failed to create session:", err);
 			this.pushNotice("Failed to create session", "error");
+			return false;
 		}
 	}
 
-	async compactNow(): Promise<void> {
+	async compactNow(customInstructions?: string): Promise<boolean> {
+		if (this.compactionCycle?.status === "running") {
+			this.pushNotice("Compaction already in progress", "info");
+			return false;
+		}
+		const normalizedInstructions = customInstructions?.trim() || undefined;
+		this.compactionInsertIndex = this.messages.length;
+		this.compactionCycle = {
+			id: uid("compaction"),
+			status: "running",
+			startedAt: Date.now(),
+			endedAt: null,
+			summary: "Compacting context…",
+			errorMessage: null,
+			details: normalizedInstructions ? [`Custom instructions: ${truncate(normalizedInstructions, 180)}`] : ["Manual compaction started"],
+			expanded: false,
+		};
+		this.render();
+		this.scrollToBottom();
 		try {
-			await rpcBridge.compact();
+			const result = await rpcBridge.compact(normalizedInstructions);
+			const summary = pickString(result as Record<string, unknown>, ["summary"]) || "Compaction complete";
+			const tokensBefore = pickNumber(result as Record<string, unknown>, ["tokensBefore", "tokens_before"]);
+			const firstKeptEntry = pickString(result as Record<string, unknown>, ["firstKeptEntryId", "first_kept_entry_id"]);
+			if (this.compactionCycle) {
+				this.compactionCycle.status = "done";
+				this.compactionCycle.endedAt = Date.now();
+				this.compactionCycle.summary = summary;
+				if (typeof tokensBefore === "number" && Number.isFinite(tokensBefore)) {
+					this.compactionCycle.details.push(`Context before compaction: ${Math.round(tokensBefore).toLocaleString()} tokens`);
+				}
+				if (firstKeptEntry) {
+					this.compactionCycle.details.push(`First kept entry: ${truncate(firstKeptEntry, 48)}`);
+				}
+				this.compactionCycle.details.push("Compaction completed successfully.");
+			}
 			await this.refreshFromBackend();
+			await this.refreshSessionStats(true);
+			if (this.compactionCycle && typeof this.sessionStats.tokens === "number" && Number.isFinite(this.sessionStats.tokens)) {
+				this.compactionCycle.details.push(`Context after compaction: ${Math.round(this.sessionStats.tokens).toLocaleString()} tokens`);
+			}
 			this.pushNotice("Compaction complete", "success");
+			this.render();
+			return true;
 		} catch (err) {
 			console.error("Failed to compact:", err);
+			if (this.compactionCycle) {
+				this.compactionCycle.status = "error";
+				this.compactionCycle.endedAt = Date.now();
+				this.compactionCycle.summary = "Compaction failed";
+				this.compactionCycle.errorMessage = err instanceof Error ? truncate(err.message, 220) : "Unknown compaction error";
+			}
 			this.pushNotice("Compaction failed", "error");
+			this.render();
+			return false;
+		}
+	}
+
+	private async renameSessionTo(nextNameRaw: string): Promise<boolean> {
+		const nextName = nextNameRaw.trim();
+		if (!nextName) return false;
+		try {
+			if (this.onRenameCurrentSession) {
+				const handled = await this.onRenameCurrentSession(nextName);
+				if (handled) {
+					this.pushNotice("Session renamed", "success");
+					return true;
+				}
+			}
+			await rpcBridge.setSessionName(nextName);
+			await this.refreshFromBackend();
+			this.pushNotice("Session renamed", "success");
+			return true;
+		} catch (err) {
+			this.pushNotice("Failed to rename session", "error");
+			return false;
 		}
 	}
 
@@ -3360,13 +4205,7 @@ export class ChatView {
 		const current = this.state?.sessionName || "";
 		const next = window.prompt("Session name", current);
 		if (!next || !next.trim()) return;
-		try {
-			await rpcBridge.setSessionName(next.trim());
-			await this.refreshFromBackend();
-			this.pushNotice("Session renamed", "success");
-		} catch (err) {
-			this.pushNotice("Failed to rename session", "error");
-		}
+		await this.renameSessionTo(next.trim());
 	}
 
 	async openForkPicker(): Promise<void> {
@@ -3423,23 +4262,28 @@ export class ChatView {
 		}
 	}
 
-	openHistoryViewer(): void {
+	openHistoryViewer(options?: { query?: string }): void {
 		this.historyViewerOpen = true;
 		this.historyViewerMode = "browse";
-		this.historyViewerLoading = false;
+		this.historyViewerLoading = true;
 		this.historyViewerSessionLabel = "";
+		this.historyTreeRows = [];
+		this.historyQuery = options?.query?.trim() ?? "";
+		this.historyRoleFilter = "all";
 		this.forkExpandedMessageRows.clear();
 		this.forkExpandedToolRows.clear();
 		this.render();
+		void this.loadSessionTreeForHistory();
 	}
 
-	openHistoryViewerForFork(options?: { loading?: boolean; sessionName?: string | null }): void {
+	openHistoryViewerForFork(options?: { loading?: boolean; sessionName?: string | null; query?: string }): void {
 		this.historyViewerOpen = true;
 		this.historyViewerMode = "fork";
 		this.historyViewerLoading = options?.loading ?? false;
 		this.historyViewerSessionLabel = options?.sessionName?.trim() || this.state?.sessionName?.trim() || "";
-		this.historyQuery = "";
+		this.historyQuery = options?.query?.trim() ?? "";
 		this.historyRoleFilter = "all";
+		this.forkOptions = [];
 		this.forkExpandedMessageRows.clear();
 		this.forkExpandedToolRows.clear();
 		this.render();
@@ -3453,8 +4297,11 @@ export class ChatView {
 		this.historyViewerMode = "browse";
 		this.historyViewerLoading = false;
 		this.historyViewerSessionLabel = "";
+		this.historyTreeRows = [];
+		this.historyTreeRequestSeq += 1;
 		this.historyQuery = "";
 		this.historyRoleFilter = "all";
+		this.forkOptions = [];
 		this.forkEntryIdByMessageId.clear();
 		this.forkExpandedMessageRows.clear();
 		this.forkExpandedToolRows.clear();
@@ -3501,11 +4348,13 @@ export class ChatView {
 		try {
 			const options = await rpcBridge.getForkMessages();
 			if (requestId !== this.forkTargetsRequestSeq || this.historyViewerMode !== "fork") return;
+			this.forkOptions = options;
 			this.hydrateForkTargetsFromOptions(options);
 		} catch (err) {
 			if (requestId !== this.forkTargetsRequestSeq || this.historyViewerMode !== "fork") return;
 			console.error("Failed to load fork points:", err);
 			this.pushNotice("Failed to load fork points", "error");
+			this.forkOptions = [];
 			this.forkEntryIdByMessageId.clear();
 		} finally {
 			if (requestId !== this.forkTargetsRequestSeq || this.historyViewerMode !== "fork") return;
@@ -4118,7 +4967,13 @@ export class ChatView {
 				: 0;
 		const durationLabel = durationMs > 0 ? formatDuration(durationMs) : "0s";
 		const summaryPrimary = durationLabel;
-		const summarySecondary = running > 0 ? `${total} running` : failed > 0 ? `${failed} failed` : total > 0 ? `${total} complete` : "";
+		const completed = Math.max(0, total - running - failed);
+		const summaryParts: string[] = [];
+		if (completed > 0) summaryParts.push(`${completed} complete`);
+		if (failed > 0) summaryParts.push(`${failed} failed`);
+		if (running > 0) summaryParts.push(`${running} running`);
+		if (summaryParts.length === 0 && total > 0) summaryParts.push(`${total} complete`);
+		const summarySecondary = summaryParts.join(" · ");
 		const hasFinalContent = Boolean(workflow.finalText || workflow.errorText);
 		type WorkflowDetailEntry =
 			| {
@@ -4268,7 +5123,7 @@ export class ChatView {
 								</div>
 								${hasFinalContent ? html`<div class="assistant-final-divider"><span>Agent</span></div>` : nothing}
 								${workflow.finalText
-									? html`<div class="assistant-content ${workflow.isStreaming ? "streaming-cursor" : ""}"><markdown-block .content=${workflow.finalText}></markdown-block></div>`
+									? html`<div class="assistant-content"><markdown-block .content=${workflow.finalText}></markdown-block></div>`
 									: nothing}
 								${workflow.errorText ? html`<div class="assistant-error-line">${workflow.errorText}</div>` : nothing}
 							`
@@ -4286,7 +5141,23 @@ export class ChatView {
 
 	private renderMessageTimeline(): TemplateResult[] {
 		const rows: TemplateResult[] = [];
+		const compactionInsertAt = this.compactionCycle
+			? Math.max(0, Math.min(this.compactionInsertIndex ?? this.messages.length, this.messages.length))
+			: null;
+		let compactionInserted = false;
+		const maybeInsertCompaction = (position: number): void => {
+			if (compactionInserted) return;
+			if (compactionInsertAt === null) return;
+			if (position !== compactionInsertAt) return;
+			const row = this.renderCompactionCycle();
+			if (row !== nothing) {
+				rows.push(row as TemplateResult);
+			}
+			compactionInserted = true;
+		};
+
 		for (let index = 0; index < this.messages.length; index += 1) {
+			maybeInsertCompaction(index);
 			const msg = this.messages[index];
 			if (msg.role === "assistant") {
 				const workflowCandidate = this.collectAssistantWorkflow(index);
@@ -4307,8 +5178,13 @@ export class ChatView {
 				rows.push(this.renderAssistantMessage(msg));
 				continue;
 			}
+			if (msg.label === "changelog") {
+				rows.push(this.renderChangelogMessage(msg));
+				continue;
+			}
 			rows.push(this.renderSystemMessage(msg));
 		}
+		maybeInsertCompaction(this.messages.length);
 		return rows;
 	}
 
@@ -4328,7 +5204,7 @@ export class ChatView {
 						${this.renderThinking(msg)}
 						${msg.text
 							? html`
-								<div class="assistant-content ${msg.isStreaming ? "streaming-cursor" : ""}">
+								<div class="assistant-content">
 									<markdown-block .content=${msg.text}></markdown-block>
 								</div>
 							`
@@ -4346,11 +5222,48 @@ export class ChatView {
 	}
 
 	private renderSystemMessage(msg: UiMessage): TemplateResult {
+		const isInline = msg.label === "share" || msg.label === "auth" || msg.label === "models";
 		return html`
-			<div class="chat-row system-row" data-message-id=${msg.id}>
-				<div class="system-message">
-					${msg.label ? html`<div class="system-label">${msg.label}</div>` : nothing}
-					<div class="system-text">${msg.text}</div>
+			<div class="chat-row system-row ${isInline ? "system-row-inline" : ""}" data-message-id=${msg.id}>
+				<div class="system-message ${isInline ? "system-message-inline" : ""}">
+					${msg.label ? html`<div class="system-label ${isInline ? "system-label-inline" : ""}">${msg.label}</div>` : nothing}
+					<div class="system-text ${isInline ? "system-text-inline" : ""}">
+						${msg.renderAsMarkdown ? html`<markdown-block .content=${msg.text}></markdown-block>` : msg.text}
+					</div>
+				</div>
+			</div>
+		`;
+	}
+
+	private renderChangelogMessage(msg: UiMessage): TemplateResult {
+		const expanded = Boolean(msg.collapsibleExpanded);
+		const title = msg.collapsibleTitle?.trim() || "Changelog";
+		return html`
+			<div class="chat-row assistant-row assistant-workflow-row changelog-row" data-message-id=${msg.id}>
+				<div class="message-shell assistant-message-shell">
+					<div class="assistant-block">
+						<div class="changelog-inline">
+							<button
+								class="tool-workflow-line changelog-inline-toggle"
+								@click=${() => {
+									msg.collapsibleExpanded = !expanded;
+									this.render();
+								}}
+							>
+								<span class="tool-workflow-line-text">${title}</span>
+								<span class="tool-workflow-count">${expanded ? "hide" : "show"}</span>
+							</button>
+							${expanded
+								? html`
+									<div class="tool-workflow-details changelog-inline-details">
+										<div class="tool-workflow-output changelog-inline-output">
+											<markdown-block .content=${msg.text}></markdown-block>
+										</div>
+									</div>
+								`
+								: nothing}
+						</div>
+					</div>
 				</div>
 			</div>
 		`;
@@ -4360,38 +5273,48 @@ export class ChatView {
 		if (!this.compactionCycle) return nothing;
 		const cycle = this.compactionCycle;
 		const completed = cycle.endedAt ?? Date.now();
-		const elapsed = formatDuration(completed - cycle.startedAt);
-		const statusText =
+		const elapsedSeconds = Math.max(1, Math.round((completed - cycle.startedAt) / 1000));
+		const elapsed = `${elapsedSeconds}s`;
+		const title =
 			cycle.status === "running"
-				? "running"
-				: cycle.status === "error"
-					? "failed"
-					: cycle.status === "aborted"
-						? "aborted"
-						: "done";
+				? "Compacting context..."
+				: cycle.status === "done"
+					? "Compaction complete"
+					: cycle.status === "error"
+						? "Compaction failed"
+						: "Compaction aborted";
+		const normalizedSummary = cycle.summary.trim().toLowerCase();
+		const showSummaryLine =
+			cycle.status !== "running" &&
+			Boolean(cycle.summary.trim()) &&
+			!(["compaction complete", "compaction failed", "compaction aborted", "compacting context…", "compacting context"] as string[]).includes(normalizedSummary);
 		return html`
-			<div class="chat-row system-row compaction-row" data-message-id=${cycle.id}>
-				<div class="compaction-card ${cycle.status}">
-					<button
-						class="compaction-header"
-						@click=${() => {
-							cycle.expanded = !cycle.expanded;
-							this.render();
-						}}
-					>
-						<span class="compaction-title">Context compaction</span>
-						<span class="compaction-meta">${elapsed} · ${statusText}</span>
-						<span class="compaction-caret">${cycle.expanded ? "▾" : "▸"}</span>
-					</button>
-					${cycle.expanded
-						? html`
-							<div class="compaction-details">
-								<div class="compaction-summary">${cycle.summary}</div>
-								${cycle.errorMessage ? html`<div class="compaction-error">${cycle.errorMessage}</div>` : nothing}
-								${cycle.details.map((line) => html`<div class="compaction-line">${line}</div>`)}
-							</div>
-						`
-						: nothing}
+			<div class="chat-row assistant-row assistant-workflow-row compaction-row" data-message-id=${cycle.id}>
+				<div class="message-shell assistant-message-shell">
+					<div class="assistant-block">
+						<div class="compaction-inline">
+							<button
+								class="tool-workflow-line compaction-inline-toggle"
+								@click=${() => {
+									cycle.expanded = !cycle.expanded;
+									this.render();
+								}}
+							>
+								${cycle.status === "running" ? html`<span class="tool-workflow-inline-pi" aria-hidden="true">${piGlyphIcon()}</span>` : nothing}
+								<span class="tool-workflow-line-text ${cycle.status === "running" ? "running" : ""}">${title}</span>
+								<span class="tool-workflow-count">${elapsed}</span>
+							</button>
+							${cycle.expanded
+								? html`
+									<div class="tool-workflow-details compaction-inline-details">
+										${showSummaryLine ? html`<div class="tool-workflow-output compaction-inline-summary">${cycle.summary}</div>` : nothing}
+										${cycle.errorMessage ? html`<div class="tool-workflow-output compaction-inline-error">${cycle.errorMessage}</div>` : nothing}
+										${cycle.details.map((line) => html`<div class="tool-workflow-output compaction-inline-line">${line}</div>`)}
+									</div>
+								`
+								: nothing}
+						</div>
+					</div>
 				</div>
 			</div>
 		`;
@@ -4905,30 +5828,24 @@ export class ChatView {
 			const menu = this.container.querySelector<HTMLElement>(".composer-slash-menu");
 			const activeItem = this.container.querySelector<HTMLElement>(".composer-slash-item.active");
 			if (!menu || !activeItem) return;
-			const menuTop = menu.scrollTop;
-			const menuBottom = menuTop + menu.clientHeight;
+			activeItem.scrollIntoView({ block: "nearest" });
 			const itemTop = activeItem.offsetTop;
-			const itemBottom = itemTop + activeItem.offsetHeight;
-			if (itemTop < menuTop) {
+			if (itemTop < menu.scrollTop + 4) {
 				menu.scrollTop = Math.max(0, itemTop - 4);
-				return;
-			}
-			if (itemBottom > menuBottom) {
-				menu.scrollTop = itemBottom - menu.clientHeight + 4;
 			}
 		});
 	}
 
 	private renderSlashPalette(items: SlashPaletteItem[]): TemplateResult | typeof nothing {
 		if (!this.slashPaletteOpen) return nothing;
-		if (this.slashSkillsLoading && items.length === 0) {
+		if (this.slashCommandsLoading && items.length === 0) {
 			return html`<div class="composer-slash-menu"><div class="composer-slash-empty">Loading commands…</div></div>`;
 		}
 		if (items.length === 0) {
 			return html`<div class="composer-slash-menu"><div class="composer-slash-empty">No commands match “/${this.slashPaletteQuery}”.</div></div>`;
 		}
 		const activeIndex = Math.max(0, Math.min(this.slashPaletteIndex, items.length - 1));
-		let currentSection: "Actions" | "Skills" | null = null;
+		let currentSection: SlashPaletteSection | null = null;
 		return html`
 			<div
 				class="composer-slash-menu ${this.slashPaletteNavigationMode === "keyboard" ? "keyboard-nav" : ""}"
@@ -4960,8 +5877,10 @@ export class ChatView {
 							data-index=${String(index)}
 							@click=${() => this.selectSlashPaletteItem(item)}
 						>
-							<span class="composer-slash-item-label">${item.label}</span>
-							<span class="composer-slash-item-hint">${item.hint}</span>
+							<span class="composer-slash-item-main">
+								<span class="composer-slash-item-label">${item.label}</span>
+								<span class="composer-slash-item-hint">${item.hint}</span>
+							</span>
 						</button>
 					`;
 				})}
@@ -4974,13 +5893,11 @@ export class ChatView {
 		const interactionLocked = this.isComposerInteractionLocked();
 		const slashItems = this.getSlashPaletteItems();
 		const canSendBase = !interactionLocked && (this.inputText.trim().length > 0 || this.pendingImages.length > 0 || Boolean(this.selectedSkillDraft));
-		const canSend = canSendBase && !(this.slashPaletteOpen && slashItems.length > 0);
+		const canSend = canSendBase;
 		if (slashItems.length > 0 && this.slashPaletteIndex >= slashItems.length) {
 			this.slashPaletteIndex = slashItems.length - 1;
 		}
 		const connectivityStatus = this.bindingStatusText || (!this.isConnected && this.projectPath ? "RPC disconnected" : "");
-		const liveCompactionStatus = this.compactionCycle?.status === "running" ? "Compacting context…" : "";
-		const statusText = [connectivityStatus, liveCompactionStatus, this.retryStatus].filter(Boolean).join(" · ");
 		const ratio = Math.min(1, Math.max(0, this.sessionStats.usageRatio ?? 0));
 		const ratioPercent = `${Math.round(ratio * 100)}%`;
 		const ringRadius = 9;
@@ -4998,7 +5915,7 @@ export class ChatView {
 							<textarea
 								id="chat-input"
 								class="chat-input"
-								placeholder=${interactionLocked ? (connectivityStatus || "Session not ready…") : "Ask for follow-up changes"}
+								placeholder=${interactionLocked ? (connectivityStatus || "Session not ready…") : "Describe the next change — type / for commands"}
 								rows="1"
 								?disabled=${interactionLocked}
 								.value=${this.inputText}
@@ -5007,6 +5924,7 @@ export class ChatView {
 									const ta = e.target as HTMLTextAreaElement;
 									const hadSlashPalette = this.slashPaletteOpen;
 									this.inputText = ta.value;
+									this.resetComposerHistoryNavigation();
 									this.updateSlashPaletteStateFromInput();
 									ta.style.height = "auto";
 									ta.style.height = `${Math.min(ta.scrollHeight, 220)}px`;
@@ -5051,12 +5969,28 @@ export class ChatView {
 										this.removeComposerSkillDraft();
 										return;
 									}
+									const textarea = e.currentTarget as HTMLTextAreaElement;
+									const canHistoryUp = e.key === "ArrowUp" && this.shouldHandleComposerHistoryKey(e, textarea, "up");
+									const canHistoryDown = e.key === "ArrowDown" && this.shouldHandleComposerHistoryKey(e, textarea, "down");
+									const historyBrowsing = this.composerHistoryIndex >= 0;
+									if (canHistoryUp && (historyBrowsing || !this.slashPaletteOpen)) {
+										e.preventDefault();
+										this.navigateComposerHistory("up");
+										return;
+									}
+									if (canHistoryDown && historyBrowsing) {
+										e.preventDefault();
+										this.navigateComposerHistory("down");
+										return;
+									}
 									const liveSlashItems = this.getSlashPaletteItems();
 									if (this.slashPaletteOpen && liveSlashItems.length > 0) {
 										if (e.key === "ArrowDown") {
 											e.preventDefault();
 											this.slashPaletteNavigationMode = "keyboard";
 											this.slashPaletteIndex = (this.slashPaletteIndex + 1) % liveSlashItems.length;
+											const item = liveSlashItems[this.slashPaletteIndex];
+											if (item) this.previewSlashPaletteItem(item);
 											this.render();
 											this.ensureActiveSlashItemVisible();
 											return;
@@ -5065,14 +5999,10 @@ export class ChatView {
 											e.preventDefault();
 											this.slashPaletteNavigationMode = "keyboard";
 											this.slashPaletteIndex = (this.slashPaletteIndex - 1 + liveSlashItems.length) % liveSlashItems.length;
+											const item = liveSlashItems[this.slashPaletteIndex];
+											if (item) this.previewSlashPaletteItem(item);
 											this.render();
 											this.ensureActiveSlashItemVisible();
-											return;
-										}
-										if (e.key === "Enter" && !e.shiftKey) {
-											e.preventDefault();
-											const picked = liveSlashItems[Math.max(0, Math.min(this.slashPaletteIndex, liveSlashItems.length - 1))];
-											if (picked) this.selectSlashPaletteItem(picked);
 											return;
 										}
 									}
@@ -5084,6 +6014,10 @@ export class ChatView {
 									}
 									if (e.key === "Enter" && !e.shiftKey) {
 										e.preventDefault();
+										if (!this.selectedSkillDraft && this.slashQueryFromInput() !== null) {
+											void this.executeSlashCommandFromComposer();
+											return;
+										}
 										if (e.altKey) {
 											void this.sendMessage("followUp");
 										} else {
@@ -5096,7 +6030,6 @@ export class ChatView {
 						</div>
 						${this.renderSlashPalette(slashItems)}
 						${this.renderComposerControls(canSend, isStreaming, interactionLocked)}
-						${statusText ? html`<div class="composer-status-inline">${statusText}</div>` : nothing}
 					</div>
 
 					<div class="composer-under-row">
@@ -5284,40 +6217,379 @@ export class ChatView {
 		return null;
 	}
 
+	private roleFromSessionEntry(roleRaw: string): UiRole {
+		const normalized = roleRaw.trim().toLowerCase();
+		if (normalized === "user") return "user";
+		if (normalized === "assistant") return "assistant";
+		if (normalized === "custom" || normalized === "custom_message") return "custom";
+		return "system";
+	}
+
+	private mapSessionTreeEntry(
+		record: Record<string, unknown>,
+		index: number,
+		labelsByTargetId: Map<string, string>,
+	): SessionTreeEntryRecord | null {
+		const type = typeof record.type === "string" ? record.type.trim() : "";
+		if (!type || type === "session" || type === "label") return null;
+
+		const id = typeof record.id === "string" ? record.id.trim() : "";
+		if (!id) return null;
+
+		const parentRaw = record.parentId;
+		const parentId = typeof parentRaw === "string" && parentRaw.trim().length > 0 ? parentRaw.trim() : null;
+		let role: UiRole = "system";
+		let entryLabel = type.replace(/_/g, " ");
+		let preview = "";
+		let displayText = "";
+		let canFork = false;
+
+		switch (type) {
+			case "message": {
+				const message = record.message;
+				const messageRecord = message && typeof message === "object" ? (message as Record<string, unknown>) : null;
+				const messageRoleRaw = typeof messageRecord?.role === "string" ? messageRecord.role.trim() : "system";
+				const messageRole = messageRoleRaw.toLowerCase();
+
+				if (messageRole === "user") {
+					role = "user";
+					entryLabel = "user";
+					preview = this.extractText(messageRecord?.content).replace(/\s+/g, " ").trim() || "(empty message)";
+					displayText = `user: ${preview}`;
+					canFork = true;
+					break;
+				}
+
+				if (messageRole === "assistant") {
+					role = "assistant";
+					entryLabel = "assistant";
+					const contentPreview = this.extractText(messageRecord?.content).replace(/\s+/g, " ").trim();
+					const stopReason = pickString(messageRecord ?? {}, ["stopReason", "stop_reason"]) ?? "";
+					const errorMessage = pickString(messageRecord ?? {}, ["errorMessage", "error_message"]) ?? "";
+					preview = contentPreview || (stopReason === "aborted" ? "(aborted)" : errorMessage || "(no content)");
+					displayText = `assistant: ${preview}`;
+					break;
+				}
+
+				if (messageRole === "toolresult") {
+					role = "system";
+					entryLabel = "tool";
+					const toolName = pickString(messageRecord ?? {}, ["toolName", "tool_name"]) ?? "tool";
+					const toolOutputRaw = this.extractToolOutput(messageRecord?.content ?? messageRecord?.result ?? messageRecord ?? {});
+					preview = toolOutputRaw.replace(/\s+/g, " ").trim() || "(no output)";
+					displayText = `[${toolName}: ${truncate(preview, 120)}]`;
+					break;
+				}
+
+				if (messageRole === "bashexecution") {
+					role = "system";
+					entryLabel = "bash";
+					const command = pickString(messageRecord ?? {}, ["command"]) ?? "bash";
+					preview = command;
+					displayText = `[bash: ${truncate(command.replace(/\s+/g, " ").trim(), 120)}]`;
+					break;
+				}
+
+				role = this.roleFromSessionEntry(messageRoleRaw);
+				entryLabel = messageRoleRaw || "message";
+				preview = this.extractText(messageRecord?.content).replace(/\s+/g, " ").trim() || `(${entryLabel})`;
+				displayText = `[${entryLabel}]: ${preview}`;
+				break;
+			}
+			case "custom_message": {
+				role = "custom";
+				const customType = pickString(record, ["customType", "custom_type"]) ?? "custom";
+				entryLabel = customType;
+				preview = this.extractText(record.content).replace(/\s+/g, " ").trim() || "(empty)";
+				displayText = `[${customType}]: ${preview}`;
+				break;
+			}
+			case "branch_summary": {
+				role = "system";
+				entryLabel = "branch summary";
+				preview = (pickString(record, ["summary"]) ?? this.extractText(record.content)).replace(/\s+/g, " ").trim() || "(empty)";
+				displayText = `[branch summary]: ${truncate(preview, 180)}`;
+				break;
+			}
+			case "compaction": {
+				role = "system";
+				entryLabel = "compaction";
+				const tokensBefore = pickNumber(record, ["tokensBefore", "tokens_before"]);
+				preview = (pickString(record, ["summary"]) ?? "compaction entry").replace(/\s+/g, " ").trim();
+				const tokensBadge = typeof tokensBefore === "number" && Number.isFinite(tokensBefore) ? `${Math.max(1, Math.round(tokensBefore / 1000))}k tokens` : "summary";
+				displayText = `[compaction: ${tokensBadge}] ${truncate(preview, 160)}`;
+				break;
+			}
+			case "thinking_level_change": {
+				role = "system";
+				entryLabel = "thinking";
+				const level = pickString(record, ["thinkingLevel", "thinking_level"]) ?? "updated";
+				preview = level;
+				displayText = `[thinking: ${level}]`;
+				break;
+			}
+			case "model_change": {
+				role = "system";
+				entryLabel = "model";
+				const provider = pickString(record, ["provider"]) ?? "provider";
+				const modelId = pickString(record, ["modelId", "model_id"]) ?? "model";
+				preview = `${provider}/${modelId}`;
+				displayText = `[model: ${preview}]`;
+				break;
+			}
+			case "session_info": {
+				role = "system";
+				entryLabel = "title";
+				preview = pickString(record, ["name"]) ?? "(untitled)";
+				displayText = `[title: ${preview}]`;
+				break;
+			}
+			case "custom": {
+				role = "custom";
+				const customType = pickString(record, ["customType", "custom_type"]) ?? "custom";
+				entryLabel = customType;
+				preview = this.extractText(record.data).replace(/\s+/g, " ").trim() || "custom entry";
+				displayText = `[custom: ${customType}] ${truncate(preview, 140)}`;
+				break;
+			}
+			default: {
+				role = "system";
+				preview = this.extractText(record.content).replace(/\s+/g, " ").trim() || entryLabel;
+				displayText = `[${entryLabel}]: ${truncate(preview, 160)}`;
+				break;
+			}
+		}
+
+		const resolvedLabel = labelsByTargetId.get(id);
+		if (resolvedLabel) {
+			entryLabel = `${entryLabel} · ${resolvedLabel}`;
+			displayText = `[${resolvedLabel}] ${displayText}`;
+		}
+		const normalizedPreview = preview.replace(/\s+/g, " ").trim();
+		const normalizedDisplayText = displayText.replace(/\s+/g, " ").trim();
+
+		return {
+			id,
+			parentId,
+			type,
+			index,
+			role,
+			entryLabel,
+			preview: normalizedPreview || `(${entryLabel})`,
+			displayText: normalizedDisplayText || `${entryLabel}: ${normalizedPreview || "(empty)"}`,
+			canFork,
+		};
+	}
+
+	private resolveCurrentTreeLeafId(entriesById: Map<string, SessionTreeEntryRecord>, entries: SessionTreeEntryRecord[]): string | null {
+		for (let i = this.messages.length - 1; i >= 0; i--) {
+			const entryId = this.messages[i]?.sessionEntryId;
+			if (entryId && entriesById.has(entryId)) return entryId;
+		}
+		for (let i = entries.length - 1; i >= 0; i--) {
+			const entry = entries[i];
+			if (!entry) continue;
+			if (entriesById.has(entry.id)) return entry.id;
+		}
+		return null;
+	}
+
+	private compactTreeLinePrefix(prefix: string, depth: number): string {
+		const normalized = prefix ?? "";
+		if (!normalized) return "";
+		const maxVisibleDepth = 14;
+		if (depth <= maxVisibleDepth) return normalized;
+		const charsPerLevel = 3;
+		const tail = normalized.slice(Math.max(0, normalized.length - maxVisibleDepth * charsPerLevel));
+		return `… ${tail}`;
+	}
+
+	private parseSessionTreeRows(sessionContent: string): HistoryTreeRow[] {
+		const rawRecords: Array<{ record: Record<string, unknown>; index: number }> = [];
+		const lines = sessionContent.split(/\r?\n/);
+		for (const line of lines) {
+			const trimmed = line.trim();
+			if (!trimmed) continue;
+			let parsed: unknown;
+			try {
+				parsed = JSON.parse(trimmed);
+			} catch {
+				continue;
+			}
+			if (!parsed || typeof parsed !== "object") continue;
+			rawRecords.push({
+				record: parsed as Record<string, unknown>,
+				index: rawRecords.length,
+			});
+		}
+
+		if (rawRecords.length === 0) return [];
+
+		const labelsByTargetId = new Map<string, string>();
+		for (const { record } of rawRecords) {
+			if (record.type !== "label") continue;
+			const targetId = typeof record.targetId === "string" ? record.targetId.trim() : "";
+			if (!targetId) continue;
+			const label = typeof record.label === "string" ? record.label.trim() : "";
+			if (!label) {
+				labelsByTargetId.delete(targetId);
+			} else {
+				labelsByTargetId.set(targetId, label);
+			}
+		}
+
+		const entries: SessionTreeEntryRecord[] = rawRecords
+			.map(({ record, index }) => this.mapSessionTreeEntry(record, index, labelsByTargetId))
+			.filter((entry): entry is SessionTreeEntryRecord => Boolean(entry));
+
+		if (entries.length === 0) return [];
+
+		const entriesById = new Map<string, SessionTreeEntryRecord>();
+		for (const entry of entries) {
+			entriesById.set(entry.id, entry);
+		}
+
+		const childrenByParent = new Map<string, SessionTreeEntryRecord[]>();
+		const roots: SessionTreeEntryRecord[] = [];
+		for (const entry of entries) {
+			const parentId = entry.parentId && entriesById.has(entry.parentId) ? entry.parentId : null;
+			if (!parentId) {
+				roots.push(entry);
+				continue;
+			}
+			const bucket = childrenByParent.get(parentId) ?? [];
+			bucket.push(entry);
+			childrenByParent.set(parentId, bucket);
+		}
+		const byIndex = (a: SessionTreeEntryRecord, b: SessionTreeEntryRecord): number => a.index - b.index;
+		roots.sort(byIndex);
+		for (const bucket of childrenByParent.values()) {
+			bucket.sort(byIndex);
+		}
+
+		const currentLeafId = this.resolveCurrentTreeLeafId(entriesById, entries);
+		const activePath = new Set<string>();
+		let cursor = currentLeafId;
+		while (cursor && entriesById.has(cursor)) {
+			if (activePath.has(cursor)) break;
+			activePath.add(cursor);
+			const parentId = entriesById.get(cursor)?.parentId ?? null;
+			cursor = parentId && entriesById.has(parentId) ? parentId : null;
+		}
+
+		const rows: HistoryTreeRow[] = [];
+		const buildPrefix = (ancestorHasNext: boolean[], isLast: boolean, depth: number): string => {
+			const parts: string[] = ancestorHasNext.map((hasNext) => (hasNext ? "│  " : "   "));
+			if (depth > 0) {
+				parts.push(isLast ? "└─ " : "├─ ");
+			}
+			return parts.join("");
+		};
+		const visit = (entry: SessionTreeEntryRecord, depth: number, ancestorHasNext: boolean[], isLast: boolean): void => {
+			rows.push({
+				entryId: entry.id,
+				depth,
+				role: entry.role,
+				entryLabel: entry.entryLabel,
+				preview: entry.preview,
+				displayText: entry.displayText,
+				linePrefix: buildPrefix(ancestorHasNext, isLast, depth),
+				onActivePath: activePath.has(entry.id),
+				canFork: entry.canFork,
+			});
+			const children = childrenByParent.get(entry.id) ?? [];
+			const nextAncestorHasNext = [...ancestorHasNext, !isLast];
+			for (let i = 0; i < children.length; i += 1) {
+				const child = children[i];
+				if (!child) continue;
+				visit(child, depth + 1, nextAncestorHasNext, i === children.length - 1);
+			}
+		};
+		for (let i = 0; i < roots.length; i += 1) {
+			const root = roots[i];
+			if (!root) continue;
+			visit(root, 0, [], i === roots.length - 1);
+		}
+		return rows;
+	}
+
+	private async loadSessionTreeForHistory(): Promise<void> {
+		if (this.historyViewerMode !== "browse" || !this.historyViewerOpen) return;
+		const requestId = ++this.historyTreeRequestSeq;
+		const sessionPath = this.state?.sessionFile?.trim();
+		if (!sessionPath) {
+			if (requestId !== this.historyTreeRequestSeq || this.historyViewerMode !== "browse") return;
+			this.historyTreeRows = [];
+			this.historyViewerLoading = false;
+			this.render();
+			return;
+		}
+
+		this.historyViewerLoading = true;
+		this.render();
+		try {
+			const content = await rpcBridge.getSessionContent(sessionPath);
+			if (requestId !== this.historyTreeRequestSeq || this.historyViewerMode !== "browse" || !this.historyViewerOpen) return;
+			this.historyTreeRows = this.parseSessionTreeRows(content);
+		} catch (err) {
+			if (requestId !== this.historyTreeRequestSeq || this.historyViewerMode !== "browse" || !this.historyViewerOpen) return;
+			console.error("Failed to load session tree:", err);
+			this.historyTreeRows = [];
+		} finally {
+			if (requestId !== this.historyTreeRequestSeq || this.historyViewerMode !== "browse" || !this.historyViewerOpen) return;
+			this.historyViewerLoading = false;
+			this.render();
+		}
+	}
+
 	private renderHistoryViewer(): TemplateResult | typeof nothing {
 		if (!this.historyViewerOpen) return nothing;
 
 		const forkMode = this.historyViewerMode === "fork";
 		const query = this.historyQuery.trim().toLowerCase();
-		const sourceMessages: UiMessage[] = forkMode
-			? this.messages.filter((msg) => msg.role === "user" || msg.role === "assistant")
-			: this.messages;
-		const forkTimelineRows: ForkTimelineRow[] = forkMode ? this.buildForkTimelineRows(sourceMessages) : [];
-		const filteredRows: ForkTimelineRow[] = forkMode
-			? forkTimelineRows.filter((row) => {
+		const sourceMessages: UiMessage[] = this.messages;
+		const sessionMessageIdByEntryId = new Map<string, string>();
+		for (const message of this.messages) {
+			if (!message.sessionEntryId) continue;
+			if (sessionMessageIdByEntryId.has(message.sessionEntryId)) continue;
+			sessionMessageIdByEntryId.set(message.sessionEntryId, message.id);
+		}
+
+		const filteredForkOptions: ForkOption[] = forkMode
+			? this.forkOptions.filter((option) => {
 				if (!query) return true;
-				const toolsText = row.tools
-					.map((tc) => `${tc.name} ${(tc.result ?? tc.streamingOutput ?? "").toString()}`)
-					.join(" ");
-				const thinkingText = row.thinkingSnippets.join(" ");
-				const haystack = `${row.main.role} ${row.main.label || ""} ${this.messagePreview(row.main)} ${thinkingText} ${toolsText}`.toLowerCase();
+				const haystack = option.text.toLowerCase();
 				return haystack.includes(query);
 			})
 			: [];
-		const filteredMessages: UiMessage[] = forkMode
+		const useTreeRows = !forkMode && this.historyTreeRows.length > 0;
+		const filteredTreeRows: HistoryTreeRow[] = forkMode
 			? []
-			: sourceMessages.filter((msg) => {
-				if (this.historyRoleFilter !== "all" && msg.role !== this.historyRoleFilter) return false;
+			: this.historyTreeRows.filter((row) => {
+				if (this.historyRoleFilter !== "all" && row.role !== this.historyRoleFilter) return false;
 				if (!query) return true;
-				const haystack = `${msg.role} ${msg.label || ""} ${this.messagePreview(msg)}`.toLowerCase();
+				const haystack = `${row.role} ${row.entryLabel} ${row.preview} ${row.displayText} ${row.entryId}`.toLowerCase();
 				return haystack.includes(query);
 			});
+		const filteredBrowseRows: Array<{ msg: UiMessage; sourceIndex: number }> = forkMode || useTreeRows
+			? []
+			: sourceMessages
+				.map((msg, sourceIndex) => ({ msg, sourceIndex }))
+				.filter(({ msg }) => {
+					if (this.historyRoleFilter !== "all" && msg.role !== this.historyRoleFilter) return false;
+					if (!query) return true;
+					const haystack = `${msg.role} ${msg.label || ""} ${this.messagePreview(msg)}`.toLowerCase();
+					return haystack.includes(query);
+				});
+
+		const hasNoRows = forkMode ? filteredForkOptions.length === 0 : useTreeRows ? filteredTreeRows.length === 0 : filteredBrowseRows.length === 0;
+
 		return html`
 			<div class="overlay" @click=${(e: Event) => e.target === e.currentTarget && this.closeHistoryViewer()}>
 				<div class="overlay-card history-card ${forkMode ? "fork-mode" : ""}">
 					<div class="overlay-header">
 						<div>
-							<div>${forkMode ? "Fork from message" : "Session history"}</div>
+							<div>${forkMode ? "Fork from message" : "Session tree"}</div>
 							${forkMode
 								? html`<div class="history-subtitle">${this.historyViewerSessionLabel || "Current session"}</div>`
 								: nothing}
@@ -5327,7 +6599,7 @@ export class ChatView {
 					<div class="history-controls ${forkMode ? "fork" : ""}">
 						<input
 							type="text"
-							placeholder=${forkMode ? "Search visible messages" : "Search messages"}
+							placeholder=${forkMode ? "Search user messages" : "Search tree entries"}
 							.value=${this.historyQuery}
 							@input=${(e: Event) => {
 								this.historyQuery = (e.target as HTMLInputElement).value;
@@ -5356,81 +6628,69 @@ export class ChatView {
 					<div class="overlay-body history-list ${forkMode ? "fork-history-list" : ""}">
 						${this.historyViewerLoading
 							? html`<div class="overlay-empty">Loading session history…</div>`
-							: (forkMode ? filteredRows.length === 0 : filteredMessages.length === 0)
-								? html`<div class="overlay-empty">${forkMode ? "No messages available for forking." : "No messages match your filters."}</div>`
+							: hasNoRows
+								? html`<div class="overlay-empty">${forkMode ? "No messages available for forking." : "No session entries match your filters."}</div>`
 								: forkMode
-									? filteredRows.map((row, idx) => {
-											const msg = row.main;
-											const rowKey = this.forkRowKey(row);
-											const forkEntryId = this.resolveForkEntryId(sourceMessages, row.sourceIndex);
-											const rowCanFork = Boolean(forkEntryId) && (msg.role === "user" || msg.text.trim().length > 0);
-											const fullPreview = this.forkRowPreview(row);
-											const messageExpanded = this.forkExpandedMessageRows.has(rowKey);
-											const canExpandMessage = fullPreview.length > 220;
-											const previewText = messageExpanded ? fullPreview : truncate(fullPreview, 220);
-											const thinkingSnippets = row.thinkingSnippets
-												.map((snippet: string) => snippet.replace(/\s+/g, " ").trim())
-												.filter(Boolean)
-												.map((snippet: string) => truncate(snippet, 140));
-											const tools = row.tools;
-											const toolsExpanded = this.forkExpandedToolRows.has(rowKey);
-											const visibleTools = toolsExpanded ? tools : tools.slice(0, 3);
-											const hiddenToolCount = Math.max(0, tools.length - visibleTools.length);
+									? filteredForkOptions.map((option, idx) => {
+											const preview = truncate(option.text.replace(/\s+/g, " ").trim(), 240);
 											return html`
-												<div class="fork-history-item role-${msg.role}">
-													<div class="fork-history-rail" aria-hidden="true">
-														<span class="fork-history-dot"></span>
-														${idx < filteredRows.length - 1 ? html`<span class="fork-history-line"></span>` : nothing}
-													</div>
-													<div class="fork-history-main">
-														<div class="history-meta">
-															<span class="history-role role-${msg.role}">${msg.role}</span>
-															<span>#${idx + 1}</span>
-														</div>
-														<div class="history-preview ${messageExpanded ? "expanded" : ""}">${previewText}</div>
-														${canExpandMessage
-															? html`<button class="fork-inline-toggle" @click=${() => this.toggleForkMessageExpanded(rowKey)}>${messageExpanded ? "Show less" : "Show full message"}</button>`
-															: nothing}
-														${thinkingSnippets.length > 0 || tools.length > 0
-															? html`
-																<div class="fork-history-subentries">
-																	${thinkingSnippets.map(
-																		(snippet: string) => html`<div class="fork-history-subentry thinking"><span class="fork-subentry-label">thinking</span><span class="fork-subentry-preview">${snippet}</span></div>`,
-																	)}
-																	${visibleTools.map((tc: ToolCallBlock) => {
-																		const toolStatus = tc.isError ? "error" : tc.isRunning ? "running" : "done";
-																		const rawToolPreview = (tc.result ?? tc.streamingOutput ?? "").replace(/\s+/g, " ").trim();
-																		const toolPreview = toolsExpanded ? truncate(rawToolPreview, 240) : truncate(rawToolPreview, 96);
-																		return html`<div class="fork-history-subentry tool"><span class="fork-subentry-label">tool</span><span class="fork-subentry-name">${tc.name} · ${toolStatus}</span>${toolPreview ? html`<span class="fork-subentry-preview">${toolPreview}</span>` : nothing}</div>`;
-																	})}
-																	${tools.length > 3
-																		? html`<button class="fork-inline-toggle" @click=${() => this.toggleForkToolsExpanded(rowKey)}>${toolsExpanded ? "Show fewer tools" : `Show ${hiddenToolCount} more tools`}</button>`
-																		: nothing}
-																</div>
-															`
-															: nothing}
-													</div>
-													<div class="fork-history-actions">
-														${rowCanFork && forkEntryId
-															? html`<button class="message-action-btn" @click=${() => void this.forkFrom(forkEntryId)} title=${msg.role === "assistant" ? "Fork from preceding user message" : "Fork from this user message"}>Fork</button>`
-															: nothing}
+												<div class="history-item fork-user-row">
+													<div class="history-item-main">
+														<button class="history-jump" @click=${() => void this.forkFrom(option.entryId)} title="Fork from this user message">
+															<div class="history-meta">
+																<span class="history-role role-user">user</span>
+																<span>#${idx + 1}</span>
+															</div>
+															<div class="history-preview">${preview}</div>
+														</button>
+														<button class="history-fork-btn" @click=${() => void this.forkFrom(option.entryId)} title="Fork from this user message">Fork</button>
 													</div>
 												</div>
 											`;
 									  })
-									: filteredMessages.map(
-											(msg: UiMessage, idx: number) => html`
-												<div class="history-item">
-													<button class="history-jump" @click=${() => this.revealMessage(msg.id)}>
-														<div class="history-meta">
-															<span class="history-role role-${msg.role}">${msg.role}</span>
-															<span>#${idx + 1}</span>
+									: useTreeRows
+										? filteredTreeRows.map((row, idx) => {
+												const visibleMessageId = sessionMessageIdByEntryId.get(row.entryId) ?? null;
+												const canJump = Boolean(visibleMessageId);
+												const title = canJump ? "Jump to this entry" : "Entry is outside the active branch";
+												const compactPrefix = this.compactTreeLinePrefix(row.linePrefix, row.depth);
+												const rowText = row.displayText.trim() || row.preview || "(entry)";
+												const lineText = `${compactPrefix}${row.onActivePath ? "• " : "  "}${truncate(rowText, 320)}`;
+												const lineBody = html`<span class="history-tree-line-mono role-${row.role}">${lineText}</span>`;
+												return html`
+													<div class="history-tree-line-row ${row.onActivePath ? "on-path" : "off-path"}">
+														${canJump && visibleMessageId
+															? html`<button class="history-tree-line ${row.onActivePath ? "on-path" : ""}" @click=${() => this.revealMessage(visibleMessageId)} title=${title}>${lineBody}</button>`
+															: html`<div class="history-tree-line static" title=${title}>${lineBody}</div>`}
+														<div class="history-tree-line-actions">
+															<span class="history-tree-index">#${idx + 1}</span>
+															${row.canFork
+																? html`<button class="history-fork-btn" @click=${() => void this.forkFrom(row.entryId)} title="Fork from this user message">Fork</button>`
+																: nothing}
 														</div>
-														<div class="history-preview">${truncate(this.messagePreview(msg).replace(/\s+/g, " "), 200)}</div>
-													</button>
-												</div>
-											`,
-									  )}
+													</div>
+												`;
+									  })
+										: filteredBrowseRows.map(({ msg, sourceIndex }, idx: number) => {
+												const forkEntryId = this.resolveForkEntryId(sourceMessages, sourceIndex);
+												const canFork = Boolean(forkEntryId) && (msg.role === "user" || msg.role === "assistant");
+												return html`
+													<div class="history-item">
+														<div class="history-item-main">
+															<button class="history-jump" @click=${() => this.revealMessage(msg.id)}>
+																<div class="history-meta">
+																	<span class="history-role role-${msg.role}">${msg.role}</span>
+																	<span>#${idx + 1}</span>
+																</div>
+																<div class="history-preview">${truncate(this.messagePreview(msg).replace(/\s+/g, " "), 200)}</div>
+															</button>
+															${canFork && forkEntryId
+																? html`<button class="history-fork-btn" @click=${() => void this.forkFrom(forkEntryId)} title=${msg.role === "assistant" ? "Fork from preceding user message" : "Fork from this user message"}>Fork</button>`
+																: nothing}
+														</div>
+													</div>
+												`;
+									  })}
 					</div>
 				</div>
 			</div>
@@ -5498,7 +6758,6 @@ export class ChatView {
 							: this.bindingStatusText
 								? this.renderBindingState()
 								: this.renderEmptyState()}
-					${hasProject ? this.renderCompactionCycle() : nothing}
 					${showWorkingIndicator ? this.renderWorkingIndicatorRow() : nothing}
 				</div>
 				${hasProject ? this.renderComposer() : nothing}

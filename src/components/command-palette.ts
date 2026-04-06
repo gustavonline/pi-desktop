@@ -59,6 +59,7 @@ export class CommandPalette {
 		this.filterCommands();
 		this.render();
 		this.focusInput();
+		this.ensureSelectedCommandVisible();
 	}
 
 	close(): void {
@@ -134,11 +135,13 @@ export class CommandPalette {
 				e.preventDefault();
 				this.selectedIndex = Math.min(this.selectedIndex + 1, this.filteredCommands.length - 1);
 				this.render();
+				this.ensureSelectedCommandVisible();
 				break;
 			case "ArrowUp":
 				e.preventDefault();
 				this.selectedIndex = Math.max(this.selectedIndex - 1, 0);
 				this.render();
+				this.ensureSelectedCommandVisible();
 				break;
 			case "Enter":
 				e.preventDefault();
@@ -158,6 +161,15 @@ export class CommandPalette {
 			const input = this.container.querySelector("input");
 			input?.focus();
 		}, 50);
+	}
+
+	private ensureSelectedCommandVisible(): void {
+		requestAnimationFrame(() => {
+			const list = this.container.querySelector<HTMLElement>(".command-palette-list");
+			const selected = this.container.querySelector<HTMLElement>(".command-row.selected");
+			if (!list || !selected) return;
+			selected.scrollIntoView({ block: "nearest" });
+		});
 	}
 
 	private getSourceIcon(source: PaletteCommand["source"]): string {

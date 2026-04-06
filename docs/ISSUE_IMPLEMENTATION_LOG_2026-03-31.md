@@ -18,7 +18,7 @@ This log now covers both implementation tracks completed/advanced on 2026-03-31:
 - **#63** Codex parity umbrella — **Partially implemented** (welcome slice merged; chat slice implemented on sweep branch)
 - **#66** Theme schema / CLI compatibility — **Merged to dev (PR #73)**
 - **#69** Settings pane render hardening — **Merged to dev (PR #73)**
-- **#70** Slash action audit/cleanup — **In progress**
+- **#70** Slash action audit/cleanup — **In progress (major implementation complete, final QA/polish pending)**
 - **#72** Tool-result/steer timeline anomalies — **Implemented (chat sweep branch)**
 
 ---
@@ -42,6 +42,8 @@ Implemented:
 - Deterministic pane open/mount handling with race/rebind guards.
 - Safe fallback settings shell when runtime-dependent sections fail.
 - No-project settings flow decoupled from runtime-dependent rendering.
+- Codex-style Settings information architecture: section navigation now lives in the main Desktop left sidebar (replacing project/session list while Settings is open), with right-side contextual panel rendering per section.
+- Runtime-gated sections (`General`, `Account`) now gracefully disable/fallback in no-project or disconnected runtime states while `Appearance` and update visibility remain usable.
 
 ---
 
@@ -92,13 +94,29 @@ Implemented:
 
 ### #70 — Slash actions
 
-Status: **Not complete**
+Status: **In progress, near completion**
 
-Progress:
-- Redundant slash actions already covered by clearer UI entry points were reduced.
+Progress (2026-04-04 follow-up):
+- Replaced hardcoded slash action list with CLI-aligned built-in command handling plus runtime-discovered commands (`extension` / `prompt` / `skill`).
+- Fixed slash reliability so composer `/` input executes commands deterministically instead of falling back to plain prompt sends.
+- Desktop-mapped commands now execute host actions directly (e.g. settings/model/session browser flows) without chat-canvas command spam.
+- Added extension config bridge hook for `name-ai-config` to open the Desktop Packages extension-config modal.
+- Reworked compaction UX into a minimal workflow-style row with collapsed-by-default details and stable timeline placement.
+- Removed assistant streaming cursor artifact and cleaned workflow status aggregation (`complete` + `failed` + `running`).
+
+Additional UX hardening (2026-04-06 follow-up):
+- Settings open flow hardened for `/scoped-models`: removed unsupported `innerHTML` mutation paths in `SettingsPanel` to avoid Lit `ChildPart has no parentNode` render failures during async section refreshes.
+- Settings visual cleanup completed: sidebar-hosted settings navigation, workspace header hidden in settings shell, and simplified settings top chrome.
+- Composer now supports terminal-style full history navigation via `ArrowUp`/`ArrowDown` for prior user prompts and slash commands.
+- Slash keyboard navigation now previews selected command text directly in composer and keeps highlighted rows visible.
+- Command palette keyboard navigation now auto-scrolls selected rows into view.
+- User message bubble width/wrapping regression fixed (`he j` squeeze artifact removed).
 
 Remaining:
-- Final curated slash list audit and `/compact`-path validation before closing #70.
+- Final command-by-command QA matrix pass for lower-frequency built-ins and extension command mappings.
+  - Completed in follow-up pass: `/name` (sidebar-inline parity), `/new` (fresh-session sidebar parity), `/import` (native picker fallback when no arg), `/export` (native save picker when no arg), `/reload` (runtime restart + full desktop refresh pass), `/session` (detailed timeline info block parity), `/share` (CLI-aligned secret gist flow via `gh`, `session.html` export, minimal clickable output + compact left-aligned row), `/tree` (query-aware full session-tree viewer from JSONL across branches with terminal-like inline connectors and active-path markers, plus quick fork actions), `/fork` (query-aware user-message selector aligned with CLI fork behavior), `/resume` (query-aware session browser open via `/resume <query>`), `/model` (provider-aware picker hinting when arg is non-exact), `/scoped-models` (native Settings scoped-models editor with search/provider toggles and persisted `enabledModels` saves), `/login` + `/logout` (terminal-only guidance rows, no misleading settings routing), `/changelog` (Pi Coding Agent changelog from CLI package, latest sections by default in collapsed scrollable row, `all/refresh` options).
+- Close #70 only after targeted smoke validation across project/no-project and streaming/non-streaming contexts.
+- Minor tree/fork UI polish (spacing/readability/keybind-level UX) is intentionally tracked as post-#70 follow-up (`issues/tree-fork-polish-followup.md`).
 
 ---
 

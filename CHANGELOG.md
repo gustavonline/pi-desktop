@@ -8,15 +8,23 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Changed
 - Reworked the no-project / new-thread welcome view into a cleaner Codex-inspired centered layout with Pi Desktop branding, a project-focused dropdown, and reduced UI chrome.
+- Settings navigation now lives in the main left sidebar while Settings is open, and the right pane uses simplified section-first headers with reduced chrome.
+- Composer now supports terminal-style full input history traversal (`ArrowUp` / `ArrowDown`) across previously sent prompts and slash commands.
+- Slash palette keyboard navigation now previews the active command directly in the composer input and keeps the active row visible while traversing.
+- Command palette (`Cmd/Ctrl+K`) keyboard navigation now auto-scrolls the selected row into view for long lists.
 - Welcome project dropdown now lists all projects in the current workspace and supports direct project switching (plus quick actions for add project, packages, and settings).
 - Welcome heading copy now rotates between Pi-style idle phrases for a calmer ambient experience.
 - Reworked assistant tool-heavy runs into a compact workflow timeline with centered duration summary, grouped repeated tool calls, and progressive disclosure for details.
 - Workflow detail timeline now preserves natural interleaving of thinking and tool entries (including mid-run thinking blocks), instead of forcing thinking to the top.
 - Running-state affordances now use synchronized Pi/text animation cadence, including inline Pi indicators on active workflow rows and toned-down bottom-status typography.
 - Polished markdown code blocks toward a cleaner Codex-like appearance (single surface, tightened header/content spacing, smaller copy affordance, less chrome).
+- Composer slash palette now shows CLI-first command groups with runtime-discovered extension/prompt/skill commands, while keeping visual chrome minimal.
+- Compaction status rendering was reduced to a minimal workflow-style row with collapsed-by-default details instead of a heavy status card.
 
 ### Fixed
 - Bundled default Pi Desktop themes now emit full Pi CLI-compatible theme schema (all required color tokens) instead of a partial Desktop-only color set.
+- Fixed `/scoped-models` settings-open race causing Lit `ChildPart has no parentNode` errors by removing unsupported `innerHTML` mutation paths in `SettingsPanel` render/fallback lifecycle.
+- Fixed user message bubble width/wrapping regression that could squeeze short text into broken wrapping (`he j`) by correcting user-shell width constraints and wrap behavior.
 - Added bundled-theme auto-repair for legacy invalid `~/.pi/agent/themes/pi-desktop-*.json` files so existing installs stop producing CLI theme validation errors.
 - Theme files created from Settings (“Create theme”) now use the full Pi theme schema, so custom exports are valid in both Desktop and CLI.
 - Hardened Settings pane mounting/open flow to recover from race conditions and stale container rebinding during workspace/project transitions.
@@ -27,6 +35,10 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Removed transient blank spacing before workflow materialization by avoiding empty assistant placeholder rows during stream startup.
 - Fixed repeated streamed thinking duplication by tightening partial-update merge/dedupe behavior in workflow rendering.
 - Assistant message-level copy action is now suppressed for messages that are only a single fenced code block (copy remains on the code block itself).
+- Fixed slash command execution regressions where `/` input could fall through to plain prompt sends; built-in commands now execute deterministically from the composer.
+- Fixed workflow summary counters to report mixed outcomes correctly (complete + failed + running) instead of over-reporting failures.
+- Removed blinking assistant-body streaming cursor artifact and removed noisy composer status text beneath model controls.
+- Fixed compaction timeline behavior so compaction rows stay anchored at the correct chronological position instead of drifting to the newest row.
 
 ## [0.1.8] - 2026-03-23
 
