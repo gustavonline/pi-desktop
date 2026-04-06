@@ -1,5 +1,42 @@
 # TODO — V1/V1.1 release cleanup plan
 
+## Session update (2026-04-04) — Issue #70
+
+Status: **In progress, near completion**
+
+Done in this session:
+- [x] Replaced hardcoded slash “Actions” with CLI-aligned command handling + runtime command discovery (`extension`/`prompt`/`skill`).
+- [x] Fixed slash execution reliability (`/compact`, `/settings`, `/model`, etc.) so slash input no longer falls back to sending plain `/` prompts.
+- [x] Added deterministic slash selection behavior (exact match / active menu item) and unknown-command handling.
+- [x] Removed command echo noise in chat canvas for desktop-mapped slash actions.
+- [x] Reworked compaction UX to minimal workflow-style row (no heavy card), with collapsed-by-default details and timeline-stable insertion.
+- [x] Fixed workflow summary counts to report combined outcomes (e.g. complete + failed + running).
+- [x] Removed blinking streaming cursor from assistant message body.
+- [x] Removed composer status line noise beneath model picker.
+
+Remaining before closing #70:
+- [ ] Final command-by-command QA matrix pass and polish (especially less-used built-ins and extension-config command mappings).
+  - [x] Composer history polish complete (`ArrowUp`/`ArrowDown` traverses full message/command history terminal-style).
+  - [x] Slash palette keyboard UX polish complete (active row visibility + live composer command preview while navigating).
+  - [x] Command palette keyboard visibility polish complete (selected command row auto-scrolls into view).
+  - [x] User message bubble width/render regression fixed (no more squeezed `he j` wrapping artifacts on short messages).
+  - [x] `/name` parity pass complete (inline sidebar rename when no arg, shared rename pipeline when arg provided).
+  - [x] `/new` parity pass complete (reuses sidebar fresh-session flow via `startFreshSessionTab()`).
+  - [x] `/import` parity pass complete (supports native file picker when no path arg is provided).
+  - [x] `/export` parity pass complete (supports native save picker when no path arg is provided).
+  - [x] `/reload` parity pass complete (restarts active runtime bridge, then refreshes state/models/commands).
+  - [x] `/session` parity pass complete (renders detailed session info block in timeline, not just a toast).
+  - [x] `/share` parity pass complete (CLI-aligned secret gist flow via `gh`, exported as `session.html`, minimal clickable output).
+  - [x] `/tree` UX polish pass complete (supports prefilled `/tree <query>`, full JSONL-backed session-tree browse across branches, terminal-like inline tree connectors, active-path markers, and quick fork actions).
+  - [x] `/scoped-models` native Settings implementation complete (searchable model scope editor with provider toggles + persisted `enabledModels` save path).
+  - [x] `/login` + `/logout` polish pass complete (terminal-only guidance with compact auth row; no misleading settings mapping).
+  - [x] `/changelog` parity pass complete (loads Pi Coding Agent changelog from CLI package; shows latest sections in collapsible/scrollable row with `/changelog all` option).
+  - [x] `/fork` parity pass updated (`/fork <query>` pre-fills user-message fork selector, aligned with CLI user-only fork model).
+  - [x] `/resume` UX polish pass complete (`/resume <query>` pre-fills session-browser search).
+  - [x] `/model` UX polish pass complete (non-exact args open picker with provider-aware hinting; no noisy mismatch toast).
+- [ ] Update issue comments/changelog with final verified behavior and close #70 only after smoke checks.
+- [ ] Keep `/tree` + `/fork` minor UI polish out of #70 close criteria and track in dedicated follow-up issue (`issues/tree-fork-polish-followup.md`).
+
 ## Chat interface sweep plan (new branch)
 
 Branch: `feat/chat-interface-issue-sweep` (based on `origin/dev`)
@@ -260,6 +297,7 @@ The app should feel native while still reflecting Pi’s actual resource model.
 - [x] Add first-run onboarding card when Pi CLI is missing (install + copy command + retry)
 - [x] Add in-app Pi CLI update signaling (startup + daily reminder + sidebar hint + settings update path)
 - [x] Harden settings pane open/render lifecycle across no-project + project-switch states (#69)
+- [x] Rework Settings IA: move section navigation into the main app sidebar while Settings content becomes cleaner/simpler in the right pane (no-project-safe section fallback retained).
 - [x] Refine no-project/new-thread welcome dashboard toward clean Codex-inspired centered flow (#63, partial)
 - [ ] Final new-file draft UX polish pass
 - [ ] Final session delete/select stability polish pass

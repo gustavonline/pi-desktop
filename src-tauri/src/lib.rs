@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -312,6 +312,114 @@ fn discover_npm_path(pi: Option<&PiProcess>) -> Option<PathBuf> {
     candidates.push(PathBuf::from("/usr/bin").join(npm));
 
     candidates.into_iter().find(|candidate| candidate.is_file())
+}
+
+fn discover_npm_global_root(pi: Option<&PiProcess>) -> Option<PathBuf> {
+    let npm_path = discover_npm_path(pi)?;
+
+    let mut cmd = Command::new(&npm_path);
+    cmd.arg("root")
+        .arg("-g")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    if let Some(parent) = npm_path.parent() {
+        prepend_bin_dir_to_path(&mut cmd, parent);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+
+    let output = cmd.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let root = stdout
+        .lines()
+        .next()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())?;
+
+    let path = PathBuf::from(root);
+    if path.is_dir() {
+        Some(path)
+    } else {
+        None
+    }
+}
+
+fn resolve_pi_changelog_candidates(pi: &PiProcess) -> Vec<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+
+    if let Ok(pkg_dir) = std::env::var("PI_PACKAGE_DIR") {
+        let trimmed = pkg_dir.trim();
+        if !trimmed.is_empty() {
+            candidates.push(PathBuf::from(trimmed).join("CHANGELOG.md"));
+        }
+    }
+
+    match pi {
+        PiProcess::DevNode { script } => {
+            let script_path = PathBuf::from(script);
+            if let Some(dist_dir) = script_path.parent() {
+                candidates.push(dist_dir.join("..").join("CHANGELOG.md"));
+            }
+        }
+        PiProcess::PathBinary { path } | PiProcess::SidecarBinary { path } => {
+            let mut binaries = vec![path.clone()];
+            if let Ok(canonical) = fs::canonicalize(path) {
+                binaries.push(canonical);
+            }
+            for binary in binaries {
+                if let Some(parent) = binary.parent() {
+                    candidates.push(
+                        parent
+                            .join("..")
+                            .join("lib")
+                            .join("node_modules")
+                            .join("@mariozechner")
+                            .join("pi-coding-agent")
+                            .join("CHANGELOG.md"),
+                    );
+                    candidates.push(
+                        parent
+                            .join("..")
+                            .join("node_modules")
+                            .join("@mariozechner")
+                            .join("pi-coding-agent")
+                            .join("CHANGELOG.md"),
+                    );
+                    candidates.push(
+                        parent
+                            .join("..")
+                            .join("..")
+                            .join("lib")
+                            .join("node_modules")
+                            .join("@mariozechner")
+                            .join("pi-coding-agent")
+                            .join("CHANGELOG.md"),
+                    );
+                }
+            }
+        }
+    }
+
+    if let Some(global_root) = discover_npm_global_root(Some(pi)) {
+        candidates.push(
+            global_root
+                .join("@mariozechner")
+                .join("pi-coding-agent")
+                .join("CHANGELOG.md"),
+        );
+    }
+
+    candidates
 }
 
 fn discover_pi_from_env_override() -> Option<PathBuf> {
@@ -1086,6 +1194,12 @@ struct CliUpdateStatus {
 }
 
 #[derive(Debug, Serialize)]
+struct PiChangelogResult {
+    path: String,
+    content: String,
+}
+
+#[derive(Debug, Serialize)]
 struct NpmCommandResult {
     stdout: String,
     stderr: String,
@@ -1105,6 +1219,20 @@ struct GitCommandResult {
     exit_code: i32,
 }
 
+#[derive(Debug, Deserialize)]
+struct ShareGistOptions {
+    html_path: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ShareGistResult {
+    gist_url: String,
+    gist_id: String,
+    preview_url: String,
+    stdout: String,
+    stderr: String,
+}
+
 #[derive(Debug, Serialize)]
 struct DesktopRuntimeInfo {
     platform: String,
@@ -1118,6 +1246,78 @@ fn npm_executable() -> &'static str {
     } else {
         "npm"
     }
+}
+
+fn discover_gh_path() -> Option<PathBuf> {
+    if let Ok(path) = which::which("gh") {
+        return Some(path);
+    }
+
+    let mut candidates: Vec<PathBuf> = Vec::new();
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(app_data) = std::env::var("APPDATA") {
+            candidates.push(PathBuf::from(app_data).join("GitHub CLI").join("gh.exe"));
+            candidates.push(PathBuf::from(app_data).join("npm").join("gh.cmd"));
+        }
+        if let Ok(program_files) = std::env::var("ProgramFiles") {
+            candidates.push(PathBuf::from(program_files).join("GitHub CLI").join("gh.exe"));
+        }
+        if let Ok(program_files_x86) = std::env::var("ProgramFiles(x86)") {
+            candidates.push(PathBuf::from(program_files_x86).join("GitHub CLI").join("gh.exe"));
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        candidates.push(PathBuf::from("/opt/homebrew/bin/gh"));
+        candidates.push(PathBuf::from("/usr/local/bin/gh"));
+        candidates.push(PathBuf::from("/usr/bin/gh"));
+        if let Some(home_dir) = resolve_home_dir() {
+            candidates.push(home_dir.join(".local/bin/gh"));
+            candidates.push(home_dir.join(".nvm/versions/node/current/bin/gh"));
+        }
+    }
+
+    candidates.into_iter().find(|candidate| candidate.is_file())
+}
+
+fn parse_gist_url_from_output(output: &str) -> Option<String> {
+    for token in output.split_whitespace() {
+        let Some(start) = token.find("https://gist.github.com/") else {
+            continue;
+        };
+        let mut url = token[start..]
+            .trim_matches(|c: char| c == '"' || c == '\'' || c == '`' || c == '(' || c == '[' || c == '{')
+            .to_string();
+
+        while let Some(last) = url.chars().last() {
+            if matches!(last, ')' | ']' | '}' | ',' | ';' | '.') {
+                url.pop();
+                continue;
+            }
+            break;
+        }
+
+        if !url.is_empty() {
+            return Some(url);
+        }
+    }
+    None
+}
+
+fn parse_gist_id_from_url(url: &str) -> Option<String> {
+    let clean = url.trim().trim_end_matches('/');
+    let parts: Vec<&str> = clean.split('/').filter(|entry| !entry.trim().is_empty()).collect();
+    let gist_id = parts.last()?.trim();
+    if gist_id.len() < 20 {
+        return None;
+    }
+    if !gist_id.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some(gist_id.to_string())
 }
 
 fn sanitize_version_token(raw: &str) -> String {
@@ -1393,6 +1593,57 @@ async fn get_cli_update_status(
     })
 }
 
+#[tauri::command]
+async fn get_pi_changelog(
+    app: AppHandle,
+    options: Option<CliStatusOptions>,
+) -> Result<PiChangelogResult, String> {
+    let opts = options.unwrap_or(CliStatusOptions {
+        cli_path: None,
+        cwd: Some(".".to_string()),
+        env: None,
+    });
+
+    let discovery_opts = RpcStartOptions {
+        cli_path: opts.cli_path.clone(),
+        cwd: opts.cwd.clone().unwrap_or_else(|| ".".to_string()),
+        provider: None,
+        model: None,
+        env: opts.env.clone(),
+    };
+
+    let pi = discover_pi(&app, &discovery_opts)?;
+    let candidates = resolve_pi_changelog_candidates(&pi);
+    let mut seen = HashSet::new();
+
+    for candidate in candidates {
+        let raw = candidate.to_string_lossy().to_string();
+        if raw.trim().is_empty() || !seen.insert(raw.clone()) {
+            continue;
+        }
+        if !candidate.is_file() {
+            continue;
+        }
+
+        match fs::read_to_string(&candidate) {
+            Ok(content) => {
+                return Ok(PiChangelogResult {
+                    path: raw,
+                    content,
+                });
+            }
+            Err(_) => {
+                continue;
+            }
+        }
+    }
+
+    Err(format!(
+        "Could not locate Pi Coding Agent changelog for discovery: {:?}",
+        pi
+    ))
+}
+
 /// Update globally installed pi CLI via npm.
 #[tauri::command]
 async fn update_cli_via_npm() -> Result<NpmCommandResult, String> {
@@ -1460,6 +1711,98 @@ async fn run_git_command(options: GitCommandOptions) -> Result<GitCommandResult,
         stdout: String::from_utf8_lossy(&output.stdout).to_string(),
         stderr: String::from_utf8_lossy(&output.stderr).to_string(),
         exit_code: output.status.code().unwrap_or(-1),
+    })
+}
+
+#[tauri::command]
+async fn create_share_gist(options: ShareGistOptions) -> Result<ShareGistResult, String> {
+    let html_path_raw = options.html_path.trim();
+    if html_path_raw.is_empty() {
+        return Err("No export file path provided".to_string());
+    }
+
+    let html_path = PathBuf::from(html_path_raw);
+    if !html_path.is_file() {
+        return Err(format!("Exported session file not found: {}", html_path_raw));
+    }
+
+    let gh_path = discover_gh_path().ok_or_else(|| {
+        "GitHub CLI (gh) is not installed. Install it from https://cli.github.com/".to_string()
+    })?;
+
+    let mut auth_cmd = Command::new(&gh_path);
+    auth_cmd
+        .arg("auth")
+        .arg("status")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        auth_cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+
+    let auth_output = auth_cmd
+        .output()
+        .map_err(|e| format!("Failed to run gh auth status: {}", e))?;
+
+    if !auth_output.status.success() {
+        return Err("GitHub CLI is not logged in. Run 'gh auth login' first.".to_string());
+    }
+
+    let mut gist_cmd = Command::new(&gh_path);
+    gist_cmd
+        .arg("gist")
+        .arg("create")
+        .arg("--public=false")
+        .arg(&html_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    if let Some(parent) = html_path.parent() {
+        gist_cmd.current_dir(parent);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        gist_cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+
+    let gist_output = gist_cmd
+        .output()
+        .map_err(|e| format!("Failed to run gh gist create: {}", e))?;
+
+    let stdout = String::from_utf8_lossy(&gist_output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&gist_output.stderr).to_string();
+
+    if !gist_output.status.success() {
+        let message = if !stderr.trim().is_empty() {
+            stderr.trim().to_string()
+        } else if !stdout.trim().is_empty() {
+            stdout.trim().to_string()
+        } else {
+            format!("gh gist create failed with exit code {}", gist_output.status.code().unwrap_or(-1))
+        };
+        return Err(format!("Failed to create gist: {}", message));
+    }
+
+    let combined = format!("{}\n{}", stdout, stderr);
+    let gist_url = parse_gist_url_from_output(&combined)
+        .ok_or_else(|| "Failed to parse gist URL from gh output".to_string())?;
+    let gist_id = parse_gist_id_from_url(&gist_url)
+        .ok_or_else(|| "Failed to parse gist ID from gh output".to_string())?;
+    let preview_url = format!("https://pi.dev/session/#{}", gist_id);
+
+    Ok(ShareGistResult {
+        gist_url,
+        gist_id,
+        preview_url,
+        stdout,
+        stderr,
     })
 }
 
@@ -1602,8 +1945,10 @@ pub fn run() {
             open_file_dialog,
             run_pi_cli_command,
             get_cli_update_status,
+            get_pi_changelog,
             update_cli_via_npm,
             run_git_command,
+            create_share_gist,
             get_desktop_runtime_info,
             open_path_in_default_app,
         ])

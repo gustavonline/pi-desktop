@@ -1267,6 +1267,25 @@ export class PackagesView {
 		this.render();
 	}
 
+	async openExtensionConfigBySource(source: string): Promise<boolean> {
+		const normalized = normalizeRecommendedSource(source);
+		const installed = this.findInstalledItemForSource(normalized, "global");
+		if (!installed) return false;
+		const item: ExtensionSurfaceItem = {
+			id: `installed:${normalized}`,
+			displayName: installed.displayName,
+			source: installed.source,
+			description: "Installed extension package",
+			note: installed.location || installed.source,
+			openUrl: installed.openUrl,
+			sourceKind: inferSourceKindFromSource(installed.source),
+			installState: this.extensionInstallState(installed.source),
+			installedItemForScope: installed,
+		};
+		await this.openPackagesItemModal({ kind: "extension", item });
+		return true;
+	}
+
 	private closeActivePackageConfig(): void {
 		this.activePackageConfigSource = null;
 		this.activePackageConfigLabel = "";
