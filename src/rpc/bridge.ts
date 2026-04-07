@@ -689,18 +689,29 @@ export class RpcBridge {
 		this.emitToListeners(data);
 	}
 
+	private timeoutMsForCommand(command: Record<string, unknown>): number {
+		const type = typeof command.type === "string" ? command.type.trim().toLowerCase() : "";
+		switch (type) {
+			case "compact":
+				return 5 * 60_000;
+			default:
+				return 35_000;
+		}
+	}
+
 	private async send(command: Record<string, unknown>): Promise<Record<string, unknown>> {
 		await this.ensureListeners();
 		const id = `req_${++this.requestId}`;
 		const fullCommand = { ...command, id };
 
 		return new Promise((resolve, reject) => {
-			traceBridge(`send instance=${this.instanceId} id=${id} command=${String(command.type)}`);
+			const timeoutMs = this.timeoutMsForCommand(command);
+			traceBridge(`send instance=${this.instanceId} id=${id} command=${String(command.type)} timeoutMs=${timeoutMs}`);
 			const timeout = setTimeout(() => {
 				this.pendingRequests.delete(id);
-				traceBridge(`timeout instance=${this.instanceId} id=${id} command=${String(command.type)}`);
+				traceBridge(`timeout instance=${this.instanceId} id=${id} command=${String(command.type)} timeoutMs=${timeoutMs}`);
 				reject(new Error(`Timeout waiting for response to ${String(command.type)}`));
-			}, 35000);
+			}, timeoutMs);
 
 			this.pendingRequests.set(id, {
 				resolve: (response) => {

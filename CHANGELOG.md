@@ -48,6 +48,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Fixed workflow summary counters to report mixed outcomes correctly (complete + failed + running) instead of over-reporting failures.
 - Removed blinking assistant-body streaming cursor artifact and removed noisy composer status text beneath model controls.
 - Fixed compaction timeline behavior so compaction rows stay anchored at the correct chronological position instead of drifting to the newest row.
+- Fixed manual `/compact` timeout failures by using an extended RPC timeout window for compaction requests, and fixed post-compaction session stats ring staleness by treating unknown backend context usage as unknown instead of reusing stale pre-compaction fallback tokens.
 - Alt+Enter in composer now surfaces explicit queued-message behavior (`followUp`) with clearer queued labeling in user bubbles.
 - Extension `notify` responses are now surfaced as in-app notices while Desktop is foregrounded, so command feedback from extension workflows (including auto-rename commands) is visible instead of appearing to no-op.
 - Extension runtime errors now include better source context in chat notices, and Desktop emits an explicit compatibility hint when an extension still uses deprecated `ctx.modelRegistry.getApiKey()`.
