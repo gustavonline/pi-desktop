@@ -2302,6 +2302,8 @@ export class ChatView {
 			const fromRaw = pickNumber(raw, [
 				"contextWindow",
 				"context_window",
+				"contextUsage.contextWindow",
+				"contextUsage.context_window",
 				"usage.contextWindow",
 				"usage.context_window",
 			]);
@@ -2397,6 +2399,27 @@ export class ChatView {
 		return null;
 	}
 
+	private markContextUsageUnknown(): void {
+		this.lastAssistantContextTokens = null;
+		this.sessionStats = {
+			...this.sessionStats,
+			tokens: null,
+			usageRatio: null,
+			updatedAt: Date.now(),
+		};
+	}
+
+	private refreshAfterCompaction(): void {
+		void (async () => {
+			try {
+				await this.refreshFromBackend();
+			} catch {
+				// ignore and still attempt stats refresh
+			}
+			await this.refreshSessionStats(true);
+		})();
+	}
+
 	private async refreshSessionStats(force = false): Promise<void> {
 		if (this.refreshingSessionStats) return;
 		if (!force && Date.now() - this.sessionStats.updatedAt < 1800) return;
@@ -2413,10 +2436,17 @@ export class ChatView {
 				"usage.tokens.total",
 				"session.totalTokens",
 			]);
+			const contextUsageRecord =
+				raw.contextUsage && typeof raw.contextUsage === "object" ? (raw.contextUsage as Record<string, unknown>) : null;
+			const contextUsageHasTokensKey = Boolean(contextUsageRecord && Object.prototype.hasOwnProperty.call(contextUsageRecord, "tokens"));
+			const contextUsageHasPercentKey = Boolean(contextUsageRecord && Object.prototype.hasOwnProperty.call(contextUsageRecord, "percent"));
+			const contextUsageTokensExplicitNull = contextUsageHasTokensKey && contextUsageRecord?.tokens === null;
+			const contextUsagePercentExplicitNull = contextUsageHasPercentKey && contextUsageRecord?.percent === null;
 			const contextTokensFromStats = pickNumber(raw, [
 				"contextTokens",
 				"context_tokens",
 				"context.tokens",
+				"contextUsage.tokens",
 				"usage.contextTokens",
 				"usage.context_tokens",
 				"usage.tokens.context",
@@ -2453,7 +2483,11 @@ export class ChatView {
 					"context_usage_percent",
 				]),
 			);
-			const contextTokens = contextTokensFromStats ?? this.lastAssistantContextTokens;
+			const contextUsageExplicitlyUnknown =
+				(contextUsageTokensExplicitNull || contextUsagePercentExplicitNull) &&
+				contextTokensFromStats === null &&
+				rawUsageRatio === null;
+			const contextTokens = contextTokensFromStats ?? (contextUsageExplicitlyUnknown ? null : this.lastAssistantContextTokens);
 			const usageRatio =
 				rawUsageRatio ??
 				(contextTokens !== null && contextWindow && contextWindow > 0
@@ -3591,7 +3625,9 @@ export class ChatView {
 						this.compactionCycle.details.push(`Context before compaction: ${Math.round(tokensBefore).toLocaleString()} tokens`);
 					}
 					this.compactionCycle.details.push("Compaction completed successfully.");
+					this.markContextUsageUnknown();
 					this.pushNotice("Auto-compaction complete", "success");
+					this.refreshAfterCompaction();
 				}
 				this.render();
 				break;
@@ -4528,6 +4564,8 @@ export class ChatView {
 				}
 				this.compactionCycle.details.push("Compaction completed successfully.");
 			}
+			this.markContextUsageUnknown();
+			this.render();
 			await this.refreshFromBackend();
 			await this.refreshSessionStats(true);
 			if (this.compactionCycle && typeof this.sessionStats.tokens === "number" && Number.isFinite(this.sessionStats.tokens)) {
