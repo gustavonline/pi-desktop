@@ -54,6 +54,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Desktop now ensures a global compatibility extension (`~/.pi/agent/extensions/pi-desktop-sdk-compat.ts`) is installed to shim `modelRegistry.getApiKey()` via `getApiKeyAndHeaders()` for legacy extensions, restoring runtime compatibility for packages such as `@byteowlz/pi-auto-rename`.
 - Auto-rename settings now correctly hydrate saved `model`/`fallbackModel` values from object-form config (`{ provider, id }`) and keep those values visible in model dropdowns (including unavailable-but-saved models).
 - Suppressed internal extension status-key events (for example `oqto_title_changed`) from rendering as floating composer status text, fixing stray session-title overlays above the attach/model row.
+- Git branch picker now includes both local and remote-tracking branches, supports remote-branch checkout as local tracking branches, prevents accidental new-branch creation when a matching remote exists, and adds an inline `Fetch` action for refreshing remotes.
 
 ## [0.1.8] - 2026-03-23
 

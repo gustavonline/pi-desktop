@@ -11,6 +11,7 @@ import {
 	type ThinkingLevel,
 	rpcBridge,
 } from "../rpc/bridge.js";
+import { buildGitBranchIndex, findGitBranchEntryByQuery, type GitBranchEntry } from "../git/branches.js";
 
 type DeliveryMode = "prompt" | "steer" | "followUp";
 
@@ -131,6 +132,8 @@ interface GitSummary {
 	isRepo: boolean;
 	branch: string | null;
 	branches: string[];
+	branchEntries: GitBranchEntry[];
+	hasRemoteBranches: boolean;
 	dirtyFiles: number;
 	additions: number;
 	deletions: number;
@@ -609,6 +612,8 @@ export class ChatView {
 		isRepo: false,
 		branch: null,
 		branches: [],
+		branchEntries: [],
+		hasRemoteBranches: false,
 		dirtyFiles: 0,
 		additions: 0,
 		deletions: 0,
@@ -618,6 +623,7 @@ export class ChatView {
 	private gitMenuOpen = false;
 	private gitBranchQuery = "";
 	private switchingGitBranch = false;
+	private fetchingGitRemotes = false;
 	private creatingGitRepo = false;
 	private projectPath: string | null = null;
 	private bindingStatusText: string | null = null;
@@ -2657,6 +2663,8 @@ export class ChatView {
 					isRepo: false,
 					branch: null,
 					branches: [],
+					branchEntries: [],
+					hasRemoteBranches: false,
 					dirtyFiles: 0,
 					additions: 0,
 					deletions: 0,
@@ -2675,6 +2683,8 @@ export class ChatView {
 					isRepo: false,
 					branch: null,
 					branches: [],
+					branchEntries: [],
+					hasRemoteBranches: false,
 					dirtyFiles: 0,
 					additions: 0,
 					deletions: 0,
@@ -2685,9 +2695,9 @@ export class ChatView {
 				return;
 			}
 
-			const [branchPrimary, branchesResult, statusResult, diffResult, stagedResult, hasCommit] = await Promise.all([
+			const [branchPrimary, refsResult, statusResult, diffResult, stagedResult, hasCommit] = await Promise.all([
 				this.runGit(["symbolic-ref", "--short", "HEAD"]),
-				this.runGit(["for-each-ref", "--format=%(refname:short)", "refs/heads"]),
+				this.runGit(["for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes"]),
 				this.runGit(["status", "--porcelain"]),
 				this.runGit(["diff", "--numstat"]),
 				this.runGit(["diff", "--cached", "--numstat"]),
@@ -2697,21 +2707,22 @@ export class ChatView {
 			let branch = branchPrimary.stdout.trim() || null;
 			if (!branch || branchPrimary.exitCode !== 0) {
 				const fallback = await this.runGit(["rev-parse", "--abbrev-ref", "HEAD"]);
-				branch = fallback.stdout.trim() || null;
+				const fallbackBranch = fallback.stdout.trim();
+				branch = fallbackBranch && fallbackBranch !== "HEAD" ? fallbackBranch : null;
+			} else if (branch === "HEAD") {
+				branch = null;
 			}
 
-			let branches = branchesResult.stdout
+			const refs = refsResult.stdout
 				.split(/\r?\n/)
 				.map((line) => line.trim())
 				.filter(Boolean);
+			const branchIndex = buildGitBranchIndex(refs, {
+				currentBranch: branch,
+				knownLocalBranches: hasCommit ? [] : this.knownBranchesForCurrentProject(),
+			});
+			const branches = branchIndex.localNames;
 
-			if (!hasCommit) {
-				branches = [...new Set([...this.knownBranchesForCurrentProject(), ...branches])];
-			}
-
-			if (branch && !branches.includes(branch)) {
-				branches.unshift(branch);
-			}
 			this.rememberGitBranches(branches);
 			if (branch) this.rememberGitBranches([branch]);
 
@@ -2727,6 +2738,8 @@ export class ChatView {
 				isRepo: true,
 				branch,
 				branches,
+				branchEntries: branchIndex.entries,
+				hasRemoteBranches: branchIndex.hasRemoteEntries,
 				dirtyFiles,
 				additions: unstaged.additions + staged.additions,
 				deletions: unstaged.deletions + staged.deletions,
@@ -2737,6 +2750,8 @@ export class ChatView {
 				isRepo: false,
 				branch: null,
 				branches: [],
+				branchEntries: [],
+				hasRemoteBranches: false,
 				dirtyFiles: 0,
 				additions: 0,
 				deletions: 0,
@@ -2746,6 +2761,89 @@ export class ChatView {
 			this.gitBranchQuery = "";
 		} finally {
 			this.refreshingGitSummary = false;
+			this.render();
+		}
+	}
+
+	private resolveGitBranchSelection(query: string): GitBranchEntry | null {
+		return findGitBranchEntryByQuery(query, this.gitSummary.branchEntries);
+	}
+
+	private async switchGitBranchEntry(entry: GitBranchEntry): Promise<void> {
+		if (entry.scope === "remote") {
+			await this.switchRemoteTrackingBranch(entry);
+			return;
+		}
+		await this.switchGitBranch(entry.name);
+	}
+
+	private async switchRemoteTrackingBranch(entry: GitBranchEntry): Promise<void> {
+		if (this.switchingGitBranch) return;
+		const localBranch = entry.name.trim();
+		const remoteRef = entry.fullName.trim();
+		if (!localBranch || !remoteRef) return;
+		if (this.gitSummary.branches.includes(localBranch)) {
+			await this.switchGitBranch(localBranch);
+			return;
+		}
+
+		this.switchingGitBranch = true;
+		this.render();
+		try {
+			let result = await this.runGit(["switch", "--track", "-c", localBranch, remoteRef]);
+			if (result.exitCode !== 0) {
+				result = await this.runGit(["checkout", "--track", "-b", localBranch, remoteRef]);
+			}
+			if (result.exitCode !== 0) {
+				const message = `${result.stderr}\n${result.stdout}`.toLowerCase();
+				if (message.includes("already exists")) {
+					await this.switchGitBranch(localBranch);
+					return;
+				}
+				let fallback = await this.runGit(["switch", "--track", remoteRef]);
+				if (fallback.exitCode !== 0) {
+					fallback = await this.runGit(["checkout", "--track", remoteRef]);
+				}
+				if (fallback.exitCode === 0) {
+					this.gitMenuOpen = false;
+					this.gitBranchQuery = "";
+					this.pushNotice(`Switched to ${localBranch} (tracking ${remoteRef})`, "success");
+					await this.refreshGitSummary(true);
+					return;
+				}
+				this.pushNotice(result.stderr.trim() || result.stdout.trim() || `Failed to switch branch: ${remoteRef}`, "error");
+				return;
+			}
+			this.gitMenuOpen = false;
+			this.gitBranchQuery = "";
+			this.pushNotice(`Switched to ${localBranch} (tracking ${remoteRef})`, "success");
+			await this.refreshGitSummary(true);
+		} catch (err) {
+			console.error("Failed to switch remote branch:", err);
+			this.pushNotice("Failed to switch remote branch", "error");
+		} finally {
+			this.switchingGitBranch = false;
+			this.render();
+		}
+	}
+
+	private async fetchGitRemotes(): Promise<void> {
+		if (!this.gitSummary.isRepo || this.fetchingGitRemotes || this.switchingGitBranch) return;
+		this.fetchingGitRemotes = true;
+		this.render();
+		try {
+			const result = await this.runGit(["fetch", "--all", "--prune"]);
+			if (result.exitCode !== 0) {
+				this.pushNotice(result.stderr.trim() || result.stdout.trim() || "Failed to fetch remotes", "error");
+				return;
+			}
+			this.pushNotice("Fetched remote branches", "success");
+			await this.refreshGitSummary(true);
+		} catch (err) {
+			console.error("Failed to fetch remotes:", err);
+			this.pushNotice("Failed to fetch remotes", "error");
+		} finally {
+			this.fetchingGitRemotes = false;
 			this.render();
 		}
 	}
@@ -2810,6 +2908,12 @@ export class ChatView {
 			this.pushNotice("Enter a branch name first", "info");
 			return;
 		}
+		const existingBranch = this.resolveGitBranchSelection(proposed);
+		if (existingBranch) {
+			await this.switchGitBranchEntry(existingBranch);
+			return;
+		}
+
 		if (!/^[A-Za-z0-9._\/-]+$/.test(proposed)) {
 			this.pushNotice("Use letters, numbers, ., _, -, / for branch names", "error");
 			return;
@@ -2818,11 +2922,6 @@ export class ChatView {
 		const refCheck = await this.runGit(["check-ref-format", "--branch", proposed]);
 		if (refCheck.exitCode !== 0) {
 			this.pushNotice(refCheck.stderr.trim() || refCheck.stdout.trim() || "Invalid branch name", "error");
-			return;
-		}
-
-		if (this.gitSummary.branches.includes(proposed) || proposed === (this.gitSummary.branch || "")) {
-			await this.switchGitBranch(proposed);
 			return;
 		}
 
@@ -2906,15 +3005,25 @@ export class ChatView {
 
 		const currentBranch = this.gitSummary.branch || "detached";
 		const query = this.gitBranchQuery.trim().toLowerCase();
-		const branches = this.gitSummary.branches.filter((branch) => !query || branch.toLowerCase().includes(query));
+		const branchEntries = this.gitSummary.branchEntries.filter((entry) => {
+			if (!query) return true;
+			const haystack = `${entry.name} ${entry.fullName} ${entry.remote ?? ""} ${entry.scope}`.toLowerCase();
+			return haystack.includes(query);
+		});
 		const filesLabel = this.gitSummary.dirtyFiles === 1 ? "file" : "files";
+		const matchingEntry = this.gitBranchQuery.trim().length > 0 ? this.resolveGitBranchSelection(this.gitBranchQuery) : null;
+		const branchActionLabel = matchingEntry
+			? matchingEntry.scope === "remote"
+				? `Checkout ${matchingEntry.fullName}`
+				: `Switch to ${matchingEntry.name}`
+			: "Create and checkout new branch…";
 
 		return html`
 			<div class="git-branch-wrap">
 				<button
 					class="git-branch-pill ${this.gitMenuOpen ? "open" : ""}"
 					title="Switch branch"
-					?disabled=${this.switchingGitBranch || this.refreshingGitSummary}
+					?disabled=${this.switchingGitBranch || this.refreshingGitSummary || this.fetchingGitRemotes}
 					@click=${(e: Event) => {
 						e.stopPropagation();
 						this.gitMenuOpen = !this.gitMenuOpen;
@@ -2934,7 +3043,7 @@ export class ChatView {
 								<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.2"></circle><path d="M10.2 10.2l3 3"></path></svg>
 								<input
 									type="text"
-									placeholder="Search branches"
+									placeholder="Search branches or type a new name"
 									.value=${this.gitBranchQuery}
 									@input=${(e: Event) => {
 										this.gitBranchQuery = (e.target as HTMLInputElement).value;
@@ -2948,39 +3057,59 @@ export class ChatView {
 									}}
 								/>
 							</label>
-							<div class="git-branch-menu-title">Branches</div>
+							<div class="git-branch-menu-head">
+								<div class="git-branch-menu-title">Branches</div>
+								<button
+									class="git-branch-fetch"
+									?disabled=${this.fetchingGitRemotes || this.switchingGitBranch}
+									@click=${() => void this.fetchGitRemotes()}
+								>
+									${this.fetchingGitRemotes ? "Fetching…" : "Fetch"}
+								</button>
+							</div>
 							<div class="git-branch-list">
-								${branches.length === 0
+								${branchEntries.length === 0
 									? html`<div class="git-branch-empty">No branches found.</div>`
-									: branches.map((branch) => {
-											const active = branch === currentBranch;
+									: branchEntries.map((entry) => {
+											const active = entry.scope === "local" && entry.name === currentBranch;
+											const disabled = active || this.switchingGitBranch || this.fetchingGitRemotes;
+											const label = entry.scope === "remote" ? entry.fullName : entry.name;
 											return html`
 												<button
 													class="git-branch-item ${active ? "active" : ""}"
-													?disabled=${active || this.switchingGitBranch}
-													@click=${() => void this.switchGitBranch(branch)}
+													?disabled=${disabled}
+													@click=${() => void this.switchGitBranchEntry(entry)}
 												>
 													<div class="git-branch-item-top">
 														<span class="git-branch-item-icon">${uiIcon("git")}</span>
-														<span class="git-branch-item-name">${branch}</span>
-														${active ? html`<span class="git-branch-item-check">✓</span>` : nothing}
+														<span class="git-branch-item-name">${label}</span>
+														<span class="git-branch-item-trailing">
+															${entry.scope === "remote" ? html`<span class="git-branch-item-badge">remote</span>` : nothing}
+															${active ? html`<span class="git-branch-item-check">✓</span>` : nothing}
+														</span>
 													</div>
-													${active && this.gitSummary.dirtyFiles > 0
-														? html`
-															<div class="git-branch-item-meta">
-																Uncommitted: ${this.gitSummary.dirtyFiles.toLocaleString()} ${filesLabel}
-																<span class="git-delta plus">+${this.gitSummary.additions.toLocaleString()}</span>
-																<span class="git-delta minus">-${this.gitSummary.deletions.toLocaleString()}</span>
-															</div>
-														`
-														: nothing}
+													${entry.scope === "remote"
+														? html`<div class="git-branch-item-meta">Checkout tracking branch from ${entry.fullName}</div>`
+														: active && this.gitSummary.dirtyFiles > 0
+															? html`
+																<div class="git-branch-item-meta">
+																	Uncommitted: ${this.gitSummary.dirtyFiles.toLocaleString()} ${filesLabel}
+																	<span class="git-delta plus">+${this.gitSummary.additions.toLocaleString()}</span>
+																	<span class="git-delta minus">-${this.gitSummary.deletions.toLocaleString()}</span>
+																</div>
+															`
+															: nothing}
 												</button>
 											`;
 										})}
 							</div>
-							<button class="git-branch-create" @click=${() => void this.createAndCheckoutBranch(this.gitBranchQuery)}>
-								<span class="git-branch-create-plus">＋</span>
-								<span>Create and checkout new branch…</span>
+							<button
+								class="git-branch-create"
+								?disabled=${this.switchingGitBranch || this.fetchingGitRemotes}
+								@click=${() => void this.createAndCheckoutBranch(this.gitBranchQuery)}
+							>
+								<span class="git-branch-create-plus">${matchingEntry ? "↩" : "＋"}</span>
+								<span>${branchActionLabel}</span>
 							</button>
 						</div>
 					`
