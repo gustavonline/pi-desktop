@@ -26,6 +26,7 @@ Status: Implemented baseline on `feat/70-slash-actions-reliability` (2026-04-06)
 
 - Legacy persisted `pane: "terminal"` state is auto-normalized back to `pane: "chat"` with terminal dock open.
 - Current implementation is single docked terminal panel (no split panes/multi-terminal tabs yet).
+- Slash/command-palette terminal toggle is stable; app-wide keyboard shortcut reliability is tracked separately in issue #84.
 
 ## Potential follow-ups
 
