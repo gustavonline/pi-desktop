@@ -51,6 +51,8 @@ export interface ExtensionUiRequest {
 	notifyTargetWorkspaceId?: string;
 	notifyTargetTabId?: string;
 	notifyTargetSessionPath?: string;
+	notifyTargetWorkspaceLabel?: string;
+	notifyTargetSessionLabel?: string;
 }
 
 export function isSupportedExtensionUiMethod(value: unknown): value is UiMethod {
@@ -123,6 +125,8 @@ export interface NotificationActionTarget {
 	workspaceId?: string;
 	tabId?: string;
 	sessionPath?: string;
+	workspaceLabel?: string;
+	sessionLabel?: string;
 }
 
 export class ExtensionUiHandler {
@@ -201,6 +205,23 @@ export class ExtensionUiHandler {
 		return undefined;
 	}
 
+	private formatNotificationContextSuffix(request: ExtensionUiRequest): string {
+		const workspace = request.notifyTargetWorkspaceLabel?.trim() || "";
+		const session = request.notifyTargetSessionLabel?.trim() || "";
+		if (!workspace && !session) return "";
+		if (!workspace) return `[${session}]`;
+		if (!session) return `[${workspace}]`;
+		return `[${workspace}] -> [${session}]`;
+	}
+
+	private appendNotificationContext(body: string, contextSuffix: string): string {
+		if (!contextSuffix) return body;
+		const normalizedBody = body.trim();
+		if (!normalizedBody) return contextSuffix;
+		if (normalizedBody.includes(contextSuffix)) return normalizedBody;
+		return `${normalizedBody} ${contextSuffix}`;
+	}
+
 	private describeNotificationContext(backgrounded: boolean): string {
 		const visibility = typeof document !== "undefined" ? document.visibilityState : "unknown";
 		const domFocused = typeof document !== "undefined" ? document.hasFocus() : false;
@@ -236,11 +257,15 @@ export class ExtensionUiHandler {
 		const workspaceId = request.notifyTargetWorkspaceId?.trim();
 		const tabId = request.notifyTargetTabId?.trim();
 		const sessionPath = request.notifyTargetSessionPath?.trim();
+		const workspaceLabel = request.notifyTargetWorkspaceLabel?.trim();
+		const sessionLabel = request.notifyTargetSessionLabel?.trim();
 		if (!workspaceId && !tabId && !sessionPath) return null;
 		return {
 			workspaceId: workspaceId || undefined,
 			tabId: tabId || undefined,
 			sessionPath: sessionPath || undefined,
+			workspaceLabel: workspaceLabel || undefined,
+			sessionLabel: sessionLabel || undefined,
 		};
 	}
 
@@ -250,11 +275,15 @@ export class ExtensionUiHandler {
 		const workspaceId = typeof extra.notifyTargetWorkspaceId === "string" ? extra.notifyTargetWorkspaceId.trim() : "";
 		const tabId = typeof extra.notifyTargetTabId === "string" ? extra.notifyTargetTabId.trim() : "";
 		const sessionPath = typeof extra.notifyTargetSessionPath === "string" ? extra.notifyTargetSessionPath.trim() : "";
+		const workspaceLabel = typeof extra.notifyTargetWorkspaceLabel === "string" ? extra.notifyTargetWorkspaceLabel.trim() : "";
+		const sessionLabel = typeof extra.notifyTargetSessionLabel === "string" ? extra.notifyTargetSessionLabel.trim() : "";
 		if (!workspaceId && !tabId && !sessionPath) return null;
 		return {
 			workspaceId: workspaceId || undefined,
 			tabId: tabId || undefined,
 			sessionPath: sessionPath || undefined,
+			workspaceLabel: workspaceLabel || undefined,
+			sessionLabel: sessionLabel || undefined,
 		};
 	}
 
@@ -308,10 +337,15 @@ export class ExtensionUiHandler {
 			await this.focusDesktopWindowFromNotification().catch(() => {
 				/* ignore */
 			});
-			const target = this.extractNotificationActionTarget(notification) ?? this.lastNotificationActionTarget;
+			const directTarget = this.extractNotificationActionTarget(notification);
+			const usedFallback = !directTarget && !!this.lastNotificationActionTarget;
+			const target = directTarget ?? this.lastNotificationActionTarget;
 			if (!target) {
 				this.trace("notify:action-target missing");
 				return;
+			}
+			if (usedFallback) {
+				this.trace("notify:action-target fallback=last");
 			}
 			this.trace(`notify:action-target workspace=${target.workspaceId ?? "-"} tab=${target.tabId ?? "-"} session=${target.sessionPath ?? "-"}`);
 			this.onNotificationActionTarget?.(target);
@@ -599,8 +633,9 @@ export class ExtensionUiHandler {
 	private async showDesktopNotification(request: ExtensionUiRequest): Promise<boolean> {
 		const rawTitle = request.title?.trim() || "Pi Desktop";
 		const rawBody = request.message?.trim() || "";
+		const contextSuffix = this.formatNotificationContextSuffix(request);
 		const title = rawBody ? rawTitle : "Pi Desktop";
-		const body = rawBody || rawTitle;
+		const body = this.appendNotificationContext(rawBody || rawTitle, contextSuffix);
 
 		let granted = await this.ensureDesktopNotificationPermission(false);
 		if (!granted) {
@@ -626,6 +661,8 @@ export class ExtensionUiHandler {
 				...(actionTarget?.workspaceId ? { notifyTargetWorkspaceId: actionTarget.workspaceId } : {}),
 				...(actionTarget?.tabId ? { notifyTargetTabId: actionTarget.tabId } : {}),
 				...(actionTarget?.sessionPath ? { notifyTargetSessionPath: actionTarget.sessionPath } : {}),
+				...(actionTarget?.workspaceLabel ? { notifyTargetWorkspaceLabel: actionTarget.workspaceLabel } : {}),
+				...(actionTarget?.sessionLabel ? { notifyTargetSessionLabel: actionTarget.sessionLabel } : {}),
 			},
 		};
 		const sound = this.getDesktopNotificationSound();
