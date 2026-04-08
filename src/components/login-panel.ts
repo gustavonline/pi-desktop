@@ -92,7 +92,7 @@ export class LoginPanel {
 		}
 
 		const template = html`
-			<div class="fixed inset-0 z-40 flex items-center justify-center bg-black/50" @click=${(e: Event) => {
+			<div class="login-panel-backdrop fixed inset-0 z-40 flex items-center justify-center bg-black/50" @click=${(e: Event) => {
 				if (e.target === e.currentTarget) this.close();
 			}}>
 				<div class="bg-background rounded-lg shadow-xl border border-border w-full max-w-md p-4">

@@ -2753,14 +2753,7 @@ async function initialize(): Promise<void> {
 			}
 		});
 		chatView.setOnOpenTerminal(() => {
-			const workspace = getActiveWorkspace();
-			if (!workspace) return;
-			const shouldOpen = workspace.pane !== "chat" ? true : !workspace.terminalOpen;
-			workspace.terminalOpen = shouldOpen;
-			workspace.pane = "chat";
-			persistWorkspaces();
-			syncWorkspaceTabsBar();
-			void applyWorkspacePane(workspace);
+			toggleTerminalDock();
 		});
 		chatView.setOnAddProject(() => {
 			void sidebar?.openFolder();
@@ -3081,6 +3074,17 @@ function openPackagesPane(): void {
 	void applyWorkspacePane(workspace);
 }
 
+function toggleTerminalDock(forceOpen?: boolean): void {
+	const workspace = getActiveWorkspace();
+	if (!workspace) return;
+	const shouldOpen = typeof forceOpen === "boolean" ? forceOpen : workspace.pane !== "chat" ? true : !workspace.terminalOpen;
+	workspace.terminalOpen = shouldOpen;
+	workspace.pane = "chat";
+	persistWorkspaces();
+	syncWorkspaceTabsBar();
+	void applyWorkspacePane(workspace);
+}
+
 async function startFreshSessionTab(options: { forceNewTab?: boolean; title?: string } = {}): Promise<void> {
 	const workspace = getActiveWorkspace();
 	if (!workspace) return;
@@ -3141,6 +3145,11 @@ function wireCommandPaletteBuiltins(): void {
 			name: "packages",
 			description: "Open packages & resources",
 			action: async () => openPackagesPane(),
+		},
+		{
+			name: "terminal",
+			description: "Toggle docked terminal",
+			action: async () => toggleTerminalDock(),
 		},
 		{
 			name: "fork",
@@ -3334,6 +3343,12 @@ function setupKeyboardShortcuts(): void {
 		if (isCtrlOrMeta && e.key === "/") {
 			e.preventDefault();
 			shortcutsPanel?.open();
+			return;
+		}
+
+		if (isCtrlOrMeta && !isShift && e.code === "Backquote") {
+			e.preventDefault();
+			toggleTerminalDock();
 			return;
 		}
 
@@ -3556,14 +3571,7 @@ function renderApp(): void {
 			);
 		});
 		contentTabsBar.setOnOpenTerminal(() => {
-			const workspace = getActiveWorkspace();
-			if (!workspace) return;
-			const shouldOpen = workspace.pane !== "chat" ? true : !workspace.terminalOpen;
-			workspace.terminalOpen = shouldOpen;
-			workspace.pane = "chat";
-			persistWorkspaces();
-			syncWorkspaceTabsBar();
-			void applyWorkspacePane(workspace);
+			toggleTerminalDock();
 		});
 		contentTabsBar.setOnCreateTab(() => {
 			void startFreshSessionTab({ forceNewTab: true, title: NEW_GENERIC_TAB_TITLE });

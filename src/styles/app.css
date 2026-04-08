@@ -33,6 +33,7 @@
 	--desktop-chrome-blur: 0px;
 	--desktop-chrome-tint-strength: 0%;
 	--desktop-contrast: 50;
+	--app-window-radius: 14px;
 }
 
 * {
@@ -59,7 +60,7 @@ samp {
 
 #app {
 	height: 100%;
-	border-radius: 14px;
+	border-radius: var(--app-window-radius);
 	overflow: hidden;
 	background: var(--bg);
 }
@@ -69,7 +70,7 @@ samp {
 	display: flex;
 	flex-direction: column;
 	background: var(--bg);
-	border-radius: 14px;
+	border-radius: var(--app-window-radius);
 	overflow: hidden;
 }
 
@@ -78,7 +79,7 @@ samp {
 	display: flex;
 	min-height: 0;
 	overflow: hidden;
-	border-radius: 0 0 14px 14px;
+	border-radius: 0 0 var(--app-window-radius) var(--app-window-radius);
 }
 
 .loading-view {
@@ -3579,6 +3580,8 @@ body.file-split-resizing #file-split-resize-handle::after {
 	justify-content: center;
 	padding: 18px;
 	pointer-events: auto;
+	border-radius: var(--app-window-radius);
+	overflow: hidden;
 }
 
 .sidebar-space-dialog {
@@ -6890,6 +6893,14 @@ body.file-split-resizing #file-split-resize-handle::after {
 	background: rgba(0, 0, 0, 0.48);
 	backdrop-filter: blur(4px);
 	padding: 18px;
+	border-radius: var(--app-window-radius);
+	overflow: hidden;
+}
+
+#extension-ui-overlay,
+.login-panel-backdrop {
+	border-radius: var(--app-window-radius);
+	overflow: hidden;
 }
 
 .overlay-card,
@@ -7675,6 +7686,8 @@ body.file-split-resizing #file-split-resize-handle::after {
 	display: grid;
 	place-items: center;
 	z-index: 1200;
+	border-radius: var(--app-window-radius);
+	overflow: hidden;
 }
 
 .settings-subdialog-card {
