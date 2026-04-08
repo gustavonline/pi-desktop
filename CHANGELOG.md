@@ -30,6 +30,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Expanded package capability docs now define explicit command contracts (`/<base>`, `/<base> config`, `/<base> config <args>`), safe default settings behavior, and extension SDK auth compatibility guidance (`getApiKeyAndHeaders` first, legacy fallback optional).
 
 ### Fixed
+- Modal/backdrop layers now preserve window corner clipping (rounded dim/blur overlay) so opening dialogs no longer introduces square edge artifacts around the app window.
 - Bundled default Pi Desktop themes now emit full Pi CLI-compatible theme schema (all required color tokens) instead of a partial Desktop-only color set.
 - Fixed `/scoped-models` settings-open race causing Lit `ChildPart has no parentNode` errors by removing unsupported `innerHTML` mutation paths in `SettingsPanel` render/fallback lifecycle.
 - Fixed user message bubble width/wrapping regression that could squeeze short text into broken wrapping (`he j`) by correcting user-shell width constraints and wrap behavior.
