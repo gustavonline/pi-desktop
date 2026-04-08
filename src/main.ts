@@ -512,14 +512,20 @@ function resolveRuntimeNotifyTarget(runtime: SessionRuntime): {
 	workspaceId?: string;
 	tabId?: string;
 	sessionPath?: string;
+	workspaceLabel?: string;
+	sessionLabel?: string;
 } {
 	const workspace = workspaces.find((entry) => entry.id === runtime.workspaceId) ?? null;
 	const tab = workspace ? workspace.sessionTabs.find((entry) => entry.id === runtime.tabId) ?? null : null;
 	const sessionPath = runtime.lastKnownSessionPath ?? tab?.sessionPath ?? undefined;
+	const workspaceLabel = workspace?.title?.trim() || undefined;
+	const sessionLabel = tab?.title?.trim() || (sessionPath ? baseName(sessionPath) : undefined);
 	return {
 		workspaceId: runtime.workspaceId || workspace?.id || undefined,
 		tabId: runtime.tabId || tab?.id || undefined,
 		sessionPath: sessionPath ?? undefined,
+		workspaceLabel,
+		sessionLabel,
 	};
 }
 
@@ -543,6 +549,8 @@ function handleBackgroundRuntimeNotifyEvent(runtimeKey: string, event: Record<st
 		request.notifyTargetWorkspaceId = target.workspaceId;
 		request.notifyTargetTabId = target.tabId;
 		request.notifyTargetSessionPath = target.sessionPath;
+		request.notifyTargetWorkspaceLabel = target.workspaceLabel;
+		request.notifyTargetSessionLabel = target.sessionLabel;
 		recordDebugTrace(
 			`notify-target workspace=${target.workspaceId ?? "-"} tab=${target.tabId ?? "-"} session=${target.sessionPath ?? "-"} source=background`,
 		);
@@ -2480,12 +2488,14 @@ async function focusNotificationTarget(target: NotificationActionTarget, taskVer
 	const workspace = workspaces.find((entry) => entry.id === targetWorkspace.id) ?? targetWorkspace;
 	ensureWorkspaceContentState(workspace);
 
+	let resolution = target.tabId ? "tab-id" : "none";
 	let focusedTab = target.tabId ? setActiveSessionTab(workspace, target.tabId) : null;
 	if (!focusedTab && target.sessionPath) {
 		const normalizedSessionPath = normalizeSessionPath(target.sessionPath);
 		const existingTab = workspace.sessionTabs.find((tab) => normalizeSessionPath(tab.sessionPath) === normalizedSessionPath) ?? null;
 		if (existingTab) {
 			focusedTab = setActiveSessionTab(workspace, existingTab.id);
+			resolution = "session-path-existing";
 		}
 	}
 
@@ -2496,10 +2506,16 @@ async function focusNotificationTarget(target: NotificationActionTarget, taskVer
 			workspace.activeProjectId,
 			workspace.activeProjectPath,
 		);
+		resolution = "session-path-open";
+	}
+
+	if (!focusedTab) {
+		focusedTab = getActiveSessionTab(workspace);
+		resolution = "active-tab-fallback";
 	}
 
 	recordDebugTrace(
-		`notify-action:focus workspace=${workspace.id} tab=${focusedTab?.id ?? "-"} session=${focusedTab?.sessionPath ?? target.sessionPath ?? "-"}`,
+		`notify-action:focus workspace=${workspace.id} tab=${focusedTab?.id ?? "-"} session=${focusedTab?.sessionPath ?? target.sessionPath ?? "-"} via=${resolution}`,
 	);
 
 	persistWorkspaces();
@@ -3014,11 +3030,15 @@ function initializeComponents(): void {
 				const targetWorkspaceId = runtime?.workspaceId ?? workspace?.id ?? undefined;
 				const targetTabId = runtime?.tabId ?? activeTab?.id ?? undefined;
 				const targetSessionPath = runtime?.lastKnownSessionPath ?? activeTab?.sessionPath ?? undefined;
+				const targetWorkspaceLabel = workspace?.title?.trim() || undefined;
+				const targetSessionLabel = activeTab?.title?.trim() || (targetSessionPath ? baseName(targetSessionPath) : undefined);
 
 				if (targetWorkspaceId || targetTabId || targetSessionPath) {
 					request.notifyTargetWorkspaceId = targetWorkspaceId;
 					request.notifyTargetTabId = targetTabId;
 					request.notifyTargetSessionPath = targetSessionPath;
+					request.notifyTargetWorkspaceLabel = targetWorkspaceLabel;
+					request.notifyTargetSessionLabel = targetSessionLabel;
 					recordDebugTrace(
 						`notify-target workspace=${targetWorkspaceId ?? "-"} tab=${targetTabId ?? "-"} session=${targetSessionPath ?? "-"}`,
 					);
