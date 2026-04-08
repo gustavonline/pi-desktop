@@ -97,8 +97,15 @@ const TERMINAL_DOCK_HEIGHT_KEY = "pi-desktop.terminal-dock-height.v1";
 const TERMINAL_DOCK_MIN_HEIGHT = 180;
 const TERMINAL_DOCK_MAX_HEIGHT = 640;
 const TERMINAL_DOCK_DEFAULT_HEIGHT = 280;
+const FILE_SPLIT_WIDTH_KEY = "pi-desktop.file-split-width.v1";
+const FILE_SPLIT_MIN_WIDTH = 300;
+const FILE_SPLIT_MIN_CHAT_WIDTH = 420;
+const FILE_SPLIT_MIN_COMPOSER_GAP = 16;
+const FILE_SPLIT_DEFAULT_WIDTH = 520;
 const NEW_SESSION_TAB_TITLE = "New session";
 const NEW_FILE_TAB_TITLE = "New file";
+const NEW_GENERIC_TAB_TITLE = "New tab";
+const DEFAULT_AUTO_CONTENT_TAB_LIMIT = 2;
 const DEBUG_OVERLAY_STORAGE_KEY = "pi-desktop.debug-overlay.v1";
 const CLI_UPDATE_NOTICE_STORAGE_KEY = "pi-desktop.cli-update-notice-at.v1";
 const DESKTOP_UPDATE_NOTICE_STORAGE_KEY = "pi-desktop.desktop-update-notice-at.v1";
@@ -149,7 +156,9 @@ let activeWorkspaceId: string | null = null;
 let sidebarWidth = 320;
 let removeSidebarResizeHandlers: (() => void) | null = null;
 let removeTerminalDockResizeHandlers: (() => void) | null = null;
+let removeFileSplitResizeHandlers: (() => void) | null = null;
 let terminalDockHeightPx = loadTerminalDockHeight();
+let fileSplitWidthPx = loadFileSplitWidth();
 let sidebarSessionsRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 let sidebarSessionsWarmInterval: ReturnType<typeof setInterval> | null = null;
 let sidebarSessionsWarmStopTimer: ReturnType<typeof setTimeout> | null = null;
@@ -214,6 +223,121 @@ function setTerminalDockHeight(nextHeight: number, persist = false): void {
 	terminalDockHeightPx = clamped;
 	if (persist) persistTerminalDockHeight();
 	syncTerminalDockVisibility(getActiveWorkspace());
+}
+
+function resolveFileSplitMaxWidth(): number {
+	const layout = document.getElementById("chat-file-layout");
+	const availableWidth = layout?.getBoundingClientRect().width ?? window.innerWidth;
+	const maxWidth = Math.round(availableWidth - FILE_SPLIT_MIN_CHAT_WIDTH);
+	return Math.max(FILE_SPLIT_MIN_WIDTH, maxWidth);
+}
+
+function clampFileSplitWidth(value: number): number {
+	return Math.min(resolveFileSplitMaxWidth(), Math.max(FILE_SPLIT_MIN_WIDTH, Math.round(value)));
+}
+
+function loadFileSplitWidth(): number {
+	try {
+		const raw = localStorage.getItem(FILE_SPLIT_WIDTH_KEY);
+		const parsed = raw ? Number(raw) : FILE_SPLIT_DEFAULT_WIDTH;
+		if (!Number.isFinite(parsed)) return FILE_SPLIT_DEFAULT_WIDTH;
+		return Math.max(FILE_SPLIT_MIN_WIDTH, Math.round(parsed));
+	} catch {
+		return FILE_SPLIT_DEFAULT_WIDTH;
+	}
+}
+
+function persistFileSplitWidth(): void {
+	try {
+		localStorage.setItem(FILE_SPLIT_WIDTH_KEY, String(fileSplitWidthPx));
+	} catch {
+		// ignore
+	}
+}
+
+function resolveFileSplitComposerOverlap(layout: HTMLElement): number {
+	const handle = document.getElementById("file-split-resize-handle");
+	if (!handle || handle.classList.contains("hidden-pane")) return 0;
+	const composerPanel = layout.querySelector<HTMLElement>(".composer-panel");
+	if (!composerPanel || composerPanel.offsetParent === null) return 0;
+	const handleRect = handle.getBoundingClientRect();
+	const composerRect = composerPanel.getBoundingClientRect();
+	const dividerX = handleRect.left + handleRect.width / 2;
+	const minDividerX = composerRect.right + FILE_SPLIT_MIN_COMPOSER_GAP;
+	return Math.max(0, Math.ceil(minDividerX - dividerX));
+}
+
+function applyFileSplitWidth(): void {
+	const layout = document.getElementById("chat-file-layout");
+	if (!layout) return;
+	const clamped = clampFileSplitWidth(fileSplitWidthPx);
+	if (clamped !== fileSplitWidthPx) {
+		fileSplitWidthPx = clamped;
+	}
+
+	layout.style.setProperty("--file-split-width", `${fileSplitWidthPx}px`);
+
+	for (let attempt = 0; attempt < 5; attempt += 1) {
+		const overlap = resolveFileSplitComposerOverlap(layout);
+		if (overlap <= 0) break;
+		const nextWidth = clampFileSplitWidth(fileSplitWidthPx - overlap);
+		if (nextWidth === fileSplitWidthPx) break;
+		fileSplitWidthPx = nextWidth;
+		layout.style.setProperty("--file-split-width", `${fileSplitWidthPx}px`);
+	}
+}
+
+function setFileSplitWidth(nextWidth: number, persist = false): void {
+	const clamped = clampFileSplitWidth(nextWidth);
+	if (clamped !== fileSplitWidthPx) {
+		fileSplitWidthPx = clamped;
+	}
+	applyFileSplitWidth();
+	if (persist) persistFileSplitWidth();
+}
+
+function setupFileSplitResize(): void {
+	removeFileSplitResizeHandlers?.();
+	removeFileSplitResizeHandlers = null;
+
+	const handle = document.getElementById("file-split-resize-handle");
+	if (!handle) return;
+
+	const onPointerDown = (event: PointerEvent) => {
+		if (handle.classList.contains("hidden-pane")) return;
+		event.preventDefault();
+		const startX = event.clientX;
+		const startWidth = fileSplitWidthPx;
+		handle.classList.add("dragging");
+		document.body.classList.add("file-split-resizing");
+
+		const onMove = (moveEvent: PointerEvent) => {
+			const delta = startX - moveEvent.clientX;
+			setFileSplitWidth(startWidth + delta, false);
+		};
+
+		const onUp = () => {
+			handle.classList.remove("dragging");
+			document.body.classList.remove("file-split-resizing");
+			window.removeEventListener("pointermove", onMove);
+			window.removeEventListener("pointerup", onUp);
+			persistFileSplitWidth();
+		};
+
+		window.addEventListener("pointermove", onMove);
+		window.addEventListener("pointerup", onUp);
+	};
+
+	const onWindowResize = () => {
+		applyFileSplitWidth();
+	};
+
+	handle.addEventListener("pointerdown", onPointerDown);
+	window.addEventListener("resize", onWindowResize);
+	removeFileSplitResizeHandlers = () => {
+		handle.removeEventListener("pointerdown", onPointerDown);
+		window.removeEventListener("resize", onWindowResize);
+	};
 }
 
 function setupTerminalDockResize(terminalPane: HTMLElement): void {
@@ -739,6 +863,12 @@ function ensureWorkspaceContentState(workspace: WorkspaceState): void {
 		workspace.activeFileTabId = workspace.fileTabs[0]?.id ?? null;
 	}
 
+	if (workspace.fileTabs.length > 1) {
+		const activeFileTab = workspace.fileTabs.find((tab) => tab.id === workspace.activeFileTabId) ?? workspace.fileTabs[0] ?? null;
+		workspace.fileTabs = activeFileTab ? [activeFileTab] : [];
+		workspace.activeFileTabId = activeFileTab?.id ?? null;
+	}
+
 	const activeSession = workspace.sessionTabs.find((tab) => tab.id === workspace.activeSessionTabId) ?? workspace.sessionTabs[0] ?? null;
 	const activeFile = workspace.fileTabs.find((tab) => tab.id === workspace.activeFileTabId) ?? null;
 
@@ -863,26 +993,39 @@ function openOrActivateSessionTab(
 	projectId: string | null,
 	projectPath: string | null,
 	preferredTitle?: string,
+	options: { allowCreateTab?: boolean; preferredTabId?: string | null } = {},
 ): WorkspaceSessionTab {
 	ensureWorkspaceContentState(workspace);
 	const normalized = normalizeSessionPath(sessionPath);
+	const allowCreateTab = options.allowCreateTab ?? false;
 	let tab = workspace.sessionTabs.find((entry) => normalizeSessionPath(entry.sessionPath) === normalized);
 	const nextTitle = (preferredTitle || baseName(sessionPath)).trim() || "Chat";
 	if (!tab) {
-		const activeDraft = workspace.sessionTabs.find((entry) => entry.id === workspace.activeSessionTabId && isDraftSessionTab(entry));
-		const anyDraft = workspace.sessionTabs.find((entry) => isDraftSessionTab(entry));
+		const activeTab = workspace.sessionTabs.find((entry) => entry.id === workspace.activeSessionTabId) ?? null;
+		const preferredTab = options.preferredTabId
+			? workspace.sessionTabs.find((entry) => entry.id === options.preferredTabId) ?? null
+			: null;
 		const onlyTab = workspace.sessionTabs.length === 1 ? workspace.sessionTabs[0] : null;
 		const onlyTabLooksLikeSeed =
 			Boolean(onlyTab) &&
 			["chat", "new session", ""].includes(((onlyTab?.title || "").trim().toLowerCase()));
-		const reusableTab = activeDraft ?? anyDraft ?? (onlyTabLooksLikeSeed ? onlyTab : null);
+		const reusableTab = allowCreateTab ? null : preferredTab ?? activeTab ?? (onlyTabLooksLikeSeed ? onlyTab : null) ?? workspace.sessionTabs[0] ?? null;
 		if (reusableTab) {
+			const previousPath = reusableTab.sessionPath;
+			const shouldDiscardPreviousEphemeral =
+				Boolean(previousPath) &&
+				isEphemeralSessionTab(reusableTab) &&
+				(reusableTab.messageCount ?? 0) <= 0 &&
+				normalizeSessionPath(previousPath) !== normalized;
 			reusableTab.sessionPath = sessionPath;
 			reusableTab.title = nextTitle;
 			reusableTab.messageCount = null;
 			reusableTab.ephemeral = false;
 			setSessionTabProject(reusableTab, projectId, projectPath);
 			tab = reusableTab;
+			if (shouldDiscardPreviousEphemeral && previousPath) {
+				scheduleDiscardEphemeralSessionPaths([previousPath]);
+			}
 		} else {
 			tab = createSessionTab(nextTitle, sessionPath, projectId, projectPath);
 			workspace.sessionTabs.push(tab);
@@ -908,21 +1051,37 @@ function openOrActivateFileTab(
 	filePath: string,
 	projectId: string | null,
 	projectPath: string | null,
+	options: { allowCreateTab?: boolean; preferredTabId?: string | null } = {},
 ): WorkspaceFileTab {
 	ensureWorkspaceContentState(workspace);
 	const normalized = normalizeProjectPath(filePath);
+	const allowCreateTab = options.allowCreateTab ?? false;
 	let tab = workspace.fileTabs.find((entry) => normalizeProjectPath(entry.path) === normalized);
 	if (!tab) {
-		tab = {
-			id: uid("filetab"),
-			projectId: normalizeStoredId(projectId),
-			projectPath: normalizeStoredPath(projectPath),
-			path: filePath,
-			title: baseName(filePath),
-			draftDirectoryPath: null,
-			draftAnchorPath: null,
-		};
-		workspace.fileTabs.push(tab);
+		const preferredTab = options.preferredTabId
+			? workspace.fileTabs.find((entry) => entry.id === options.preferredTabId) ?? null
+			: null;
+		const activeTab = workspace.fileTabs.find((entry) => entry.id === workspace.activeFileTabId) ?? null;
+		const reusableTab = allowCreateTab ? null : preferredTab ?? activeTab ?? workspace.fileTabs[0] ?? null;
+		if (reusableTab) {
+			reusableTab.path = filePath;
+			reusableTab.title = baseName(filePath);
+			setFileTabProject(reusableTab, projectId, projectPath);
+			reusableTab.draftDirectoryPath = null;
+			reusableTab.draftAnchorPath = null;
+			tab = reusableTab;
+		} else {
+			tab = {
+				id: uid("filetab"),
+				projectId: normalizeStoredId(projectId),
+				projectPath: normalizeStoredPath(projectPath),
+				path: filePath,
+				title: baseName(filePath),
+				draftDirectoryPath: null,
+				draftAnchorPath: null,
+			};
+			workspace.fileTabs.push(tab);
+		}
 	} else {
 		setFileTabProject(tab, projectId, projectPath);
 		tab.draftDirectoryPath = null;
@@ -930,8 +1089,7 @@ function openOrActivateFileTab(
 	}
 	workspace.activeFileTabId = tab.id;
 	workspace.filePath = tab.path;
-	setWorkspaceActiveProject(workspace, { id: tab.projectId, path: tab.projectPath });
-	workspace.pane = "file";
+	workspace.pane = "chat";
 	return tab;
 }
 
@@ -942,21 +1100,23 @@ function createAndActivateEmptyFileTab(
 	projectPath: string | null = workspace.activeProjectPath,
 	draftDirectoryPath: string | null = projectPath,
 	draftAnchorPath: string | null = null,
+	options: { forceNewTab?: boolean } = {},
 ): WorkspaceFileTab {
 	ensureWorkspaceContentState(workspace);
+	const forceNewTab = options.forceNewTab ?? false;
 	const normalizedDraftDirectoryPath = normalizeStoredPath(draftDirectoryPath) ?? normalizeStoredPath(projectPath);
 	const normalizedDraftAnchorPath = normalizeStoredPath(draftAnchorPath);
-	const activeDraft = workspace.fileTabs.find((entry) => entry.id === workspace.activeFileTabId && isDraftFileTab(entry));
-	if (activeDraft) {
-		activeDraft.title = title.trim() || NEW_FILE_TAB_TITLE;
-		setFileTabProject(activeDraft, projectId, projectPath);
-		activeDraft.draftDirectoryPath = normalizedDraftDirectoryPath;
-		activeDraft.draftAnchorPath = normalizedDraftAnchorPath;
-		workspace.activeFileTabId = activeDraft.id;
+	const activeFileTab = workspace.fileTabs.find((entry) => entry.id === workspace.activeFileTabId) ?? workspace.fileTabs[0] ?? null;
+	if (activeFileTab && !forceNewTab) {
+		activeFileTab.path = null;
+		activeFileTab.title = title.trim() || NEW_FILE_TAB_TITLE;
+		setFileTabProject(activeFileTab, projectId, projectPath);
+		activeFileTab.draftDirectoryPath = normalizedDraftDirectoryPath;
+		activeFileTab.draftAnchorPath = normalizedDraftAnchorPath;
+		workspace.activeFileTabId = activeFileTab.id;
 		workspace.filePath = null;
-		setWorkspaceActiveProject(workspace, { id: activeDraft.projectId, path: activeDraft.projectPath });
-		workspace.pane = "file";
-		return activeDraft;
+		workspace.pane = "chat";
+		return activeFileTab;
 	}
 	const tab: WorkspaceFileTab = {
 		id: uid("filetab"),
@@ -970,8 +1130,7 @@ function createAndActivateEmptyFileTab(
 	workspace.fileTabs.push(tab);
 	workspace.activeFileTabId = tab.id;
 	workspace.filePath = null;
-	setWorkspaceActiveProject(workspace, { id: tab.projectId, path: tab.projectPath });
-	workspace.pane = "file";
+	workspace.pane = "chat";
 	return tab;
 }
 
@@ -1000,20 +1159,26 @@ function createAndActivateEmptySessionTab(
 	title = NEW_SESSION_TAB_TITLE,
 	projectId: string | null = workspace.activeProjectId,
 	projectPath: string | null = workspace.activeProjectPath,
+	options: { forceNewTab?: boolean } = {},
 ): WorkspaceSessionTab {
 	ensureWorkspaceContentState(workspace);
-	if (workspace.sessionTabs.length === 1 && isDraftSessionTab(workspace.sessionTabs[0])) {
-		const seed = workspace.sessionTabs[0];
-		seed.title = title.trim() || NEW_SESSION_TAB_TITLE;
-		seed.messageCount = 0;
-		seed.ephemeral = true;
-		clearSessionAttention(seed);
-		setSessionTabProject(seed, projectId, projectPath);
-		workspace.activeSessionTabId = seed.id;
-		workspace.sessionTitle = seed.title;
-		setWorkspaceActiveProject(workspace, { id: seed.projectId, path: seed.projectPath });
+	const forceNewTab = options.forceNewTab ?? false;
+	const activeSessionTab = workspace.sessionTabs.find((entry) => entry.id === workspace.activeSessionTabId) ?? workspace.sessionTabs[0] ?? null;
+	if (activeSessionTab && !forceNewTab) {
+		if (isEphemeralSessionTab(activeSessionTab) && activeSessionTab.sessionPath && (activeSessionTab.messageCount ?? 0) <= 0) {
+			scheduleDiscardEphemeralSessionPaths([activeSessionTab.sessionPath]);
+		}
+		activeSessionTab.sessionPath = null;
+		activeSessionTab.title = title.trim() || NEW_SESSION_TAB_TITLE;
+		activeSessionTab.messageCount = 0;
+		activeSessionTab.ephemeral = true;
+		clearSessionAttention(activeSessionTab);
+		setSessionTabProject(activeSessionTab, projectId, projectPath);
+		workspace.activeSessionTabId = activeSessionTab.id;
+		workspace.sessionTitle = activeSessionTab.title;
+		setWorkspaceActiveProject(workspace, { id: activeSessionTab.projectId, path: activeSessionTab.projectPath });
 		workspace.pane = "chat";
-		return seed;
+		return activeSessionTab;
 	}
 	const tab = createSessionTab(title, null, projectId, projectPath);
 	tab.messageCount = 0;
@@ -1055,10 +1220,14 @@ async function discardEphemeralSessionPaths(sessionPaths: string[]): Promise<voi
 	scheduleSidebarSessionsRefresh(0);
 }
 
-function scheduleDiscardEphemeralSessionTabs(tabs: Array<WorkspaceSessionTab | null | undefined>): void {
-	const sessionPaths = collectEphemeralSessionPaths(tabs);
+function scheduleDiscardEphemeralSessionPaths(sessionPaths: string[]): void {
 	if (sessionPaths.length === 0) return;
 	void discardEphemeralSessionPaths(sessionPaths);
+}
+
+function scheduleDiscardEphemeralSessionTabs(tabs: Array<WorkspaceSessionTab | null | undefined>): void {
+	const sessionPaths = collectEphemeralSessionPaths(tabs);
+	scheduleDiscardEphemeralSessionPaths(sessionPaths);
 }
 
 function pruneInactiveEphemeralSessionTabs(workspace: WorkspaceState, keepTabIds: string[] = []): boolean {
@@ -1641,7 +1810,7 @@ function loadWorkspaces(): void {
 						emoji: typeof w.emoji === "string" && w.emoji.trim().length > 0 ? w.emoji.trim() : null,
 						pinned: false,
 						leftMode: w.leftMode === "files" ? "files" : "projects",
-						pane: w.pane === "file" || w.pane === "packages" || w.pane === "settings" ? w.pane : "chat",
+						pane: w.pane === "packages" || w.pane === "settings" ? w.pane : "chat",
 						activeProjectId: normalizeStoredId(w.activeProjectId),
 						activeProjectPath: normalizeStoredPath(w.activeProjectPath),
 						filePath: typeof w.filePath === "string" ? w.filePath : null,
@@ -1840,14 +2009,13 @@ function syncSidebarSelectionFromWorkspace(workspace: WorkspaceState | null = ge
 		.map((tab) => ({ path: tab.sessionPath as string, message: tab.attentionMessage }));
 	sidebar.setAttentionSessions(attentionEntries);
 
-	if (workspace.pane === "file") {
+	sidebar.setActiveFilePath(getActiveFileTab(workspace)?.path ?? null);
+	if (workspace.pane !== "chat") {
 		sidebar.setActiveSessionPath(null);
-		sidebar.setActiveFilePath(getActiveFileTab(workspace)?.path ?? null);
 		sidebar.setTransientSessionDraft(null);
 		return;
 	}
 
-	sidebar.setActiveFilePath(null);
 	const activeSession = getActiveSessionTab(workspace) ?? null;
 	sidebar.setActiveSessionPath(activeSession?.sessionPath ?? null);
 	if (activeSession && isEphemeralSessionTab(activeSession)) {
@@ -1893,6 +2061,20 @@ function syncActiveChatRuntimeBinding(
 	}
 }
 
+function listVisibleSessionTabsForContentBar(workspace: WorkspaceState): WorkspaceSessionTab[] {
+	ensureWorkspaceContentState(workspace);
+	return workspace.sessionTabs.filter((tab) => {
+		if (!isEphemeralSessionTab(tab)) return true;
+		if (workspace.pane !== "chat") return false;
+		return tab.id === workspace.activeSessionTabId;
+	});
+}
+
+function getVisibleContentTabCount(workspace: WorkspaceState): number {
+	const visibleSessionTabs = listVisibleSessionTabsForContentBar(workspace);
+	return visibleSessionTabs.length;
+}
+
 function syncContentTabsBar(workspace: WorkspaceState | null = getActiveWorkspace()): void {
 	if (workspace) {
 		ensureWorkspaceContentState(workspace);
@@ -1911,47 +2093,45 @@ function syncContentTabsBar(workspace: WorkspaceState | null = getActiveWorkspac
 
 	ensureWorkspaceContentState(workspace);
 
-	const visibleSessionTabs = workspace.sessionTabs.filter((tab) => !isEphemeralSessionTab(tab) || tab.id === workspace.activeSessionTabId);
-	const tabs = [
-		...visibleSessionTabs.map((tab) => ({
-			id: tab.id,
-			type: "session" as const,
-			title: tab.title || NEW_SESSION_TAB_TITLE,
-			needsAttention: Boolean(tab.needsAttention),
-			attentionLabel: tab.attentionMessage ?? undefined,
-			closable: visibleSessionTabs.length > 1 || Boolean(tab.sessionPath),
-		})),
-		...workspace.fileTabs.map((tab) => ({
-			id: tab.id,
-			type: "file" as const,
-			title: tab.title || (tab.path ? baseName(tab.path) : NEW_FILE_TAB_TITLE),
-			path: tab.path ?? undefined,
-			closable: true,
-		})),
-	];
+	const visibleSessionTabs = listVisibleSessionTabsForContentBar(workspace);
+	const tabs = visibleSessionTabs.map((tab) => ({
+		id: tab.id,
+		type: "session" as const,
+		title: tab.title || NEW_SESSION_TAB_TITLE,
+		needsAttention: Boolean(tab.needsAttention),
+		attentionLabel: tab.attentionMessage ?? undefined,
+		closable: visibleSessionTabs.length > 1 || Boolean(tab.sessionPath),
+	}));
 
-	const activeTabId =
-		workspace.pane === "file" && workspace.activeFileTabId
-			? workspace.activeFileTabId
-			: workspace.activeSessionTabId;
+	const activeTabId = workspace.activeSessionTabId;
 
 	contentTabsBar.setTerminalActive(workspace.pane === "chat" && workspace.terminalOpen);
 	contentTabsBar.setTabs(tabs, activeTabId);
 }
 
-function setPaneVisibility(pane: WorkspaceState["pane"]): void {
+function setPaneVisibility(
+	pane: WorkspaceState["pane"],
+	options: { showFileSplit?: boolean } = {},
+): void {
+	const chatFileLayout = document.getElementById("chat-file-layout");
 	const sessionPane = document.getElementById("session-pane");
+	const fileSplitResizeHandle = document.getElementById("file-split-resize-handle");
 	const filePane = document.getElementById("file-pane");
 	const terminalPane = document.getElementById("terminal-pane");
 	const packagesPane = document.getElementById("packages-pane");
 	const settingsPane = document.getElementById("settings-pane");
-	if (!sessionPane || !filePane || !packagesPane || !settingsPane) return;
+	if (!chatFileLayout || !sessionPane || !fileSplitResizeHandle || !filePane || !packagesPane || !settingsPane) return;
 
-	sessionPane.classList.toggle("hidden-pane", pane !== "chat");
-	filePane.classList.toggle("hidden-pane", pane !== "file");
+	const showChatLayout = pane === "chat" || pane === "file";
+	const showFileSplit = showChatLayout && Boolean(options.showFileSplit);
+	chatFileLayout.classList.toggle("hidden-pane", !showChatLayout);
+	sessionPane.classList.toggle("hidden-pane", !showChatLayout);
+	fileSplitResizeHandle.classList.toggle("hidden-pane", !showFileSplit);
+	filePane.classList.toggle("hidden-pane", !showFileSplit);
+	if (showFileSplit) applyFileSplitWidth();
 	packagesPane.classList.toggle("hidden-pane", pane !== "packages");
 	settingsPane.classList.toggle("hidden-pane", pane !== "settings");
-	if (pane !== "chat") {
+	if (!showChatLayout) {
 		terminalPane?.classList.add("hidden-pane");
 		terminalPane?.classList.remove("terminal-dock-visible");
 	}
@@ -2015,30 +2195,32 @@ async function applyWorkspacePane(workspace: WorkspaceState | null = getActiveWo
 	chatView?.setProjectPath(workspaceProjectPath);
 	packagesView?.setProjectPath(workspaceProjectPath);
 	terminalPanel?.setProjectPath(workspaceProjectPath);
+	if (workspace.pane === "file") {
+		workspace.pane = "chat";
+		persistWorkspaces();
+		syncWorkspaceTabsBar();
+	}
 	if (workspace.pane !== "settings") {
 		settingsPanel?.hideWithoutClearing();
-	}
-	if (workspace.pane !== "file") {
-		fileViewer?.setProjectPath(workspaceProjectPath);
 	}
 	syncTerminalDockVisibility(workspace);
 	if (isStale()) return;
 
-	if (workspace.pane === "file") {
-		syncTerminalDockVisibility({ ...workspace, terminalOpen: false, pane: "file" });
-		const activeFileTab = getActiveFileTab(workspace);
-		const draftBasePath = activeFileTab && isDraftFileTab(activeFileTab) ? normalizeStoredPath(activeFileTab.draftDirectoryPath) : null;
-		fileViewer?.setProjectPath(draftBasePath ?? getFileTabProjectPath(activeFileTab) ?? getWorkspaceActiveProjectPath(workspace));
-		setPaneVisibility("file");
-		if (activeFileTab?.path) {
+	const activeFileTab = workspace.pane === "chat" ? getActiveFileTab(workspace) : null;
+	const showFileSplit = workspace.pane === "chat" && Boolean(activeFileTab);
+	if (showFileSplit && activeFileTab) {
+		const draftBasePath = isDraftFileTab(activeFileTab) ? normalizeStoredPath(activeFileTab.draftDirectoryPath) : null;
+		fileViewer?.setProjectPath(draftBasePath ?? getFileTabProjectPath(activeFileTab) ?? workspaceProjectPath);
+		if (activeFileTab.path) {
 			await fileViewer?.openFile(activeFileTab.path);
 			if (isStale()) return;
 		} else {
-			const draftId = activeFileTab?.id ?? "draft";
-			const draftTitle = activeFileTab?.title || NEW_FILE_TAB_TITLE;
+			const draftId = activeFileTab.id;
+			const draftTitle = activeFileTab.title || NEW_FILE_TAB_TITLE;
 			fileViewer?.openDraft(draftId, draftTitle);
 		}
-		return;
+	} else {
+		fileViewer?.setProjectPath(workspaceProjectPath);
 	}
 
 	if (workspace.pane === "packages") {
@@ -2079,7 +2261,7 @@ async function applyWorkspacePane(workspace: WorkspaceState | null = getActiveWo
 	if (isStale()) return;
 	settingsPanel?.hideWithoutClearing();
 	syncActiveChatRuntimeBinding(workspace);
-	setPaneVisibility("chat");
+	setPaneVisibility("chat", { showFileSplit });
 	syncTerminalDockVisibility(workspace);
 	if (workspace.terminalOpen) {
 		terminalPanel?.focusInput();
@@ -2903,7 +3085,7 @@ function toggleTerminalDock(forceOpen?: boolean): void {
 	void applyWorkspacePane(workspace);
 }
 
-async function startFreshSessionTab(): Promise<void> {
+async function startFreshSessionTab(options: { forceNewTab?: boolean; title?: string } = {}): Promise<void> {
 	const workspace = getActiveWorkspace();
 	if (!workspace) return;
 	ensureWorkspaceContentState(workspace);
@@ -2911,7 +3093,15 @@ async function startFreshSessionTab(): Promise<void> {
 	if (!projectPath) return;
 
 	pruneInactiveEphemeralSessionTabs(workspace);
-	createAndActivateEmptySessionTab(workspace, NEW_SESSION_TAB_TITLE, getWorkspaceActiveProjectId(workspace), projectPath);
+	createAndActivateEmptySessionTab(
+		workspace,
+		options.title?.trim() || NEW_SESSION_TAB_TITLE,
+		getWorkspaceActiveProjectId(workspace),
+		projectPath,
+		{
+			forceNewTab: options.forceNewTab ?? false,
+		},
+	);
 	persistWorkspaces();
 	syncWorkspaceTabsBar();
 	syncContentTabsBar(workspace);
@@ -2930,7 +3120,7 @@ async function startFreshSessionTab(): Promise<void> {
 			console.error("Failed to create session tab:", err);
 			chatView?.notify("Failed to create new session", "error");
 		},
-		{ label: "fresh-session-tab" },
+		{ label: options.forceNewTab ? "fresh-session-tab-explicit" : "fresh-session-tab" },
 	);
 }
 
@@ -3296,11 +3486,14 @@ function renderApp(): void {
 							</svg>
 						</button>
 						<div id="content-tabs-container" data-tauri-drag-region></div>
-						<div id="session-pane">
-							<div id="chat-container"></div>
-							<div id="terminal-pane" class="hidden-pane"></div>
+						<div id="chat-file-layout">
+							<div id="session-pane">
+								<div id="chat-container"></div>
+								<div id="terminal-pane" class="hidden-pane"></div>
+							</div>
+							<div id="file-split-resize-handle" class="hidden-pane" title="Resize file panel"></div>
+							<div id="file-pane" class="hidden-pane"></div>
 						</div>
-						<div id="file-pane" class="hidden-pane"></div>
 						<div id="packages-pane" class="hidden-pane"></div>
 						<div id="settings-pane" class="hidden-pane"></div>
 					</div>
@@ -3323,6 +3516,8 @@ function renderApp(): void {
 
 	applySidebarWidth();
 	setupSidebarResize();
+	applyFileSplitWidth();
+	setupFileSplitResize();
 	syncSidebarCollapseToggleButton();
 
 	const contentTabsContainer = document.getElementById("content-tabs-container");
@@ -3343,18 +3538,6 @@ function renderApp(): void {
 				return;
 			}
 
-			const fileTab = workspace.fileTabs.find((tab) => tab.id === tabId);
-			if (fileTab) {
-				workspace.activeFileTabId = fileTab.id;
-				workspace.filePath = fileTab.path;
-				setWorkspaceActiveProject(workspace, { id: fileTab.projectId, path: fileTab.projectPath });
-				workspace.pane = "file";
-				pruneEphemeralTabsWhenLeavingDraft(workspace);
-				persistWorkspaces();
-				syncWorkspaceTabsBar();
-				void applyWorkspacePane(workspace);
-				return;
-			}
 
 			const candidateSessionTab = workspace.sessionTabs.find((tab) => tab.id === tabId) ?? null;
 			if (!candidateSessionTab) return;
@@ -3390,24 +3573,15 @@ function renderApp(): void {
 		contentTabsBar.setOnOpenTerminal(() => {
 			toggleTerminalDock();
 		});
+		contentTabsBar.setOnCreateTab(() => {
+			void startFreshSessionTab({ forceNewTab: true, title: NEW_GENERIC_TAB_TITLE });
+		});
 		contentTabsBar.setOnRename((tabId, nextTitle) => {
 			const workspace = getActiveWorkspace();
 			if (!workspace) return;
 			ensureWorkspaceContentState(workspace);
 			const title = nextTitle.trim();
 			if (!title) return;
-
-			const fileTab = workspace.fileTabs.find((tab) => tab.id === tabId);
-			if (fileTab) {
-				fileTab.title = title;
-				persistWorkspaces();
-				syncWorkspaceTabsBar();
-				syncContentTabsBar(workspace);
-				if (workspace.activeFileTabId === fileTab.id && workspace.pane === "file") {
-					void applyWorkspacePane(workspace);
-				}
-				return;
-			}
 
 			const sessionTab = workspace.sessionTabs.find((tab) => tab.id === tabId);
 			if (sessionTab) {
@@ -3435,22 +3609,6 @@ function renderApp(): void {
 				return;
 			}
 
-			const fileIndex = workspace.fileTabs.findIndex((tab) => tab.id === tabId);
-			if (fileIndex !== -1) {
-				const wasActive = workspace.activeFileTabId === tabId;
-				workspace.fileTabs.splice(fileIndex, 1);
-				if (wasActive) {
-					const nextFile = workspace.fileTabs[fileIndex] ?? workspace.fileTabs[fileIndex - 1] ?? null;
-					workspace.activeFileTabId = nextFile?.id ?? null;
-					workspace.filePath = nextFile?.path ?? null;
-					workspace.pane = nextFile ? "file" : "chat";
-				}
-				ensureWorkspaceContentState(workspace);
-				persistWorkspaces();
-				syncWorkspaceTabsBar();
-				void applyWorkspacePane(workspace);
-				return;
-			}
 
 			const sessionIndex = workspace.sessionTabs.findIndex((tab) => tab.id === tabId);
 			if (sessionIndex === -1) return;
@@ -3526,6 +3684,18 @@ function renderApp(): void {
 	if (filePane) {
 		fileViewer = new FileViewer(filePane);
 		fileViewer.setProjectPath(null);
+		fileViewer.setOnClose(() => {
+			const workspace = getActiveWorkspace();
+			if (!workspace) return;
+			ensureWorkspaceContentState(workspace);
+			workspace.fileTabs = [];
+			workspace.activeFileTabId = null;
+			workspace.filePath = null;
+			persistWorkspaces();
+			syncWorkspaceTabsBar();
+			syncSidebarSelectionFromWorkspace(workspace);
+			void applyWorkspacePane(workspace);
+		});
 		fileViewer.setOnDraftFileCreated((filePath) => {
 			const workspace = getActiveWorkspace();
 			if (!workspace) return;
@@ -3547,7 +3717,7 @@ function renderApp(): void {
 			}
 
 			workspace.filePath = filePath;
-			workspace.pane = "file";
+			workspace.pane = "chat";
 			ensureWorkspaceContentState(workspace);
 			persistWorkspaces();
 			syncWorkspaceTabsBar();
@@ -3719,9 +3889,9 @@ function renderApp(): void {
 			return;
 		}
 
-		const oldRuntimeKeys = listRuntimeKeysForWorkspace(workspace.id);
-		const discardedSessionTabs = [...workspace.sessionTabs];
 		if (!project) {
+			const oldRuntimeKeys = listRuntimeKeysForWorkspace(workspace.id);
+			const discardedSessionTabs = [...workspace.sessionTabs];
 			scheduleDiscardEphemeralSessionTabs(discardedSessionTabs);
 			setWorkspaceActiveProject(workspace, null);
 			setActiveRuntime(null);
@@ -3749,12 +3919,14 @@ function renderApp(): void {
 		}
 
 		const preferredSession = sidebar?.getPreferredSessionForProject(project.id) ?? null;
+		const autoTabCountBefore = getVisibleContentTabCount(workspace);
+		const canAutoCreateTab = autoTabCountBefore < DEFAULT_AUTO_CONTENT_TAB_LIMIT;
 		setWorkspaceActiveProject(workspace, project);
-		scheduleDiscardEphemeralSessionTabs(discardedSessionTabs);
 
 		if (preferredSession) {
-			resetWorkspaceContentTabs(workspace, project);
-			const sessionTab = openOrActivateSessionTab(workspace, preferredSession.path, project.id, project.path, preferredSession.name);
+			const sessionTab = openOrActivateSessionTab(workspace, preferredSession.path, project.id, project.path, preferredSession.name, {
+				allowCreateTab: canAutoCreateTab,
+			});
 			pruneInactiveEphemeralSessionTabs(workspace, [sessionTab.id]);
 			persistWorkspaces();
 			syncWorkspaceTabsBar();
@@ -3770,7 +3942,6 @@ function renderApp(): void {
 					assertProjectTaskCurrent(version);
 					await chatView?.refreshModels();
 					assertProjectTaskCurrent(version);
-					removeRuntimeKeys(oldRuntimeKeys.filter((key) => key !== activeSessionRuntimeKey));
 					await applyWorkspacePane(workspace);
 				},
 				(err) => {
@@ -3782,7 +3953,9 @@ function renderApp(): void {
 			return;
 		}
 
-		resetWorkspaceContentTabs(workspace, project);
+		createAndActivateEmptySessionTab(workspace, NEW_SESSION_TAB_TITLE, project.id, project.path, {
+			forceNewTab: canAutoCreateTab,
+		});
 		persistWorkspaces();
 		syncWorkspaceTabsBar();
 		syncContentTabsBar(workspace);
@@ -3797,7 +3970,6 @@ function renderApp(): void {
 				assertProjectTaskCurrent(version);
 				await chatView?.refreshModels();
 				assertProjectTaskCurrent(version);
-				removeRuntimeKeys(oldRuntimeKeys.filter((key) => key !== activeSessionRuntimeKey));
 				await applyWorkspacePane(workspace);
 			},
 			(err) => {
@@ -3811,18 +3983,10 @@ function renderApp(): void {
 	sidebar.setOnNewSessionInProject((project) => {
 		const workspace = getActiveWorkspace();
 		if (!workspace) return;
-		const sameProject = normalizeProjectPath(getWorkspaceActiveProjectPath(workspace)) === normalizeProjectPath(project.path);
-		const oldRuntimeKeys = sameProject ? [] : listRuntimeKeysForWorkspace(workspace.id);
-		const discardedSessionTabs = sameProject ? [] : [...workspace.sessionTabs];
 
 		setWorkspaceActiveProject(workspace, project);
-		if (sameProject) {
-			pruneInactiveEphemeralSessionTabs(workspace);
-			createAndActivateEmptySessionTab(workspace, NEW_SESSION_TAB_TITLE, project.id, project.path);
-		} else {
-			scheduleDiscardEphemeralSessionTabs(discardedSessionTabs);
-			resetWorkspaceContentTabs(workspace, project);
-		}
+		pruneInactiveEphemeralSessionTabs(workspace);
+		createAndActivateEmptySessionTab(workspace, NEW_SESSION_TAB_TITLE, project.id, project.path, { forceNewTab: true });
 		persistWorkspaces();
 		syncWorkspaceTabsBar();
 		syncContentTabsBar(workspace);
@@ -3837,7 +4001,6 @@ function renderApp(): void {
 				assertProjectTaskCurrent(version);
 				await chatView?.refreshModels();
 				assertProjectTaskCurrent(version);
-				removeRuntimeKeys(oldRuntimeKeys.filter((key) => key !== activeSessionRuntimeKey));
 				await applyWorkspacePane(workspace);
 			},
 			(err) => {
@@ -3851,36 +4014,15 @@ function renderApp(): void {
 	sidebar.setOnNewFileInProject((project) => {
 		const workspace = getActiveWorkspace();
 		if (!workspace) return;
-		const switchingProject = normalizeProjectPath(getWorkspaceActiveProjectPath(workspace)) !== normalizeProjectPath(project.path);
-		const oldRuntimeKeys = switchingProject ? listRuntimeKeysForWorkspace(workspace.id) : [];
-		const discardedSessionTabs = switchingProject ? [...workspace.sessionTabs] : [];
 		const draftDirectoryPath = normalizeStoredPath(project.directoryPath) ?? normalizeStoredPath(project.path);
 		const draftAnchorPath = normalizeStoredPath(project.anchorPath);
 		setWorkspaceActiveProject(workspace, project);
-		if (switchingProject) {
-			scheduleDiscardEphemeralSessionTabs(discardedSessionTabs);
-			resetWorkspaceContentTabs(workspace, project);
-		}
 		createAndActivateEmptyFileTab(workspace, NEW_FILE_TAB_TITLE, project.id, project.path, draftDirectoryPath, draftAnchorPath);
 		fileViewer?.setProjectPath(draftDirectoryPath ?? project.path);
 		persistWorkspaces();
 		syncWorkspaceTabsBar();
 		syncContentTabsBar(workspace);
 		void applyWorkspacePane(workspace);
-
-		void queueProjectTask(
-			async (version) => {
-				await ensureRpcForProject(project.path, version);
-				assertProjectTaskCurrent(version);
-				removeRuntimeKeys(oldRuntimeKeys.filter((key) => key !== activeSessionRuntimeKey));
-				await applyWorkspacePane(workspace);
-			},
-			(err) => {
-				console.error("Failed to create draft file tab:", err);
-				chatView?.notify("Failed to create new file tab", "error");
-			},
-			{ label: "sidebar-new-file" },
-		);
 	});
 
 	const activateSidebarSession = (
@@ -3893,16 +4035,13 @@ function renderApp(): void {
 		const project = sidebar?.getProjectById(projectId);
 		if (!workspace || !project) return;
 
-		const switchingProject = normalizeProjectPath(getWorkspaceActiveProjectPath(workspace)) !== normalizeProjectPath(project.path);
-		const oldRuntimeKeys = switchingProject ? listRuntimeKeysForWorkspace(workspace.id) : [];
-		const discardedSessionTabs = switchingProject ? [...workspace.sessionTabs] : [];
+		const autoTabCountBefore = getVisibleContentTabCount(workspace);
+		const canAutoCreateTab = autoTabCountBefore < DEFAULT_AUTO_CONTENT_TAB_LIMIT;
 		setWorkspaceActiveProject(workspace, project);
-		if (switchingProject) {
-			scheduleDiscardEphemeralSessionTabs(discardedSessionTabs);
-			resetWorkspaceContentTabs(workspace, project);
-		}
 
-		const sessionTab = openOrActivateSessionTab(workspace, sessionPath, project.id, project.path, sessionName);
+		const sessionTab = openOrActivateSessionTab(workspace, sessionPath, project.id, project.path, sessionName, {
+			allowCreateTab: canAutoCreateTab,
+		});
 		pruneInactiveEphemeralSessionTabs(workspace, [sessionTab.id]);
 		persistWorkspaces();
 		syncWorkspaceTabsBar();
@@ -3918,7 +4057,6 @@ function renderApp(): void {
 				assertProjectTaskCurrent(version);
 				await chatView?.refreshModels();
 				assertProjectTaskCurrent(version);
-				removeRuntimeKeys(oldRuntimeKeys.filter((key) => key !== activeSessionRuntimeKey));
 				await applyWorkspacePane(workspace);
 				if (options?.onActivated) {
 					await options.onActivated();
@@ -4111,31 +4249,12 @@ function renderApp(): void {
 		const project = sidebar?.getProjectById(projectId);
 		if (!workspace || !project) return;
 
-		const switchingProject = normalizeProjectPath(getWorkspaceActiveProjectPath(workspace)) !== normalizeProjectPath(project.path);
-		const oldRuntimeKeys = switchingProject ? listRuntimeKeysForWorkspace(workspace.id) : [];
 		setWorkspaceActiveProject(workspace, project);
-		if (switchingProject) {
-			resetWorkspaceContentTabs(workspace, project);
-		}
-
-		openOrActivateFileTab(workspace, filePath, project.id, project.path);
+		openOrActivateFileTab(workspace, filePath, project.id, project.path, { allowCreateTab: false });
 		persistWorkspaces();
 		syncWorkspaceTabsBar();
 		syncContentTabsBar(workspace);
 		void applyWorkspacePane(workspace);
-
-		void queueProjectTask(
-			async (version) => {
-				await ensureRpcForProject(project.path, version);
-				assertProjectTaskCurrent(version);
-				removeRuntimeKeys(oldRuntimeKeys.filter((key) => key !== activeSessionRuntimeKey));
-				await applyWorkspacePane(workspace);
-			},
-			(err) => {
-				console.error("Failed to open file:", err);
-				chatView?.notify("Failed to open file", "error");
-			},
-		);
 	});
 
 	syncRunningSessionIndicators();

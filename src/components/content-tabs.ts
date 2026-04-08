@@ -43,7 +43,10 @@ export class ContentTabs {
 	private onClose: ((id: string) => void) | null = null;
 	private onRename: ((id: string, title: string) => void) | null = null;
 	private onOpenTerminal: (() => void) | null = null;
+	private onCreateTab: (() => void) | null = null;
 	private terminalActive = false;
+
+	private globalDismissListenerActive = false;
 
 	private tabColors: Record<string, string> = {};
 	private tabPins: Record<string, boolean> = {};
@@ -103,13 +106,13 @@ export class ContentTabs {
 
 		if (this.contextTabKey && !this.tabs.some((tab) => this.tabKey(tab) === this.contextTabKey)) {
 			this.contextTabKey = null;
-			window.removeEventListener("pointerdown", this.onWindowPointerDown, true);
 		}
 
 		if (this.draggingTabKey && !this.tabs.some((tab) => this.tabKey(tab) === this.draggingTabKey)) {
 			this.clearDragState();
 		}
 
+		this.syncGlobalDismissListener();
 		this.render();
 	}
 
@@ -129,10 +132,27 @@ export class ContentTabs {
 		this.onOpenTerminal = cb;
 	}
 
+	setOnCreateTab(cb: () => void): void {
+		this.onCreateTab = cb;
+	}
+
 	setTerminalActive(active: boolean): void {
 		if (this.terminalActive === active) return;
 		this.terminalActive = active;
 		this.render();
+	}
+
+	private syncGlobalDismissListener(): void {
+		const shouldListen = this.contextTabKey !== null;
+		if (shouldListen && !this.globalDismissListenerActive) {
+			window.addEventListener("pointerdown", this.onWindowPointerDown, true);
+			this.globalDismissListenerActive = true;
+			return;
+		}
+		if (!shouldListen && this.globalDismissListenerActive) {
+			window.removeEventListener("pointerdown", this.onWindowPointerDown, true);
+			this.globalDismissListenerActive = false;
+		}
 	}
 
 	private tabKey(tab: MainContentTab): string {
@@ -251,15 +271,14 @@ export class ContentTabs {
 		const pad = 10;
 		this.contextX = Math.min(Math.max(pad, e.clientX + 6), Math.max(pad, window.innerWidth - menuWidth - pad));
 		this.contextY = Math.min(Math.max(pad, e.clientY + 6), Math.max(pad, window.innerHeight - menuHeight - pad));
-		window.removeEventListener("pointerdown", this.onWindowPointerDown, true);
-		window.addEventListener("pointerdown", this.onWindowPointerDown, true);
+		this.syncGlobalDismissListener();
 		this.render();
 	}
 
 	private closeContext(shouldRender = true): void {
 		if (!this.contextTabKey) return;
 		this.contextTabKey = null;
-		window.removeEventListener("pointerdown", this.onWindowPointerDown, true);
+		this.syncGlobalDismissListener();
 		if (shouldRender) this.render();
 	}
 
@@ -524,6 +543,16 @@ export class ContentTabs {
 			>
 				<div class="content-tabs-scroll" data-tauri-drag-region>
 					${renderedTabs.map((tab, index) => this.renderTab(tab, index, this.draggingTabKey === this.tabKey(tab)))}
+					<button
+						class="content-tabs-add-btn content-tab-add-inline"
+						title="New tab"
+						@click=${(event: Event) => {
+							event.stopPropagation();
+							this.onCreateTab?.();
+						}}
+					>
+						＋
+					</button>
 					${draggingTab
 						? html`
 							<div

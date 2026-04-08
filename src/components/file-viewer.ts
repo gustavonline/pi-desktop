@@ -31,6 +31,14 @@ function pathBaseName(path: string): string {
 	return parts[parts.length - 1] || normalized;
 }
 
+function pathDirName(path: string): string {
+	const normalized = path.replace(/\\/g, "/").replace(/\/+$/, "");
+	const idx = normalized.lastIndexOf("/");
+	if (idx === -1) return "";
+	if (idx === 0) return "/";
+	return normalized.slice(0, idx);
+}
+
 function isMarkdownPath(path: string | null): boolean {
 	if (!path) return false;
 	return ["md", "markdown", "mdown", "mkdn", "mdx"].includes(fileExtension(path));
@@ -59,6 +67,7 @@ export class FileViewer {
 	private openingExternal = false;
 	private autoSaveTimer: ReturnType<typeof setTimeout> | null = null;
 	private onDraftFileCreated: ((filePath: string) => void) | null = null;
+	private onClose: (() => void) | null = null;
 
 	constructor(container: HTMLElement) {
 		this.container = container;
@@ -77,7 +86,12 @@ export class FileViewer {
 		this.onDraftFileCreated = cb;
 	}
 
+	setOnClose(cb: () => void): void {
+		this.onClose = cb;
+	}
+
 	async openFile(filePath: string): Promise<void> {
+		if (this.filePath === filePath && !this.draftId && !this.loading) return;
 		if (this.filePath && this.filePath !== filePath && this.dirty) {
 			await this.persistOpenedFile({ silent: true });
 		}
@@ -287,6 +301,11 @@ export class FileViewer {
 		const activeNameOrPath = this.filePath ?? this.draftName;
 		const markdown = isMarkdownPath(activeNameOrPath);
 		const canCreateDraft = Boolean(this.draftId);
+		const fileTitle = this.filePath ? pathBaseName(this.filePath) : this.draftName;
+		const fileDirectory = this.filePath ? pathDirName(this.filePath) : null;
+		const filePathLabel = this.filePath
+			? truncatePath(fileDirectory || this.filePath)
+			: "Select a file from the sidebar.";
 
 		const template = html`
 			<div class="file-viewer-root">
@@ -301,8 +320,9 @@ export class FileViewer {
 							/>
 						`
 						: html`
-							<div class="file-viewer-path only" title=${this.filePath || ""}>
-								${this.filePath ? truncatePath(this.filePath) : "Select a file from the sidebar."}
+							<div class="file-viewer-meta">
+								<div class="file-viewer-path" title=${fileDirectory || this.filePath || ""}>${filePathLabel}</div>
+								<div class="file-viewer-title" title=${fileTitle}>${fileTitle}</div>
 							</div>
 						`}
 					<div class="file-viewer-actions">
@@ -338,6 +358,7 @@ export class FileViewer {
 								<path d="M13 3L4.8 11.2"></path>
 							</svg>
 						</button>
+						<button class="file-viewer-close-btn" title="Close file panel" @click=${() => this.onClose?.()}>✕</button>
 					</div>
 				</div>
 				<div class="file-viewer-body">

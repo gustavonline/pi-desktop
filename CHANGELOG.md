@@ -12,6 +12,10 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Composer now supports terminal-style full input history traversal (`ArrowUp` / `ArrowDown`) across previously sent prompts and slash commands.
 - Slash palette keyboard navigation now previews the active command directly in the composer input and keeps the active row visible while traversing.
 - Command palette (`Cmd/Ctrl+K`) keyboard navigation now auto-scrolls the selected row into view for long lists.
+- Content tabs are now session-only (no file tab types), with sidebar session opens auto-filling up to two default session tabs and extra session tabs created explicitly via the tabs-bar `+` action (`New tab`). File opens now keep chat visible and render in a right-side split file panel (Warp-style), so session flow remains centered while file context is side-by-side.
+- Right-side file split panel is now resizable via drag handle, file header now shows directory path above filename title, and file-close affordance uses lightweight icon-only hover styling.
+- File split resize is now bounded to avoid overlap with the floating chat composer, while keeping the divider full-height in the chat surface.
+- Simplified content-tab trailing chrome by removing the visual divider next to the terminal button.
 - Terminal UX now uses a VS Code-style bottom dock inside chat instead of opening as a standalone terminal tab/pane, with an xterm-powered shell surface and close/clear dock controls.
 - Added `Ctrl/Cmd+\`` keyboard shortcut and command-palette `terminal` action to quickly toggle the docked terminal.
 - Composer follow-up queue UX is now minimal and docked near the composer instead of injecting speculative queued bubbles into the chat timeline.
