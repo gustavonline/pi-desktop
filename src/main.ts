@@ -529,6 +529,42 @@ function resolveRuntimeNotifyTarget(runtime: SessionRuntime): {
 	};
 }
 
+function isDesktopForegrounded(): boolean {
+	return typeof document !== "undefined" && document.visibilityState !== "hidden" && document.hasFocus();
+}
+
+function notifyContextSuffixFromPayload(payload: Record<string, unknown>): string {
+	const workspaceLabel = typeof payload.notifyTargetWorkspaceLabel === "string" ? payload.notifyTargetWorkspaceLabel.trim() : "";
+	const sessionLabel = typeof payload.notifyTargetSessionLabel === "string" ? payload.notifyTargetSessionLabel.trim() : "";
+	if (!workspaceLabel && !sessionLabel) return "";
+	if (!workspaceLabel) return `[${sessionLabel}]`;
+	if (!sessionLabel) return `[${workspaceLabel}]`;
+	return `[${workspaceLabel}] -> [${sessionLabel}]`;
+}
+
+function notifyTextFromPayload(payload: Record<string, unknown>): string {
+	const base =
+		(typeof payload.message === "string" && payload.message.trim()) ||
+		(typeof payload.title === "string" && payload.title.trim()) ||
+		"";
+	if (!base) return "";
+	const suffix = notifyContextSuffixFromPayload(payload);
+	if (!suffix || base.includes(suffix)) return base;
+	return `${base} ${suffix}`;
+}
+
+function notifyKindFromPayload(payload: Record<string, unknown>): "info" | "error" {
+	const notifyType = typeof payload.notifyType === "string" ? payload.notifyType.trim().toLowerCase() : "info";
+	return notifyType === "error" ? "error" : "info";
+}
+
+function emitForegroundNotifyFromPayload(payload: Record<string, unknown>): void {
+	if (!isDesktopForegrounded()) return;
+	const text = notifyTextFromPayload(payload);
+	if (!text) return;
+	chatView?.notify(text, notifyKindFromPayload(payload));
+}
+
 function handleBackgroundRuntimeNotifyEvent(runtimeKey: string, event: Record<string, unknown>): void {
 	const runtime = sessionRuntimes.get(runtimeKey);
 	if (!runtime) return;
@@ -556,6 +592,8 @@ function handleBackgroundRuntimeNotifyEvent(runtimeKey: string, event: Record<st
 		);
 		markSessionAttentionTarget(target);
 	}
+
+	emitForegroundNotifyFromPayload(request);
 
 	const normalizedRequest = normalizeExtensionUiRequest(request);
 	if (!normalizedRequest) {
@@ -3049,15 +3087,7 @@ function initializeComponents(): void {
 					});
 				}
 
-				const notifyText =
-					(typeof request.message === "string" && request.message.trim()) ||
-					(typeof request.title === "string" && request.title.trim()) ||
-					"";
-				const notifyType = typeof request.notifyType === "string" ? request.notifyType.trim().toLowerCase() : "info";
-				const isForeground = typeof document !== "undefined" && document.visibilityState !== "hidden" && document.hasFocus();
-				if (notifyText && isForeground) {
-					chatView?.notify(notifyText, notifyType === "error" ? "error" : "info");
-				}
+				emitForegroundNotifyFromPayload(request);
 			}
 
 			const normalizedRequest = normalizeExtensionUiRequest(request);

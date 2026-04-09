@@ -245,7 +245,7 @@ These should be packages/extensions/skills unless there is a very strong reason 
   - [ ] no default notification package
   - [x] external/recommended notification package
   - [ ] opt-in first-run “Enable notifications” flow
-- [ ] Ensure upstream `pi-desktop-notify` release is RPC-desktop-safe (`ctx.ui.notify`) without terminal-focus/stdout side effects (current npm v1.0.1 needed a local hotfix during testing)
+- [ ] Validate default recommended notification package (`pi-smart-voice-notify`) remains RPC-desktop-safe (`ctx.ui.notify`) across foreground/background runtime scenarios.
 
 ### Important note
 - [x] Verified: `pi-notify` is real and useful for terminal-hosted Pi

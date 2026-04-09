@@ -130,6 +130,9 @@ const AUTO_RENAME_PRIMARY_SOURCE = normalizeRecommendedSource("npm:@byteowlz/pi-
 const AUTO_RENAME_LEGACY_SOURCE = normalizeRecommendedSource("npm:pi-session-auto-rename");
 const AUTO_RENAME_COMMAND_NAMES = new Set(["auto-rename", "name-ai-config"]);
 const AUTO_RENAME_SCHEMA_RELATIVE = "./auto-rename.schema.json";
+const SMART_NOTIFY_PRIMARY_SOURCE = normalizeRecommendedSource("npm:pi-smart-voice-notify");
+const SMART_NOTIFY_LEGACY_SOURCE = normalizeRecommendedSource("npm:pi-desktop-notify");
+const SMART_NOTIFY_INSTALL_SOURCE = "npm:pi-smart-voice-notify";
 
 function defaultAutoRenameConfigDraft(): AutoRenameConfigDraft {
 	return {
@@ -579,6 +582,7 @@ export class PackagesView {
 	private configError = "";
 	private commandStatus = "";
 	private commandOutput = "";
+	private smartNotifyMigrationAttempted = false;
 	private packageScope: "global" | "local" = "global";
 	private query = "";
 	private currentProjectPath: string | null = null;
@@ -950,6 +954,15 @@ export class PackagesView {
 
 			this.installedUser = uniqueBy([...parsedUser.user], (item) => item.source);
 			this.installedProject = [];
+
+			const migratedNotifyPackage = await this.migrateLegacyNotifyPackageIfNeeded();
+			if (migratedNotifyPackage) {
+				const refreshedListResult = await rpcBridge.runPiCliCommand(["list"], { cwd: "/" });
+				const refreshedParsed = parsePiListOutput(refreshedListResult.stdout ?? "");
+				this.installedUser = uniqueBy([...refreshedParsed.user], (item) => item.source);
+				this.installedProject = [];
+			}
+
 			await this.refreshPackageConfigCommands();
 			if (this.activePackageConfigSource && !this.isNormalizedSourceInstalled(this.activePackageConfigSource)) {
 				this.closeActivePackageConfig();
@@ -960,6 +973,49 @@ export class PackagesView {
 			this.loadingConfig = false;
 			this.render();
 		}
+	}
+
+	private async migrateLegacyNotifyPackageIfNeeded(): Promise<boolean> {
+		if (this.smartNotifyMigrationAttempted) return false;
+		const legacyInstalled = this.installedUser.find((item) => normalizeRecommendedSource(item.source) === SMART_NOTIFY_LEGACY_SOURCE) ?? null;
+		if (!legacyInstalled) return false;
+		this.smartNotifyMigrationAttempted = true;
+
+		const hasPreferred = this.installedUser.some((item) => normalizeRecommendedSource(item.source) === SMART_NOTIFY_PRIMARY_SOURCE);
+		let changed = false;
+
+		if (!hasPreferred) {
+			const installOk = await this.executePackageCommand(["install", SMART_NOTIFY_INSTALL_SOURCE], {
+				scope: "global",
+				appendLocalFlag: false,
+				statusText: `Installing ${SMART_NOTIFY_INSTALL_SOURCE}…`,
+				refreshOnSuccess: false,
+			});
+			if (!installOk) {
+				this.commandStatus = `Failed to install ${SMART_NOTIFY_INSTALL_SOURCE}.`;
+				return false;
+			}
+			changed = true;
+		}
+
+		const removeSource = legacyInstalled.source || "npm:pi-desktop-notify";
+		const removeOk = await this.executePackageCommand(["remove", removeSource], {
+			scope: "global",
+			appendLocalFlag: false,
+			statusText: `Removing ${removeSource}…`,
+			refreshOnSuccess: false,
+		});
+		if (!removeOk) {
+			if (changed) {
+				this.commandStatus = `Installed ${SMART_NOTIFY_INSTALL_SOURCE}, but failed to remove legacy ${removeSource}.`;
+			}
+			return changed;
+		}
+
+		this.commandStatus = hasPreferred
+			? `Removed legacy notifications package: ${removeSource}`
+			: `Migrated notifications package to ${SMART_NOTIFY_INSTALL_SOURCE}.`;
+		return true;
 	}
 
 	private async refreshPackageConfigCommands(): Promise<void> {
