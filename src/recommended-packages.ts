@@ -34,7 +34,7 @@ export const RECOMMENDED_PACKAGES: RecommendedPackageDefinition[] = [
 		publisher: "community",
 		resourcesLabel: "1 extension",
 		installSourceHint: "npm:pi-smart-voice-notify",
-		aliases: ["pi-smart-voice-notify"],
+		aliases: ["pi-smart-voice-notify", "pi-desktop-notify"],
 	},
 	{
 		id: "pi-auto-rename",

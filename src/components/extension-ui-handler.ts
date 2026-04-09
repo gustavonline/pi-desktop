@@ -121,6 +121,12 @@ function shouldSuppressUiStatusKey(key: string): boolean {
 	return false;
 }
 
+function joinFsPath(base: string, child: string): string {
+	const normalizedBase = base.replace(/\\/g, "/").replace(/\/+$/, "");
+	const normalizedChild = child.replace(/\\/g, "/").replace(/^\/+/, "");
+	return normalizedBase ? `${normalizedBase}/${normalizedChild}` : normalizedChild;
+}
+
 export interface NotificationActionTarget {
 	workspaceId?: string;
 	tabId?: string;
@@ -143,6 +149,8 @@ export class ExtensionUiHandler {
 	private lastNotificationActionTarget: NotificationActionTarget | null = null;
 	private lastDesktopNotificationKey = "";
 	private lastDesktopNotificationAt = 0;
+	private nextDesktopNotificationId = 1;
+	private desktopNotificationIconPath: string | null | undefined = undefined;
 
 	constructor() {
 		this.createContainers();
@@ -219,7 +227,70 @@ export class ExtensionUiHandler {
 		const normalizedBody = body.trim();
 		if (!normalizedBody) return contextSuffix;
 		if (normalizedBody.includes(contextSuffix)) return normalizedBody;
-		return `${normalizedBody} ${contextSuffix}`;
+		return `${normalizedBody}\n${contextSuffix}`;
+	}
+
+	private nextNotificationId(): number {
+		const current = this.nextDesktopNotificationId;
+		this.nextDesktopNotificationId = current >= 2_100_000_000 ? 1 : current + 1;
+		return current;
+	}
+
+	private sanitizeDesktopNotificationText(text: string): string {
+		return text
+			.replace(/[✅❌❓⚠️]/g, "")
+			.replace(/\bpi\s*-\s*/gi, "")
+			.replace(/\bsmart voice notify\b/gi, "")
+			.replace(/\s+/g, " ")
+			.trim();
+	}
+
+	private formatDesktopNotificationTitle(request: ExtensionUiRequest): string {
+		const cleanedTitle = this.sanitizeDesktopNotificationText(request.title?.trim() || "");
+		if (cleanedTitle) return `Pi DESK · ${cleanedTitle}`;
+		switch ((request.notifyType || "").toLowerCase()) {
+			case "error":
+				return "Pi DESK · Needs attention";
+			case "warning":
+				return "Pi DESK · Action needed";
+			default:
+				return "Pi DESK · Update";
+		}
+	}
+
+	private formatDesktopNotificationBody(request: ExtensionUiRequest, contextSuffix: string): string {
+		const cleanedMessage = this.sanitizeDesktopNotificationText(request.message?.trim() || "");
+		const cleanedTitle = this.sanitizeDesktopNotificationText(request.title?.trim() || "");
+		const base = cleanedMessage || cleanedTitle || "Agent update available.";
+		return this.appendNotificationContext(base, contextSuffix);
+	}
+
+	private async resolveDesktopNotificationIconPath(): Promise<string | undefined> {
+		if (this.desktopNotificationIconPath !== undefined) return this.desktopNotificationIconPath || undefined;
+		try {
+			const { resourceDir } = await import("@tauri-apps/api/path");
+			const { exists } = await import("@tauri-apps/plugin-fs");
+			const resourcesRoot = (await resourceDir()).replace(/\\/g, "/").replace(/\/+$/, "");
+			if (!resourcesRoot) {
+				this.desktopNotificationIconPath = null;
+				return undefined;
+			}
+			const candidates = [
+				joinFsPath(joinFsPath(resourcesRoot, "icons"), "icon.png"),
+				joinFsPath(joinFsPath(resourcesRoot, "icons"), "128x128.png"),
+				joinFsPath(joinFsPath(resourcesRoot, "icons"), "32x32.png"),
+			];
+			for (const candidate of candidates) {
+				if (await exists(candidate)) {
+					this.desktopNotificationIconPath = candidate;
+					return candidate;
+				}
+			}
+		} catch {
+			// ignore
+		}
+		this.desktopNotificationIconPath = null;
+		return undefined;
 	}
 
 	private describeNotificationContext(backgrounded: boolean): string {
@@ -631,11 +702,9 @@ export class ExtensionUiHandler {
 	}
 
 	private async showDesktopNotification(request: ExtensionUiRequest): Promise<boolean> {
-		const rawTitle = request.title?.trim() || "Pi Desktop";
-		const rawBody = request.message?.trim() || "";
 		const contextSuffix = this.formatNotificationContextSuffix(request);
-		const title = rawBody ? rawTitle : "Pi Desktop";
-		const body = this.appendNotificationContext(rawBody || rawTitle, contextSuffix);
+		const title = this.formatDesktopNotificationTitle(request);
+		const body = this.formatDesktopNotificationBody(request, contextSuffix);
 
 		let granted = await this.ensureDesktopNotificationPermission(false);
 		if (!granted) {
@@ -652,9 +721,13 @@ export class ExtensionUiHandler {
 		}
 
 		const options: DesktopNotificationOptions = {
+			id: this.nextNotificationId(),
 			title,
 			body,
-			autoCancel: true,
+			largeBody: body,
+			summary: contextSuffix || "Pi DESK",
+			group: "pi-desk-notifications",
+			autoCancel: false,
 			extra: {
 				notifyType: request.notifyType ?? "info",
 				method: request.method,
@@ -665,6 +738,10 @@ export class ExtensionUiHandler {
 				...(actionTarget?.sessionLabel ? { notifyTargetSessionLabel: actionTarget.sessionLabel } : {}),
 			},
 		};
+		const iconPath = await this.resolveDesktopNotificationIconPath();
+		if (iconPath) {
+			options.icon = iconPath;
+		}
 		const sound = this.getDesktopNotificationSound();
 		if (sound) {
 			options.sound = sound;

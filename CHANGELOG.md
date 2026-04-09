@@ -29,6 +29,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Compaction status rendering was reduced to a minimal workflow-style row with collapsed-by-default details instead of a heavy status card.
 - Auto-rename extension recommendation and desktop config bridge now target `@byteowlz/pi-auto-rename`, with dynamic command-to-package resolution for config-intent slash commands (including `/auto-rename config`) instead of hardcoded package-name routing.
 - Recommended notifications extension now defaults to `pi-smart-voice-notify`, and Packages auto-migrates legacy `pi-desktop-notify` installs by installing the new package and removing the old one.
+- Desktop now installs a lightweight capability-native notify bridge extension (`~/.pi/agent/extensions/pi-desktop-notify-bridge.ts`) and enforces non-Windows `pi-smart-voice-notify` host mode (`enableDesktopNotification: false`) so desktop delivery flows through `ctx.ui.notify`.
 - Packages modal now includes a dedicated auto-rename settings editor (enabled/mode/model/fallback/prefix/debug + Save/Test actions) backed by `auto-rename.json`, so extension behavior can be configured directly in Desktop.
 - Auto-rename settings now support explicit save target selection (global or project), including choosing among opened sidebar projects for project-scoped config writes.
 - Save target controls were moved next to the Save action in auto-rename settings (instead of top-of-form) for a cleaner, less noisy flow.
@@ -58,9 +59,9 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Fixed compaction timeline behavior so compaction rows stay anchored at the correct chronological position instead of drifting to the newest row.
 - Fixed manual `/compact` timeout failures by using an extended RPC timeout window for compaction requests, and fixed post-compaction session stats ring staleness by treating unknown backend context usage as unknown instead of reusing stale pre-compaction fallback tokens.
 - Alt+Enter in composer now surfaces explicit queued-message behavior (`followUp`) with clearer queued labeling in user bubbles.
-- Extension `notify` responses are now surfaced as in-app notices while Desktop is foregrounded, so command feedback from extension workflows (including auto-rename commands) is visible instead of appearing to no-op.
+- Extension notify delivery now stays desktop-native only (no in-app chat toasts), and notifications are emitted only when Desktop is out of focus.
 - Background desktop notifications now include workspace/session context suffixes (for example `[Workspace 1] -> [session-name]`) and carry richer per-notification targeting metadata for more deterministic deep-link focus behavior.
-- Foreground notification handling now also surfaces extension `notify` events coming from background runtimes as in-app notices, fixing missed notifications while the desktop window is focused.
+- Desktop notification copy/branding was polished (`Pi DESK` title formatting, cleaned body text, context line layout), with richer payload metadata preserved for deterministic click-to-focus routing.
 - Extension runtime errors now include better source context in chat notices, and Desktop emits an explicit compatibility hint when an extension still uses deprecated `ctx.modelRegistry.getApiKey()`.
 - Desktop now ensures a global compatibility extension (`~/.pi/agent/extensions/pi-desktop-sdk-compat.ts`) is installed to shim `modelRegistry.getApiKey()` via `getApiKeyAndHeaders()` for legacy extensions, restoring runtime compatibility for packages such as `@byteowlz/pi-auto-rename`.
 - Auto-rename settings now correctly hydrate saved `model`/`fallbackModel` values from object-form config (`{ provider, id }`) and keep those values visible in model dropdowns (including unavailable-but-saved models).

@@ -25,7 +25,9 @@ import {
 import { syncDesktopThemeWithPiTheme } from "./theme/pi-theme-bridge.js";
 import { DESKTOP_THEME_CHANGED_EVENT, getResolvedDesktopTheme, initializeDesktopTheme, toggleDesktopTheme } from "./theme/theme-manager.js";
 import { ensureBundledThemesInstalled } from "./theme/bundled-themes.js";
+import { ensureDesktopNotifyBridgeExtensionInstalled } from "./extensions/desktop-notify-bridge-extension.js";
 import { ensureDesktopSdkCompatExtensionInstalled } from "./extensions/sdk-compat-extension.js";
+import { ensureSmartVoiceNotifyDesktopHostMode } from "./extensions/smart-voice-notify-config.js";
 import "./styles/app.css";
 
 interface WorkspaceSessionTab {
@@ -529,42 +531,6 @@ function resolveRuntimeNotifyTarget(runtime: SessionRuntime): {
 	};
 }
 
-function isDesktopForegrounded(): boolean {
-	return typeof document !== "undefined" && document.visibilityState !== "hidden" && document.hasFocus();
-}
-
-function notifyContextSuffixFromPayload(payload: Record<string, unknown>): string {
-	const workspaceLabel = typeof payload.notifyTargetWorkspaceLabel === "string" ? payload.notifyTargetWorkspaceLabel.trim() : "";
-	const sessionLabel = typeof payload.notifyTargetSessionLabel === "string" ? payload.notifyTargetSessionLabel.trim() : "";
-	if (!workspaceLabel && !sessionLabel) return "";
-	if (!workspaceLabel) return `[${sessionLabel}]`;
-	if (!sessionLabel) return `[${workspaceLabel}]`;
-	return `[${workspaceLabel}] -> [${sessionLabel}]`;
-}
-
-function notifyTextFromPayload(payload: Record<string, unknown>): string {
-	const base =
-		(typeof payload.message === "string" && payload.message.trim()) ||
-		(typeof payload.title === "string" && payload.title.trim()) ||
-		"";
-	if (!base) return "";
-	const suffix = notifyContextSuffixFromPayload(payload);
-	if (!suffix || base.includes(suffix)) return base;
-	return `${base} ${suffix}`;
-}
-
-function notifyKindFromPayload(payload: Record<string, unknown>): "info" | "error" {
-	const notifyType = typeof payload.notifyType === "string" ? payload.notifyType.trim().toLowerCase() : "info";
-	return notifyType === "error" ? "error" : "info";
-}
-
-function emitForegroundNotifyFromPayload(payload: Record<string, unknown>): void {
-	if (!isDesktopForegrounded()) return;
-	const text = notifyTextFromPayload(payload);
-	if (!text) return;
-	chatView?.notify(text, notifyKindFromPayload(payload));
-}
-
 function handleBackgroundRuntimeNotifyEvent(runtimeKey: string, event: Record<string, unknown>): void {
 	const runtime = sessionRuntimes.get(runtimeKey);
 	if (!runtime) return;
@@ -592,8 +558,6 @@ function handleBackgroundRuntimeNotifyEvent(runtimeKey: string, event: Record<st
 		);
 		markSessionAttentionTarget(target);
 	}
-
-	emitForegroundNotifyFromPayload(request);
 
 	const normalizedRequest = normalizeExtensionUiRequest(request);
 	if (!normalizedRequest) {
@@ -2727,6 +2691,14 @@ async function initialize(): Promise<void> {
 	if (compatInstall.error && !compatInstall.skipped) {
 		console.warn("Failed to install desktop compatibility extension:", compatInstall.error);
 	}
+	const notifyBridgeInstall = await ensureDesktopNotifyBridgeExtensionInstalled();
+	if (notifyBridgeInstall.error && !notifyBridgeInstall.skipped) {
+		console.warn("Failed to install desktop notify bridge extension:", notifyBridgeInstall.error);
+	}
+	const smartVoiceNotifyHostMode = await ensureSmartVoiceNotifyDesktopHostMode();
+	if (smartVoiceNotifyHostMode.error && !smartVoiceNotifyHostMode.skipped) {
+		console.warn("Failed to enforce smart voice notify desktop host mode:", smartVoiceNotifyHostMode.error);
+	}
 
 	try {
 		connectionError = null;
@@ -3087,7 +3059,6 @@ function initializeComponents(): void {
 					});
 				}
 
-				emitForegroundNotifyFromPayload(request);
 			}
 
 			const normalizedRequest = normalizeExtensionUiRequest(request);
