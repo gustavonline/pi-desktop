@@ -599,6 +599,7 @@ export class ChatView {
 	private providerAuthLoadedAt = 0;
 	private providerAuthById = new Map<string, Pick<PiAuthProviderStatus, "source" | "kind">>();
 	private providerAuthConfigured = new Set<string>();
+	private providerAuthForcedLoggedOut = new Set<string>();
 	private lastBackendRefreshError: string | null = null;
 	private lastModelLoadError: string | null = null;
 	private lastBackendSessionFile: string | null = null;
@@ -851,6 +852,7 @@ export class ChatView {
 			this.modelCatalog = [];
 			this.providerAuthById.clear();
 			this.providerAuthConfigured.clear();
+			this.providerAuthForcedLoggedOut.clear();
 			this.providerAuthLoadedAt = 0;
 			this.runHasAssistantText = false;
 			this.runSawToolActivity = false;
@@ -885,6 +887,7 @@ export class ChatView {
 		this.compactionCycle = null;
 		this.compactionInsertIndex = null;
 		this.runningProviderAuthAction = null;
+		this.providerAuthForcedLoggedOut.clear();
 		this.runHasAssistantText = false;
 		this.runSawToolActivity = false;
 		this.keepWorkflowExpandedUntilAssistantText = false;
@@ -1183,14 +1186,9 @@ export class ChatView {
 	private recomputeProviderAuthConfigured(): void {
 		const next = new Set<string>();
 		for (const provider of this.providerAuthById.keys()) {
+			if (this.providerAuthForcedLoggedOut.has(provider)) continue;
 			next.add(provider);
 		}
-		for (const model of this.availableModels) {
-			const key = this.providerKey(model.provider);
-			if (key) next.add(key);
-		}
-		const currentProvider = this.providerKey(this.state?.model?.provider ?? "");
-		if (currentProvider) next.add(currentProvider);
 		this.providerAuthConfigured = next;
 	}
 
@@ -1218,6 +1216,9 @@ export class ChatView {
 			}
 			this.providerAuthById = next;
 			this.providerAuthLoadedAt = Date.now();
+			for (const provider of next.keys()) {
+				this.providerAuthForcedLoggedOut.delete(provider);
+			}
 			this.recomputeProviderAuthConfigured();
 		} catch (err) {
 			console.error("Failed to load provider auth status:", err);
@@ -1329,10 +1330,16 @@ export class ChatView {
 
 			const result = await rpcBridge.clearPiProviderAuth(providerKey);
 			if (result.removed) {
+				this.providerAuthForcedLoggedOut.add(providerKey);
+				this.providerAuthById.delete(providerKey);
+				this.recomputeProviderAuthConfigured();
 				this.pushNotice(`Logged out of ${providerLabel}`, "success");
 			} else if (result.source === "environment") {
 				this.pushNotice(`${providerLabel} is configured via environment variable; remove env var to fully log out.`, "info");
 			} else {
+				this.providerAuthForcedLoggedOut.add(providerKey);
+				this.providerAuthById.delete(providerKey);
+				this.recomputeProviderAuthConfigured();
 				this.pushNotice(`No stored auth.json credentials found for ${providerLabel}`, "info");
 			}
 			await Promise.all([
@@ -6331,8 +6338,9 @@ export class ChatView {
 				const authKey = this.providerKey(group.providerKey);
 				const hasSelectableModel = group.models.some((model) => model.selectable);
 				const authInfo = this.providerAuthById.get(authKey);
-				const authConfigured = this.providerAuthConfigured.has(authKey) || hasSelectableModel;
-				const authSource = authInfo?.source ?? (hasSelectableModel ? "runtime" : "missing");
+				const forcedLoggedOut = this.providerAuthForcedLoggedOut.has(authKey);
+				const authConfigured = !forcedLoggedOut && (this.providerAuthConfigured.has(authKey) || hasSelectableModel);
+				const authSource = forcedLoggedOut ? "missing" : (authInfo?.source ?? (hasSelectableModel ? "runtime" : "missing"));
 				return {
 					...group,
 					authConfigured,
@@ -6497,7 +6505,7 @@ export class ChatView {
 														${activeProviderGroup.models.map((model) => {
 															const nextValue = `${model.provider}::${model.id}`;
 															const isActive = model.provider === currentProvider && model.id === currentModelId;
-															const isDisabled = !model.selectable;
+															const isDisabled = !model.selectable || !activeProviderGroup.authConfigured;
 															return html`
 																<button
 																	type="button"
