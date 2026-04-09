@@ -1342,11 +1342,22 @@ export class ChatView {
 				this.recomputeProviderAuthConfigured();
 				this.pushNotice(`No stored auth.json credentials found for ${providerLabel}`, "info");
 			}
+
+			if (this.onReloadRuntime) {
+				try {
+					await this.onReloadRuntime();
+				} catch {
+					// best-effort reload only
+				}
+			}
+
 			await Promise.all([
+				this.refreshFromBackend(),
 				this.loadProviderAuthStatus(true),
 				this.loadAvailableModels(),
 				this.loadModelCatalog(true),
 			]);
+			await this.switchAwayFromLoggedOutProvider(providerKey);
 		} catch (err) {
 			console.error(`Provider auth action failed (${action}:${providerKey}):`, err);
 			this.pushNotice(err instanceof Error ? err.message : "Provider auth action failed", "error");
@@ -1354,6 +1365,17 @@ export class ChatView {
 			this.runningProviderAuthAction = null;
 			this.render();
 		}
+	}
+
+	private async switchAwayFromLoggedOutProvider(providerKey: string): Promise<void> {
+		const currentProvider = this.providerKey(this.state?.model?.provider ?? "");
+		if (!currentProvider || currentProvider !== providerKey) return;
+		const fallback = this.availableModels.find((model) => this.providerKey(model.provider) !== providerKey) ?? null;
+		if (!fallback) {
+			this.pushNotice("No other authenticated models available. Log in to another provider.", "info");
+			return;
+		}
+		await this.setModel(fallback.provider, fallback.id);
 	}
 
 	private async pickSessionImportPathFromDialog(): Promise<string | null> {
@@ -6331,6 +6353,14 @@ export class ChatView {
 					models: [{ ...model, selectable }],
 				});
 			}
+		}
+		for (const forcedLoggedOutProvider of this.providerAuthForcedLoggedOut) {
+			if (groupedByProvider.has(forcedLoggedOutProvider)) continue;
+			groupedByProvider.set(forcedLoggedOutProvider, {
+				providerKey: forcedLoggedOutProvider,
+				providerLabel: formatProviderDisplayName(forcedLoggedOutProvider),
+				models: [],
+			});
 		}
 
 		const providerGroups = Array.from(groupedByProvider.values())
