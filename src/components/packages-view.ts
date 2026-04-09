@@ -1903,7 +1903,9 @@ export class PackagesView {
 		if (!normalizedCommand) return false;
 
 		const normalizedArgs = args.trim().toLowerCase();
+		const defaultSettingsIntent = normalizedCommand === "voice-notify" && normalizedArgs.length === 0;
 		const configIntent =
+			defaultSettingsIntent ||
 			normalizedCommand.endsWith("config") ||
 			normalizedArgs === "config" ||
 			normalizedArgs.startsWith("config ");

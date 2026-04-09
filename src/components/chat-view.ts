@@ -206,7 +206,7 @@ function runtimeCommandUsageHint(name: string): string | null {
 		return "Args: config, test, init, regen, <name>";
 	}
 	if (normalized === "voice-notify") {
-		return "Args: status, reload, on, off, test <idle|permission|question|error>";
+		return "No arg opens extension settings; args: status, reload, on, off, test <idle|permission|question|error>";
 	}
 	return null;
 }
@@ -214,11 +214,11 @@ function runtimeCommandUsageHint(name: string): string | null {
 function runtimeCommandDescriptionOverride(name: string, description: string): string | null {
 	const normalizedName = normalizeText(name).toLowerCase().replace(/^\/+/, "");
 	if (normalizedName === "voice-notify") {
-		return "Voice notifications: open settings UI, status, reload, on/off, test <idle|permission|question|error>";
+		return "Voice notifications: no arg opens extension settings, or use status/reload/on/off/test";
 	}
 	const normalizedDescription = normalizeText(description);
 	if (/^configure windows smart voice notifications$/i.test(normalizedDescription)) {
-		return "Voice notifications: open settings UI, status, reload, on/off, test <idle|permission|question|error>";
+		return "Voice notifications: no arg opens extension settings, or use status/reload/on/off/test";
 	}
 	return null;
 }
@@ -1221,7 +1221,9 @@ export class ChatView {
 		if (source === "extension" && this.onOpenExtensionConfig) {
 			const normalizedName = commandName.trim().toLowerCase();
 			const normalizedArgs = args.trim().toLowerCase();
+			const defaultSettingsIntent = normalizedName === "voice-notify" && normalizedArgs.length === 0;
 			const configIntent =
+				defaultSettingsIntent ||
 				normalizedName.endsWith("config") ||
 				normalizedArgs === "config" ||
 				normalizedArgs.startsWith("config ");

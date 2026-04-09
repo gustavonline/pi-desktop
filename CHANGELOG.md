@@ -33,7 +33,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Packages modal now includes a dedicated auto-rename settings editor (enabled/mode/model/fallback/prefix/debug + Save/Test actions) backed by `auto-rename.json`, so extension behavior can be configured directly in Desktop.
 - Auto-rename settings now support explicit save target selection (global or project), including choosing among opened sidebar projects for project-scoped config writes.
 - Save target controls were moved next to the Save action in auto-rename settings (instead of top-of-form) for a cleaner, less noisy flow.
-- Runtime slash descriptions now include clearer extension command guidance (including `/voice-notify` action/arg hints and `/auto-rename` subcommand hints like `config`, `test`, `init`, `regen`).
+- Runtime slash descriptions now include clearer extension command guidance (including `/voice-notify` action/arg hints and `/auto-rename` subcommand hints like `config`, `test`, `init`, `regen`), and `/voice-notify` with no args now opens extension settings in Desktop.
 - Expanded package capability docs now define explicit command contracts (`/<base>`, `/<base> config`, `/<base> config <args>`), safe default settings behavior, and extension SDK auth compatibility guidance (`getApiKeyAndHeaders` first, legacy fallback optional).
 
 ### Fixed
