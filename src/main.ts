@@ -2912,7 +2912,9 @@ async function initialize(): Promise<void> {
 		chatView.setOnOpenExtensionConfig(async (commandName, args) => {
 			const normalizedName = commandName.trim().toLowerCase().replace(/^\/+/, "");
 			const normalizedArgs = args.trim().toLowerCase();
+			const defaultSettingsIntent = normalizedName === "voice-notify" && normalizedArgs.length === 0;
 			const configIntent =
+				defaultSettingsIntent ||
 				normalizedName.endsWith("config") ||
 				normalizedArgs === "config" ||
 				normalizedArgs.startsWith("config ");

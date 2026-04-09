@@ -36,10 +36,10 @@ function normalizeRuntimeCommandDescription(name: string, description: string): 
 	const normalizedName = normalizeCommandName(name);
 	const normalizedDescription = description.trim();
 	if (normalizedName === "voice-notify") {
-		return "Voice notifications: open settings UI, status, reload, on/off, test <idle|permission|question|error>";
+		return "Voice notifications: no arg opens extension settings, or use status/reload/on/off/test";
 	}
 	if (/^configure windows smart voice notifications$/i.test(normalizedDescription)) {
-		return "Voice notifications: open settings UI, status, reload, on/off, test <idle|permission|question|error>";
+		return "Voice notifications: no arg opens extension settings, or use status/reload/on/off/test";
 	}
 	return normalizedDescription || `Run /${normalizedName}`;
 }
