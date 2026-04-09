@@ -130,6 +130,7 @@ const AUTO_RENAME_PRIMARY_SOURCE = normalizeRecommendedSource("npm:@byteowlz/pi-
 const AUTO_RENAME_LEGACY_SOURCE = normalizeRecommendedSource("npm:pi-session-auto-rename");
 const AUTO_RENAME_COMMAND_NAMES = new Set(["auto-rename", "name-ai-config"]);
 const AUTO_RENAME_SCHEMA_RELATIVE = "./auto-rename.schema.json";
+const SMART_NOTIFY_COMMAND_NAMES = new Set(["voice-notify"]);
 const SMART_NOTIFY_PRIMARY_SOURCE = normalizeRecommendedSource("npm:pi-smart-voice-notify");
 const SMART_NOTIFY_LEGACY_SOURCE = normalizeRecommendedSource("npm:pi-desktop-notify");
 const SMART_NOTIFY_INSTALL_SOURCE = "npm:pi-smart-voice-notify";
@@ -255,6 +256,9 @@ function extensionCommandUsageHint(name: string): string | null {
 	if (AUTO_RENAME_COMMAND_NAMES.has(normalizedName)) {
 		return "Args: config, test, init, regen, <name>";
 	}
+	if (SMART_NOTIFY_COMMAND_NAMES.has(normalizedName)) {
+		return "No args opens settings; args: status, reload, on, off, test <idle|permission|question|error>";
+	}
 	return null;
 }
 
@@ -263,7 +267,12 @@ function withExtensionCommandUsageHint(name: string, description: string): strin
 	if (!hint) return description;
 	const normalized = description.trim();
 	if (!normalized) return hint;
-	if (normalized.toLowerCase().includes("config") && normalized.toLowerCase().includes("test")) {
+	const lower = normalized.toLowerCase();
+	const normalizedName = normalizeCommandNameForMatch(name);
+	if (normalizedName === "voice-notify" && lower.includes("status") && lower.includes("reload") && lower.includes("test")) {
+		return normalized;
+	}
+	if (normalizedName !== "voice-notify" && lower.includes("config") && lower.includes("test")) {
 		return normalized;
 	}
 	return `${normalized} · ${hint}`;
@@ -2194,18 +2203,30 @@ export class PackagesView {
 			return this.renderAutoRenameConfigEditor(source, command);
 		}
 		const supportsModelPicker = commandLikelyNeedsModelArg(command);
+		const normalizedCommandName = normalizeCommandNameForMatch(command.name);
+		const isSmartNotifyCommand = SMART_NOTIFY_COMMAND_NAMES.has(normalizedCommandName);
 		const sourceLoadedModel = this.packageConfigLoadedModelBySource.get(normalizeRecommendedSource(source)) || "";
 		const currentArgs = this.getPackageConfigCommandArg(source, command.name) || (supportsModelPicker ? sourceLoadedModel : "");
 		const selectedModel = this.configModels.some((model) => modelRef(model.provider, model.id) === currentArgs) ? currentArgs : "";
 		const modelSelectValue = selectedModel || currentArgs || "";
 		const title = command.description?.trim() || "Package setting";
+		const defaultDescription = supportsModelPicker ? "Choose model and save." : "Apply command arguments.";
+		const commandDescription = isSmartNotifyCommand && !supportsModelPicker
+			? "No args opens settings. Add args to run slash subcommands directly."
+			: defaultDescription;
+		const argsPlaceholder = isSmartNotifyCommand
+			? "status | reload | on | off | test idle|permission|question|error"
+			: "Optional command arguments";
 		const buttonLabel = supportsModelPicker ? "Save" : "Apply";
 		const buttonBusyLabel = supportsModelPicker ? "Saving…" : "Applying…";
 
 		return html`
 			<div class="packages-config-command-card">
 				<div class="packages-config-command-name">${title}</div>
-				<div class="packages-config-command-desc">${supportsModelPicker ? "Choose model and save." : "Apply command arguments."}</div>
+				<div class="packages-config-command-desc">${commandDescription}</div>
+				${isSmartNotifyCommand && !supportsModelPicker
+					? html`<div class="packages-section-submeta">Examples: status · reload · on · off · test idle|permission|question|error</div>`
+					: nothing}
 
 				${supportsModelPicker
 					? html`
@@ -2237,7 +2258,7 @@ export class PackagesView {
 							<input
 								class="packages-config-input"
 								type="text"
-								placeholder="Optional command arguments"
+								placeholder=${argsPlaceholder}
 								.value=${currentArgs}
 								?disabled=${this.runningConfigCommand || this.runningCommand}
 								@input=${(event: Event) => {

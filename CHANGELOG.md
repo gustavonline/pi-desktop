@@ -34,6 +34,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Auto-rename settings now support explicit save target selection (global or project), including choosing among opened sidebar projects for project-scoped config writes.
 - Save target controls were moved next to the Save action in auto-rename settings (instead of top-of-form) for a cleaner, less noisy flow.
 - Runtime slash descriptions now include clearer extension command guidance (including `/voice-notify` action/arg hints and `/auto-rename` subcommand hints like `config`, `test`, `init`, `regen`), and `/voice-notify` with no args now opens extension settings in Desktop.
+- Package settings now include explicit `/voice-notify` argument guidance (status/reload/on/off/test) directly in the settings card so command usage is visible without leaving Desktop.
 - Expanded package capability docs now define explicit command contracts (`/<base>`, `/<base> config`, `/<base> config <args>`), safe default settings behavior, and extension SDK auth compatibility guidance (`getApiKeyAndHeaders` first, legacy fallback optional).
 
 ### Fixed
