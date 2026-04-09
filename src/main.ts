@@ -171,6 +171,9 @@ let runningSessionPollInFlight = false;
 let debugOverlayInterval: ReturnType<typeof setInterval> | null = null;
 let debugTraceLines: string[] = [];
 let notificationAttentionListenersBound = false;
+let runtimeRunHadError = new Map<string, boolean>();
+let runtimeRunNotifyObserved = new Map<string, boolean>();
+let syntheticRuntimeNotifyCounter = 0;
 
 function recordDebugTrace(message: string): void {
 	const stamp = new Date().toISOString().slice(11, 23);
@@ -531,15 +534,101 @@ function resolveRuntimeNotifyTarget(runtime: SessionRuntime): {
 	};
 }
 
+function markRuntimeRunStarted(runtimeKey: string): void {
+	runtimeRunHadError.set(runtimeKey, false);
+	runtimeRunNotifyObserved.set(runtimeKey, false);
+}
+
+function markRuntimeRunErrored(runtimeKey: string): void {
+	runtimeRunHadError.set(runtimeKey, true);
+}
+
+function markRuntimeRunNotifyObserved(runtimeKey: string): void {
+	runtimeRunNotifyObserved.set(runtimeKey, true);
+}
+
+function consumeRuntimeRunState(runtimeKey: string): { hadError: boolean; hadNotify: boolean } {
+	const hadError = runtimeRunHadError.get(runtimeKey) === true;
+	const hadNotify = runtimeRunNotifyObserved.get(runtimeKey) === true;
+	runtimeRunHadError.delete(runtimeKey);
+	runtimeRunNotifyObserved.delete(runtimeKey);
+	return { hadError, hadNotify };
+}
+
+function clearRuntimeRunState(runtimeKey: string): void {
+	runtimeRunHadError.delete(runtimeKey);
+	runtimeRunNotifyObserved.delete(runtimeKey);
+}
+
+function nextSyntheticRuntimeNotifyRequestId(runtimeKey: string): string {
+	syntheticRuntimeNotifyCounter = syntheticRuntimeNotifyCounter >= 2_100_000_000 ? 1 : syntheticRuntimeNotifyCounter + 1;
+	const normalizedRuntimeKey = runtimeKey.replace(/[^a-zA-Z0-9_-]/g, "_");
+	return `desktop_notify_${normalizedRuntimeKey}_${Date.now()}_${syntheticRuntimeNotifyCounter}`;
+}
+
+function attachNotifyTargetToRequest(
+	request: Record<string, unknown>,
+	target: ReturnType<typeof resolveRuntimeNotifyTarget>,
+	source: "active" | "background",
+	runtime: SessionRuntime,
+): void {
+	if (!target.workspaceId && !target.tabId && !target.sessionPath) return;
+	request.notifyTargetWorkspaceId = target.workspaceId;
+	request.notifyTargetTabId = target.tabId;
+	request.notifyTargetSessionPath = target.sessionPath;
+	request.notifyTargetWorkspaceLabel = target.workspaceLabel;
+	request.notifyTargetSessionLabel = target.sessionLabel;
+	recordDebugTrace(
+		`notify-target workspace=${target.workspaceId ?? "-"} tab=${target.tabId ?? "-"} session=${target.sessionPath ?? "-"} source=${source} runtime=${runtime.instanceId}`,
+	);
+	markSessionAttentionTarget(target);
+}
+
+function dispatchSyntheticRunEndNotify(runtime: SessionRuntime, source: "active" | "background"): void {
+	const state = consumeRuntimeRunState(runtime.key);
+	if (state.hadNotify) return;
+
+	const request: Record<string, unknown> = {
+		id: nextSyntheticRuntimeNotifyRequestId(runtime.key),
+		method: "notify",
+		notifyType: state.hadError ? "error" : "info",
+		title: state.hadError ? "Run ended with an error" : "Task finished",
+		message: state.hadError ? "Agent run ended with an error." : "Agent finished its current task.",
+	};
+	const target = resolveRuntimeNotifyTarget(runtime);
+	attachNotifyTargetToRequest(request, target, source, runtime);
+	recordDebugTrace(
+		`notify:synthetic-run-end type=${state.hadError ? "error" : "info"} source=${source} runtime=${runtime.instanceId}`,
+	);
+	const normalizedRequest = normalizeExtensionUiRequest(request);
+	if (!normalizedRequest) return;
+	void extensionUiHandler?.handleRequest(normalizedRequest);
+}
+
 function handleBackgroundRuntimeNotifyEvent(runtimeKey: string, event: Record<string, unknown>): void {
 	const runtime = sessionRuntimes.get(runtimeKey);
 	if (!runtime) return;
 	if (runtime.key === activeSessionRuntimeKey) return;
 
 	const type = typeof event.type === "string" ? event.type : "unknown";
+	if (type === "agent_start") {
+		markRuntimeRunStarted(runtime.key);
+		return;
+	}
+	if (type === "error") {
+		markRuntimeRunErrored(runtime.key);
+		return;
+	}
+	if (type === "agent_end") {
+		setTimeout(() => {
+			dispatchSyntheticRunEndNotify(runtime, "background");
+		}, 0);
+		return;
+	}
 	if (type !== "extension_ui_request") return;
 	const method = typeof event.method === "string" ? event.method : "unknown";
 	if (method !== "notify") return;
+	markRuntimeRunNotifyObserved(runtime.key);
 
 	const message = typeof event.message === "string" ? event.message : "";
 	recordDebugTrace(`rpc:event type=${type} source=background runtime=${runtime.instanceId}`);
@@ -547,17 +636,7 @@ function handleBackgroundRuntimeNotifyEvent(runtimeKey: string, event: Record<st
 
 	const request = { ...(event as Record<string, unknown>) };
 	const target = resolveRuntimeNotifyTarget(runtime);
-	if (target.workspaceId || target.tabId || target.sessionPath) {
-		request.notifyTargetWorkspaceId = target.workspaceId;
-		request.notifyTargetTabId = target.tabId;
-		request.notifyTargetSessionPath = target.sessionPath;
-		request.notifyTargetWorkspaceLabel = target.workspaceLabel;
-		request.notifyTargetSessionLabel = target.sessionLabel;
-		recordDebugTrace(
-			`notify-target workspace=${target.workspaceId ?? "-"} tab=${target.tabId ?? "-"} session=${target.sessionPath ?? "-"} source=background`,
-		);
-		markSessionAttentionTarget(target);
-	}
+	attachNotifyTargetToRequest(request, target, "background", runtime);
 
 	const normalizedRequest = normalizeExtensionUiRequest(request);
 	if (!normalizedRequest) {
@@ -682,6 +761,7 @@ function removeRuntimeByKey(runtimeKey: string): void {
 	runtime.eventUnlisten?.();
 	runtime.eventUnlisten = null;
 	sessionRuntimes.delete(runtimeKey);
+	clearRuntimeRunState(runtimeKey);
 	if (activeSessionRuntimeKey === runtimeKey) {
 		setActiveRuntime(null);
 	}
@@ -3027,6 +3107,20 @@ function initializeComponents(): void {
 		if (type === "agent_start" || type === "agent_end" || type === "error" || type === "extension_ui_request") {
 			recordDebugTrace(`rpc:event type=${type}`);
 		}
+
+		const runtime = getActiveRuntime();
+		if (runtime) {
+			if (type === "agent_start") {
+				markRuntimeRunStarted(runtime.key);
+			} else if (type === "error") {
+				markRuntimeRunErrored(runtime.key);
+			} else if (type === "agent_end") {
+				setTimeout(() => {
+					dispatchSyntheticRunEndNotify(runtime, "active");
+				}, 0);
+			}
+		}
+
 		if (type === "extension_ui_request") {
 			const method = typeof event.method === "string" ? event.method : "unknown";
 			const message = typeof event.message === "string" ? event.message : "";
@@ -3034,31 +3128,34 @@ function initializeComponents(): void {
 
 			const request = { ...(event as Record<string, unknown>) } as Record<string, unknown>;
 			if (method === "notify") {
-				const runtime = getActiveRuntime();
-				const workspace = runtime ? workspaces.find((entry) => entry.id === runtime.workspaceId) ?? null : getActiveWorkspace();
-				const activeTab = workspace ? getActiveSessionTab(workspace) : null;
-				const targetWorkspaceId = runtime?.workspaceId ?? workspace?.id ?? undefined;
-				const targetTabId = runtime?.tabId ?? activeTab?.id ?? undefined;
-				const targetSessionPath = runtime?.lastKnownSessionPath ?? activeTab?.sessionPath ?? undefined;
-				const targetWorkspaceLabel = workspace?.title?.trim() || undefined;
-				const targetSessionLabel = activeTab?.title?.trim() || (targetSessionPath ? baseName(targetSessionPath) : undefined);
-
-				if (targetWorkspaceId || targetTabId || targetSessionPath) {
-					request.notifyTargetWorkspaceId = targetWorkspaceId;
-					request.notifyTargetTabId = targetTabId;
-					request.notifyTargetSessionPath = targetSessionPath;
-					request.notifyTargetWorkspaceLabel = targetWorkspaceLabel;
-					request.notifyTargetSessionLabel = targetSessionLabel;
-					recordDebugTrace(
-						`notify-target workspace=${targetWorkspaceId ?? "-"} tab=${targetTabId ?? "-"} session=${targetSessionPath ?? "-"}`,
-					);
-					markSessionAttentionTarget({
-						workspaceId: targetWorkspaceId,
-						tabId: targetTabId,
-						sessionPath: targetSessionPath,
-					});
+				if (runtime) {
+					markRuntimeRunNotifyObserved(runtime.key);
+					const target = resolveRuntimeNotifyTarget(runtime);
+					attachNotifyTargetToRequest(request, target, "active", runtime);
+				} else {
+					const workspace = getActiveWorkspace();
+					const activeTab = workspace ? getActiveSessionTab(workspace) : null;
+					const targetWorkspaceId = workspace?.id ?? undefined;
+					const targetTabId = activeTab?.id ?? undefined;
+					const targetSessionPath = activeTab?.sessionPath ?? undefined;
+					const targetWorkspaceLabel = workspace?.title?.trim() || undefined;
+					const targetSessionLabel = activeTab?.title?.trim() || (targetSessionPath ? baseName(targetSessionPath) : undefined);
+					if (targetWorkspaceId || targetTabId || targetSessionPath) {
+						request.notifyTargetWorkspaceId = targetWorkspaceId;
+						request.notifyTargetTabId = targetTabId;
+						request.notifyTargetSessionPath = targetSessionPath;
+						request.notifyTargetWorkspaceLabel = targetWorkspaceLabel;
+						request.notifyTargetSessionLabel = targetSessionLabel;
+						recordDebugTrace(
+							`notify-target workspace=${targetWorkspaceId ?? "-"} tab=${targetTabId ?? "-"} session=${targetSessionPath ?? "-"} source=active runtime=-`,
+						);
+						markSessionAttentionTarget({
+							workspaceId: targetWorkspaceId,
+							tabId: targetTabId,
+							sessionPath: targetSessionPath,
+						});
+					}
 				}
-
 			}
 
 			const normalizedRequest = normalizeExtensionUiRequest(request);

@@ -116,6 +116,8 @@ function shouldSuppressUiStatusKey(key: string): boolean {
 	const normalized = key.trim().toLowerCase();
 	if (!normalized) return false;
 	if (normalized === "oqto_title_changed") return true;
+	if (normalized === "smart-voice-notify") return true;
+	if (normalized.includes("voice-notify")) return true;
 	if (/(^|[_.-])title([_.-])?changed($|[_.-])/.test(normalized)) return true;
 	if (normalized.includes("session.title_changed")) return true;
 	return false;
@@ -125,6 +127,50 @@ function joinFsPath(base: string, child: string): string {
 	const normalizedBase = base.replace(/\\/g, "/").replace(/\/+$/, "");
 	const normalizedChild = child.replace(/\\/g, "/").replace(/^\/+/, "");
 	return normalizedBase ? `${normalizedBase}/${normalizedChild}` : normalizedChild;
+}
+
+interface ExtensionUiFocusTracker {
+	focused: boolean;
+	initialized: boolean;
+	subscribers: Set<(focused: boolean) => void>;
+}
+
+type WindowWithExtensionUiFocusTracker = typeof window & {
+	__PI_DESKTOP_EXTENSION_UI_FOCUS_TRACKER__?: ExtensionUiFocusTracker;
+};
+
+function ensureExtensionUiFocusTrackerInitialized(): ExtensionUiFocusTracker | null {
+	if (typeof window === "undefined" || typeof document === "undefined") return null;
+	const win = window as WindowWithExtensionUiFocusTracker;
+	let tracker = win.__PI_DESKTOP_EXTENSION_UI_FOCUS_TRACKER__;
+	if (!tracker) {
+		tracker = {
+			focused: document.visibilityState !== "hidden" && document.hasFocus(),
+			initialized: false,
+			subscribers: new Set(),
+		};
+		win.__PI_DESKTOP_EXTENSION_UI_FOCUS_TRACKER__ = tracker;
+	}
+	if (!tracker.initialized) {
+		const publish = (focused: boolean) => {
+			if (tracker.focused === focused) return;
+			tracker.focused = focused;
+			for (const subscriber of tracker.subscribers) {
+				subscriber(focused);
+			}
+		};
+		window.addEventListener("focus", () => publish(true));
+		window.addEventListener("blur", () => publish(false));
+		document.addEventListener("visibilitychange", () => {
+			if (document.visibilityState === "hidden") {
+				publish(false);
+				return;
+			}
+			publish(document.hasFocus());
+		});
+		tracker.initialized = true;
+	}
+	return tracker;
 }
 
 export interface NotificationActionTarget {
@@ -144,6 +190,8 @@ export class ExtensionUiHandler {
 	private onTrace: ((message: string) => void) | null = null;
 	private onNotificationActionTarget: ((target: NotificationActionTarget) => void) | null = null;
 	private appWindowFocused = typeof document !== "undefined" ? document.hasFocus() : true;
+	private lastKnownTauriWindowFocus: boolean | null = null;
+	private releaseFocusTrackerSubscription: (() => void) | null = null;
 	private notificationPermissionRequested = false;
 	private notificationActionListenerRegistered = false;
 	private lastNotificationActionTarget: NotificationActionTarget | null = null;
@@ -179,30 +227,33 @@ export class ExtensionUiHandler {
 		console.debug(`[extension-ui] ${message}`);
 	}
 
-	private isAppBackgrounded(): boolean {
+	private async isAppBackgrounded(): Promise<boolean> {
 		if (typeof document === "undefined") return false;
-		return document.visibilityState === "hidden" || !this.appWindowFocused || !document.hasFocus();
+		const visibilityHidden = document.visibilityState === "hidden";
+		const domFocused = document.hasFocus();
+		let windowFocused = this.appWindowFocused;
+		try {
+			windowFocused = await getCurrentWindow().isFocused();
+			this.lastKnownTauriWindowFocus = windowFocused;
+			this.appWindowFocused = windowFocused;
+		} catch {
+			this.lastKnownTauriWindowFocus = null;
+		}
+		return visibilityHidden || !domFocused || !windowFocused;
 	}
 
 	private ensureAppFocusTracking(): void {
-		if (typeof window === "undefined" || typeof document === "undefined") return;
-		if ((window as typeof window & { __PI_DESKTOP_EXTENSION_UI_FOCUS_TRACKING__?: boolean }).__PI_DESKTOP_EXTENSION_UI_FOCUS_TRACKING__) {
-			return;
-		}
-		(window as typeof window & { __PI_DESKTOP_EXTENSION_UI_FOCUS_TRACKING__?: boolean }).__PI_DESKTOP_EXTENSION_UI_FOCUS_TRACKING__ = true;
-		window.addEventListener("focus", () => {
-			this.appWindowFocused = true;
-		});
-		window.addEventListener("blur", () => {
-			this.appWindowFocused = false;
-		});
-		document.addEventListener("visibilitychange", () => {
-			if (document.visibilityState === "hidden") {
-				this.appWindowFocused = false;
-			} else if (document.hasFocus()) {
-				this.appWindowFocused = true;
-			}
-		});
+		const tracker = ensureExtensionUiFocusTrackerInitialized();
+		if (!tracker) return;
+		this.releaseFocusTrackerSubscription?.();
+		this.appWindowFocused = tracker.focused;
+		const subscriber = (focused: boolean) => {
+			this.appWindowFocused = focused;
+		};
+		tracker.subscribers.add(subscriber);
+		this.releaseFocusTrackerSubscription = () => {
+			tracker.subscribers.delete(subscriber);
+		};
 	}
 
 	private getDesktopNotificationSound(): string | undefined {
@@ -296,7 +347,8 @@ export class ExtensionUiHandler {
 	private describeNotificationContext(backgrounded: boolean): string {
 		const visibility = typeof document !== "undefined" ? document.visibilityState : "unknown";
 		const domFocused = typeof document !== "undefined" ? document.hasFocus() : false;
-		return `backgrounded=${backgrounded ? "yes" : "no"} visibility=${visibility} domFocus=${domFocused ? "yes" : "no"} appFocus=${this.appWindowFocused ? "yes" : "no"}`;
+		const tauriFocused = this.lastKnownTauriWindowFocus;
+		return `backgrounded=${backgrounded ? "yes" : "no"} visibility=${visibility} domFocus=${domFocused ? "yes" : "no"} appFocus=${this.appWindowFocused ? "yes" : "no"} tauriFocus=${tauriFocused === null ? "unknown" : tauriFocused ? "yes" : "no"}`;
 	}
 
 	private notificationDedupKey(request: ExtensionUiRequest): string {
@@ -381,7 +433,7 @@ export class ExtensionUiHandler {
 
 	private async primeDesktopNotificationPermission(): Promise<void> {
 		if (this.notificationPermissionRequested) return;
-		if (this.isAppBackgrounded()) {
+		if (await this.isAppBackgrounded()) {
 			this.trace("notify:prime-skipped backgrounded=yes");
 			return;
 		}
@@ -760,7 +812,7 @@ export class ExtensionUiHandler {
 	}
 
 	private async showNotification(request: ExtensionUiRequest): Promise<void> {
-		const backgrounded = this.isAppBackgrounded();
+		const backgrounded = await this.isAppBackgrounded();
 		this.trace(`notify:request type=${request.notifyType ?? "info"} ${this.describeNotificationContext(backgrounded)}`);
 		if (!backgrounded) {
 			this.trace("notify:skipped foreground");
@@ -863,6 +915,8 @@ export class ExtensionUiHandler {
 	}
 
 	destroy(): void {
+		this.releaseFocusTrackerSubscription?.();
+		this.releaseFocusTrackerSubscription = null;
 		this.overlayContainer?.remove();
 		this.statusContainer?.remove();
 		this.widgetAboveContainer?.remove();
