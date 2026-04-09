@@ -5912,13 +5912,11 @@ body.file-split-resizing #file-split-resize-handle::after {
 }
 
 .model-picker-provider-row {
-	display: grid;
-	grid-template-columns: 1fr auto;
-	gap: 4px;
-	align-items: center;
+	position: relative;
 }
 
 .model-picker-provider {
+	width: 100%;
 	height: 28px;
 	border: none;
 	border-radius: 8px;
@@ -5928,7 +5926,7 @@ body.file-split-resizing #file-split-resize-handle::after {
 	align-items: center;
 	justify-content: space-between;
 	gap: 6px;
-	padding: 0 8px;
+	padding: 0 46px 0 8px;
 	font-size: 12px;
 	cursor: pointer;
 	min-width: 0;
@@ -5941,14 +5939,6 @@ body.file-split-resizing #file-split-resize-handle::after {
 	overflow: hidden;
 	text-overflow: ellipsis;
 	text-align: left;
-}
-
-.model-picker-provider-state {
-	flex-shrink: 0;
-	font-size: 10px;
-	color: var(--muted-2);
-	text-transform: lowercase;
-	letter-spacing: 0.02em;
 }
 
 .model-picker-provider-caret {
@@ -5966,7 +5956,12 @@ body.file-split-resizing #file-split-resize-handle::after {
 }
 
 .model-picker-provider-auth {
-	height: 24px;
+	position: absolute;
+	right: 6px;
+	top: 50%;
+	transform: translateY(-50%);
+	height: 22px;
+	min-width: 44px;
 	border-radius: 999px;
 	border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
 	background: color-mix(in srgb, var(--bg-soft) 78%, transparent);
@@ -5976,6 +5971,16 @@ body.file-split-resizing #file-split-resize-handle::after {
 	font-weight: 600;
 	letter-spacing: 0.01em;
 	cursor: pointer;
+	opacity: 0;
+	pointer-events: none;
+	transition: opacity 120ms ease;
+}
+
+.model-picker-provider-row:hover .model-picker-provider-auth,
+.model-picker-provider-row:focus-within .model-picker-provider-auth,
+.model-picker-provider-auth.busy {
+	opacity: 1;
+	pointer-events: auto;
 }
 
 .model-picker-provider-auth:hover {
@@ -5989,8 +5994,13 @@ body.file-split-resizing #file-split-resize-handle::after {
 }
 
 .model-picker-provider-auth:disabled {
-	opacity: 0.55;
 	cursor: default;
+}
+
+.model-picker-provider-row:hover .model-picker-provider-auth:disabled,
+.model-picker-provider-row:focus-within .model-picker-provider-auth:disabled,
+.model-picker-provider-auth.busy:disabled {
+	opacity: 0.55;
 }
 
 .model-picker-models {

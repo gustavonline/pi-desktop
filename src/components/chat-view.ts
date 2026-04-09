@@ -6451,6 +6451,7 @@ export class ChatView {
 															<button
 																type="button"
 																class="model-picker-provider ${group.providerKey === resolvedActiveProvider ? "active" : ""} ${group.authConfigured ? "" : "unauth"}"
+																title=${group.authConfigured ? `${group.providerLabel} connected` : `${group.providerLabel} needs setup`}
 																@mouseenter=${() => {
 																	if (this.modelPickerActiveProvider === group.providerKey) return;
 																	this.modelPickerActiveProvider = group.providerKey;
@@ -6468,12 +6469,11 @@ export class ChatView {
 																}}
 															>
 																<span class="model-picker-provider-label">${group.providerLabel}</span>
-																<span class="model-picker-provider-state">${group.authConfigured ? "connected" : "setup"}</span>
 																<span class="model-picker-provider-caret" aria-hidden="true">›</span>
 															</button>
 															<button
 																type="button"
-																class="model-picker-provider-auth ${group.authConfigured ? "connected" : ""}"
+																class="model-picker-provider-auth ${group.authConfigured ? "connected" : ""} ${isActionBusy ? "busy" : ""}"
 																title=${actionTitle}
 																?disabled=${actionDisabled}
 																@click=${(event: MouseEvent) => {
