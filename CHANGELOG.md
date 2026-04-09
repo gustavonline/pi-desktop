@@ -64,6 +64,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Desktop notification copy/branding was polished (`Pi DESK` title formatting, cleaned body text, context line layout), with richer payload metadata preserved for deterministic click-to-focus routing.
 - Suppressed `smart-voice-notify` status-key output from the floating composer-status layer, so `/voice-notify reload` no longer leaves stray text near the composer.
 - Notification background detection now re-checks Tauri window focus at dispatch time, and Desktop synthesizes a host-side run-end notify fallback when no extension notify was emitted for that run.
+- Desktop notification permission now bootstraps from the next user gesture when permission is still `default`, and native notify dispatch falls back to a minimal payload if richer options fail validation on WebKit/macOS.
 - Extension runtime errors now include better source context in chat notices, and Desktop emits an explicit compatibility hint when an extension still uses deprecated `ctx.modelRegistry.getApiKey()`.
 - Desktop now ensures a global compatibility extension (`~/.pi/agent/extensions/pi-desktop-sdk-compat.ts`) is installed to shim `modelRegistry.getApiKey()` via `getApiKeyAndHeaders()` for legacy extensions, restoring runtime compatibility for packages such as `@byteowlz/pi-auto-rename`.
 - Auto-rename settings now correctly hydrate saved `model`/`fallbackModel` values from object-form config (`{ provider, id }`) and keep those values visible in model dropdowns (including unavailable-but-saved models).

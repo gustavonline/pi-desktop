@@ -129,6 +129,13 @@ function joinFsPath(base: string, child: string): string {
 	return normalizedBase ? `${normalizedBase}/${normalizedChild}` : normalizedChild;
 }
 
+function toFileUrl(path: string): string {
+	const normalizedPath = path.replace(/\\/g, "/");
+	if (/^[a-zA-Z]+:\/\//.test(normalizedPath)) return normalizedPath;
+	if (normalizedPath.startsWith("/")) return `file://${normalizedPath}`;
+	return `file:///${normalizedPath}`;
+}
+
 interface ExtensionUiFocusTracker {
 	focused: boolean;
 	initialized: boolean;
@@ -194,6 +201,7 @@ export class ExtensionUiHandler {
 	private releaseFocusTrackerSubscription: (() => void) | null = null;
 	private notificationPermissionRequested = false;
 	private notificationActionListenerRegistered = false;
+	private releasePermissionBootstrapListeners: (() => void) | null = null;
 	private lastNotificationActionTarget: NotificationActionTarget | null = null;
 	private lastDesktopNotificationKey = "";
 	private lastDesktopNotificationAt = 0;
@@ -203,6 +211,7 @@ export class ExtensionUiHandler {
 	constructor() {
 		this.createContainers();
 		this.ensureAppFocusTracking();
+		this.ensureDesktopNotificationPermissionBootstrap();
 		this.ensureDesktopNotificationActionListener();
 	}
 
@@ -320,6 +329,7 @@ export class ExtensionUiHandler {
 		if (this.desktopNotificationIconPath !== undefined) return this.desktopNotificationIconPath || undefined;
 		try {
 			const { resourceDir } = await import("@tauri-apps/api/path");
+			const { convertFileSrc } = await import("@tauri-apps/api/core");
 			const { exists } = await import("@tauri-apps/plugin-fs");
 			const resourcesRoot = (await resourceDir()).replace(/\\/g, "/").replace(/\/+$/, "");
 			if (!resourcesRoot) {
@@ -333,8 +343,9 @@ export class ExtensionUiHandler {
 			];
 			for (const candidate of candidates) {
 				if (await exists(candidate)) {
-					this.desktopNotificationIconPath = candidate;
-					return candidate;
+					const converted = convertFileSrc(candidate);
+					this.desktopNotificationIconPath = converted || toFileUrl(candidate);
+					return this.desktopNotificationIconPath;
 				}
 			}
 		} catch {
@@ -342,6 +353,28 @@ export class ExtensionUiHandler {
 		}
 		this.desktopNotificationIconPath = null;
 		return undefined;
+	}
+
+	private ensureDesktopNotificationPermissionBootstrap(): void {
+		if (typeof window === "undefined" || typeof Notification === "undefined") return;
+		if (Notification.permission !== "default") {
+			this.notificationPermissionRequested = Notification.permission === "granted";
+			return;
+		}
+		this.releasePermissionBootstrapListeners?.();
+		const trigger = () => {
+			this.releasePermissionBootstrapListeners?.();
+			this.releasePermissionBootstrapListeners = null;
+			this.trace("notify:permission-bootstrap trigger=gesture");
+			void this.ensureDesktopNotificationPermission(true);
+		};
+		const options: AddEventListenerOptions = { capture: true, once: true };
+		window.addEventListener("pointerdown", trigger, options);
+		window.addEventListener("keydown", trigger, options);
+		this.releasePermissionBootstrapListeners = () => {
+			window.removeEventListener("pointerdown", trigger, true);
+			window.removeEventListener("keydown", trigger, true);
+		};
 	}
 
 	private describeNotificationContext(backgrounded: boolean): string {
@@ -807,7 +840,18 @@ export class ExtensionUiHandler {
 			return true;
 		} catch (err) {
 			this.trace(`notify:native-failed ${err instanceof Error ? err.message : String(err)}`);
-			return false;
+			try {
+				sendNotification({
+					title,
+					body,
+					extra: options.extra,
+				});
+				this.trace(`notify:native-dispatched fallback=minimal type=${request.notifyType ?? "info"}`);
+				return true;
+			} catch (fallbackErr) {
+				this.trace(`notify:native-failed-fallback ${fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr)}`);
+				return false;
+			}
 		}
 	}
 
@@ -917,6 +961,8 @@ export class ExtensionUiHandler {
 	destroy(): void {
 		this.releaseFocusTrackerSubscription?.();
 		this.releaseFocusTrackerSubscription = null;
+		this.releasePermissionBootstrapListeners?.();
+		this.releasePermissionBootstrapListeners = null;
 		this.overlayContainer?.remove();
 		this.statusContainer?.remove();
 		this.widgetAboveContainer?.remove();
