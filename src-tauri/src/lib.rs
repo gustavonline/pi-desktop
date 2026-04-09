@@ -991,6 +991,43 @@ struct PiAuthStatus {
     configured_providers: Vec<PiAuthProviderStatus>,
 }
 
+fn provider_env_var_map() -> [(&'static str, &'static str); 16] {
+    [
+        ("anthropic", "ANTHROPIC_API_KEY"),
+        ("azure-openai-responses", "AZURE_OPENAI_API_KEY"),
+        ("openai", "OPENAI_API_KEY"),
+        ("google", "GEMINI_API_KEY"),
+        ("mistral", "MISTRAL_API_KEY"),
+        ("groq", "GROQ_API_KEY"),
+        ("cerebras", "CEREBRAS_API_KEY"),
+        ("xai", "XAI_API_KEY"),
+        ("openrouter", "OPENROUTER_API_KEY"),
+        ("vercel-ai-gateway", "AI_GATEWAY_API_KEY"),
+        ("zai", "ZAI_API_KEY"),
+        ("opencode", "OPENCODE_API_KEY"),
+        ("huggingface", "HF_TOKEN"),
+        ("kimi-coding", "KIMI_API_KEY"),
+        ("minimax", "MINIMAX_API_KEY"),
+        ("minimax-cn", "MINIMAX_CN_API_KEY"),
+    ]
+}
+
+fn provider_env_var(provider: &str) -> Option<&'static str> {
+    for (name, env_key) in provider_env_var_map() {
+        if name == provider {
+            return Some(env_key);
+        }
+    }
+    None
+}
+
+fn provider_env_var_is_set(provider: &str) -> bool {
+    provider_env_var(provider)
+        .and_then(|env_key| std::env::var_os(env_key))
+        .map(|value| !value.is_empty())
+        .unwrap_or(false)
+}
+
 /// Inspect PI auth configuration from auth.json + environment variables.
 #[tauri::command]
 async fn get_pi_auth_status() -> Result<PiAuthStatus, String> {
@@ -1035,26 +1072,7 @@ async fn get_pi_auth_status() -> Result<PiAuthStatus, String> {
     }
 
     // Known provider env var mapping from docs/providers.md (core API key providers)
-    let provider_env_map = [
-        ("anthropic", "ANTHROPIC_API_KEY"),
-        ("azure-openai-responses", "AZURE_OPENAI_API_KEY"),
-        ("openai", "OPENAI_API_KEY"),
-        ("google", "GEMINI_API_KEY"),
-        ("mistral", "MISTRAL_API_KEY"),
-        ("groq", "GROQ_API_KEY"),
-        ("cerebras", "CEREBRAS_API_KEY"),
-        ("xai", "XAI_API_KEY"),
-        ("openrouter", "OPENROUTER_API_KEY"),
-        ("vercel-ai-gateway", "AI_GATEWAY_API_KEY"),
-        ("zai", "ZAI_API_KEY"),
-        ("opencode", "OPENCODE_API_KEY"),
-        ("huggingface", "HF_TOKEN"),
-        ("kimi-coding", "KIMI_API_KEY"),
-        ("minimax", "MINIMAX_API_KEY"),
-        ("minimax-cn", "MINIMAX_CN_API_KEY"),
-    ];
-
-    for (provider, env_key) in provider_env_map {
+    for (provider, env_key) in provider_env_var_map() {
         let env_present = std::env::var_os(env_key)
             .map(|v| !v.is_empty())
             .unwrap_or(false);
@@ -1081,6 +1099,70 @@ async fn get_pi_auth_status() -> Result<PiAuthStatus, String> {
         auth_file: auth_file_path.map(|p| p.to_string_lossy().to_string()),
         auth_file_exists,
         configured_providers,
+    })
+}
+
+#[derive(Debug, Serialize)]
+struct PiProviderAuthClearResult {
+    provider: String,
+    removed: bool,
+    source: String,
+}
+
+/// Remove provider credentials from ~/.pi/agent/auth.json when present.
+#[tauri::command]
+async fn clear_pi_provider_auth(provider: String) -> Result<PiProviderAuthClearResult, String> {
+    let normalized = provider.trim().to_lowercase();
+    if normalized.is_empty() {
+        return Err("Provider cannot be empty".to_string());
+    }
+
+    let agent_dir = get_pi_agent_dir();
+    let auth_file_path = agent_dir.as_ref().map(|dir| dir.join("auth.json"));
+    let mut removed = false;
+
+    if let Some(path) = &auth_file_path {
+        if path.exists() && path.is_file() {
+            let content = fs::read_to_string(path)
+                .map_err(|e| format!("Failed to read auth file: {}", e))?;
+            let mut parsed = serde_json::from_str::<serde_json::Value>(&content)
+                .unwrap_or_else(|_| serde_json::json!({}));
+
+            if !parsed.is_object() {
+                parsed = serde_json::json!({});
+            }
+
+            if let Some(map) = parsed.as_object_mut() {
+                if map.remove(&normalized).is_some() {
+                    removed = true;
+                    let serialized = serde_json::to_string_pretty(&parsed)
+                        .map_err(|e| format!("Failed to serialize auth file: {}", e))?;
+                    fs::write(path, format!("{}\n", serialized))
+                        .map_err(|e| format!("Failed to write auth file: {}", e))?;
+
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+                    }
+                }
+            }
+        }
+    }
+
+    let source = if removed {
+        "auth_file"
+    } else if provider_env_var_is_set(&normalized) {
+        "environment"
+    } else {
+        "missing"
+    }
+    .to_string();
+
+    Ok(PiProviderAuthClearResult {
+        provider: normalized,
+        removed,
+        source,
     })
 }
 
@@ -1940,6 +2022,7 @@ pub fn run() {
             list_sessions,
             get_session_content,
             get_pi_auth_status,
+            clear_pi_provider_auth,
             save_settings,
             load_settings,
             open_file_dialog,

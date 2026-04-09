@@ -1954,6 +1954,48 @@ export class PackagesView {
 		return false;
 	}
 
+	async openExtensionConfigByProvider(provider: string): Promise<boolean> {
+		const providerToken = normalizeCommandNameForMatch(provider);
+		if (!providerToken) return false;
+		await this.refreshPackageConfigCommands();
+
+		const tokenParts = providerToken.split(/[-_.]/).filter((part) => part.length > 1);
+		const scoreText = (value: string): number => {
+			const haystack = value.toLowerCase();
+			let score = 0;
+			if (haystack.includes(providerToken)) score += 6;
+			for (const part of tokenParts) {
+				if (haystack.includes(part)) score += 1;
+			}
+			return score;
+		};
+
+		let bestSource: string | null = null;
+		let bestScore = 0;
+		for (const item of this.getInstalledItems(false)) {
+			const normalizedSource = normalizeRecommendedSource(item.source);
+			const sourceName = normalizedSource.startsWith("npm:") ? normalizedSource.slice(4) : normalizedSource;
+			const sourceTail = sourceName.split("/").filter(Boolean).pop() || sourceName;
+			const commands = this.packageConfigCommands.get(normalizedSource) ?? [];
+			let score = 0;
+			score += scoreText(item.displayName);
+			score += scoreText(sourceName);
+			score += scoreText(sourceTail);
+			for (const command of commands) {
+				score += scoreText(command.name) * 2;
+				score += scoreText(command.description);
+			}
+			if (commands.length > 0) score += 1;
+			if (score > bestScore) {
+				bestScore = score;
+				bestSource = normalizedSource;
+			}
+		}
+
+		if (!bestSource || bestScore <= 0) return false;
+		return await this.openExtensionConfigBySource(bestSource);
+	}
+
 	private closeActivePackageConfig(): void {
 		this.activePackageConfigSource = null;
 		this.activePackageConfigLabel = "";

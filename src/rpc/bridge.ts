@@ -63,6 +63,12 @@ export interface PiAuthStatus {
 	configured_providers: PiAuthProviderStatus[];
 }
 
+export interface PiProviderAuthClearResult {
+	provider: string;
+	removed: boolean;
+	source: "auth_file" | "environment" | "missing";
+}
+
 export interface CliUpdateStatus {
 	discovery: string;
 	current_version: string | null;
@@ -505,6 +511,10 @@ export class RpcBridge {
 
 	async getPiAuthStatus(): Promise<PiAuthStatus> {
 		return invoke<PiAuthStatus>("get_pi_auth_status");
+	}
+
+	async clearPiProviderAuth(provider: string): Promise<PiProviderAuthClearResult> {
+		return invoke<PiProviderAuthClearResult>("clear_pi_provider_auth", { provider });
 	}
 
 	async getCliUpdateStatus(): Promise<CliUpdateStatus> {
@@ -968,6 +978,10 @@ class ActiveRpcBridgeProxy {
 
 	async getPiAuthStatus(): Promise<PiAuthStatus> {
 		return this.activeBridge.getPiAuthStatus();
+	}
+
+	async clearPiProviderAuth(provider: string): Promise<PiProviderAuthClearResult> {
+		return this.activeBridge.clearPiProviderAuth(provider);
 	}
 
 	async getCliUpdateStatus(): Promise<CliUpdateStatus> {

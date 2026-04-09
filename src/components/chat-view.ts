@@ -6,6 +6,7 @@ import "@mariozechner/mini-lit/dist/CodeBlock.js";
 import "@mariozechner/mini-lit/dist/MarkdownBlock.js";
 import { html, nothing, render, type TemplateResult } from "lit";
 import {
+	type PiAuthProviderStatus,
 	type RpcImageInput,
 	type RpcSessionState,
 	type ThinkingLevel,
@@ -261,14 +262,17 @@ const BUILTIN_SLASH_COMMANDS: Array<{ name: string; description: string }> = [
 	{ name: "terminal", description: "Toggle docked terminal" },
 	{ name: "fork", description: "Open fork flow, /fork <query> pre-fills message search" },
 	{ name: "tree", description: "Open full session tree across branches, /tree <query> pre-fills search" },
-	{ name: "login", description: "Terminal-only today: /login [provider] guidance" },
-	{ name: "logout", description: "Terminal-only today: /logout [provider] guidance" },
+	{ name: "login", description: "No arg opens model picker auth actions; /login <provider> opens setup" },
+	{ name: "logout", description: "No arg opens model picker auth actions; /logout <provider> clears auth.json credentials" },
 	{ name: "new", description: "Start fresh session tab" },
 	{ name: "compact", description: "Manually compact context, /compact <instructions> optional" },
 	{ name: "resume", description: "Open session browser, /resume <query> pre-fills search" },
 	{ name: "reload", description: "Reload runtime (bridge restart + state/models/commands refresh)" },
 	{ name: "quit", description: "Quit Desktop app" },
 ];
+
+const MODEL_PICKER_AUTH_CACHE_MS = 15_000;
+const MODEL_PICKER_CATALOG_CACHE_MS = 60_000;
 
 function uid(prefix = "id"): string {
 	return `${prefix}_${Math.random().toString(36).slice(2, 8)}_${Date.now().toString(36)}`;
@@ -445,6 +449,53 @@ function formatModelDisplayName(modelId: string): string {
 		.join(" ");
 }
 
+function parseListModelsContextWindow(raw: string): number | undefined {
+	const token = normalizeText(raw).toLowerCase();
+	if (!token) return undefined;
+	const match = token.match(/^(\d+(?:\.\d+)?)([km])?$/i);
+	if (!match) return undefined;
+	const base = Number(match[1]);
+	if (!Number.isFinite(base) || base <= 0) return undefined;
+	const unit = match[2]?.toLowerCase();
+	if (unit === "k") return Math.round(base * 1_000);
+	if (unit === "m") return Math.round(base * 1_000_000);
+	return Math.round(base);
+}
+
+function parseListModelsCatalog(output: string): ModelOption[] {
+	const mapped: ModelOption[] = [];
+	const seen = new Set<string>();
+	for (const rawLine of output.split(/\r?\n/)) {
+		const trimmed = rawLine.trim();
+		if (!trimmed) continue;
+		if (/^provider\s+/i.test(trimmed)) continue;
+		if (/^[\-=]{3,}/.test(trimmed)) continue;
+		const cols = trimmed.split(/\s+/);
+		if (cols.length < 2) continue;
+		const provider = cols[0]?.trim();
+		const id = cols[1]?.trim();
+		if (!provider || !id) continue;
+		const key = `${provider.toLowerCase()}::${id.toLowerCase()}`;
+		if (seen.has(key)) continue;
+		seen.add(key);
+		mapped.push({
+			provider,
+			id,
+			label: `${provider}/${id}`,
+			reasoning: (cols[4] || "").toLowerCase() === "yes",
+			contextWindow: parseListModelsContextWindow(cols[2] || ""),
+		});
+	}
+	mapped.sort((a, b) => {
+		const providerCompare = formatProviderDisplayName(a.provider).localeCompare(formatProviderDisplayName(b.provider), undefined, {
+			sensitivity: "base",
+		});
+		if (providerCompare !== 0) return providerCompare;
+		return formatModelDisplayName(a.id).localeCompare(formatModelDisplayName(b.id), undefined, { sensitivity: "base" });
+	});
+	return mapped;
+}
+
 function formatThinkingDisplayName(level: ThinkingLevel): string {
 	switch (level) {
 		case "off":
@@ -527,6 +578,7 @@ export class ChatView {
 	private onOpenSettings: ((sectionId?: string) => void) | null = null;
 	private onOpenPackages: (() => void) | null = null;
 	private onOpenExtensionConfig: ((commandName: string, args: string) => boolean | Promise<boolean>) | null = null;
+	private onOpenProviderConfig: ((provider: string) => boolean | Promise<boolean>) | null = null;
 	private onBeginRenameCurrentSession: (() => boolean | Promise<boolean>) | null = null;
 	private onRenameCurrentSession: ((nextName: string) => boolean | Promise<boolean>) | null = null;
 	private onCreateFreshSession: (() => boolean | Promise<boolean>) | null = null;
@@ -538,8 +590,15 @@ export class ChatView {
 	private onPromptSubmitted: (() => void) | null = null;
 	private onRunStateChange: ((running: boolean) => void) | null = null;
 	private availableModels: ModelOption[] = [];
+	private modelCatalog: ModelOption[] = [];
 	private loadingModels = false;
+	private loadingModelCatalog = false;
+	private loadingProviderAuth = false;
 	private modelLoadRequestSeq = 0;
+	private modelCatalogLoadedAt = 0;
+	private providerAuthLoadedAt = 0;
+	private providerAuthById = new Map<string, Pick<PiAuthProviderStatus, "source" | "kind">>();
+	private providerAuthConfigured = new Set<string>();
 	private lastBackendRefreshError: string | null = null;
 	private lastModelLoadError: string | null = null;
 	private lastBackendSessionFile: string | null = null;
@@ -549,6 +608,7 @@ export class ChatView {
 	private modelPickerOpen = false;
 	private modelPickerActiveProvider = "";
 	private modelPickerGlobalListenersBound = false;
+	private runningProviderAuthAction: { provider: string; action: "login" | "logout" } | null = null;
 	private sendingPrompt = false;
 	private pendingImages: PendingImage[] = [];
 	private notices: Notice[] = [];
@@ -703,6 +763,10 @@ export class ChatView {
 		this.onOpenExtensionConfig = cb;
 	}
 
+	setOnOpenProviderConfig(cb: (provider: string) => boolean | Promise<boolean>): void {
+		this.onOpenProviderConfig = cb;
+	}
+
 	setOnBeginRenameCurrentSession(cb: () => boolean | Promise<boolean>): void {
 		this.onBeginRenameCurrentSession = cb;
 	}
@@ -775,11 +839,19 @@ export class ChatView {
 		this.compactionCycle = null;
 		this.compactionInsertIndex = null;
 		this.keepWorkflowExpandedUntilAssistantText = false;
+		this.runningProviderAuthAction = null;
+		this.modelCatalogLoadedAt = 0;
 		if (!path) {
 			this.bindingStatusText = null;
 			this.welcomeHeadlineIndex = (this.welcomeHeadlineIndex + 1) % this.welcomeHeadlines.length;
 			this.modelLoadRequestSeq += 1;
 			this.loadingModels = false;
+			this.loadingModelCatalog = false;
+			this.loadingProviderAuth = false;
+			this.modelCatalog = [];
+			this.providerAuthById.clear();
+			this.providerAuthConfigured.clear();
+			this.providerAuthLoadedAt = 0;
 			this.runHasAssistantText = false;
 			this.runSawToolActivity = false;
 			this.clearWorkingStatusTimer(true);
@@ -812,6 +884,7 @@ export class ChatView {
 		this.collapsedAutoWorkflowIds.clear();
 		this.compactionCycle = null;
 		this.compactionInsertIndex = null;
+		this.runningProviderAuthAction = null;
 		this.runHasAssistantText = false;
 		this.runSawToolActivity = false;
 		this.keepWorkflowExpandedUntilAssistantText = false;
@@ -1103,14 +1176,177 @@ export class ChatView {
 		return provider;
 	}
 
-	private showTerminalOnlyAuthGuidance(action: "login" | "logout", rawArgs: string): void {
-		const provider = this.normalizedAuthProviderArg(rawArgs);
-		const command = `/${action}${provider ? ` ${provider}` : ""}`;
-		this.appendSystemMessage(`Run in terminal: \`pi\` then \`${command}\``, {
-			label: "auth",
-			markdown: true,
-		});
-		this.pushNotice("OAuth commands are terminal-only in Desktop for now", "info");
+	private providerKey(provider: string): string {
+		return normalizeText(provider).toLowerCase();
+	}
+
+	private recomputeProviderAuthConfigured(): void {
+		const next = new Set<string>();
+		for (const provider of this.providerAuthById.keys()) {
+			next.add(provider);
+		}
+		for (const model of this.availableModels) {
+			const key = this.providerKey(model.provider);
+			if (key) next.add(key);
+		}
+		const currentProvider = this.providerKey(this.state?.model?.provider ?? "");
+		if (currentProvider) next.add(currentProvider);
+		this.providerAuthConfigured = next;
+	}
+
+	private async loadProviderAuthStatus(force = false): Promise<void> {
+		if (this.loadingProviderAuth) return;
+		const stale = Date.now() - this.providerAuthLoadedAt > MODEL_PICKER_AUTH_CACHE_MS;
+		if (!force && this.providerAuthLoadedAt > 0 && !stale) return;
+		this.loadingProviderAuth = true;
+		try {
+			const raw = await rpcBridge.getPiAuthStatus();
+			const next = new Map<string, Pick<PiAuthProviderStatus, "source" | "kind">>();
+			const providers = Array.isArray(raw?.configured_providers) ? raw.configured_providers : [];
+			for (const entry of providers) {
+				const provider = this.providerKey(typeof entry?.provider === "string" ? entry.provider : "");
+				if (!provider) continue;
+				const source = entry?.source;
+				const kind = entry?.kind;
+				next.set(provider, {
+					source:
+						source === "environment" || source === "auth_file_api_key" || source === "auth_file_oauth"
+							? source
+							: "auth_file_api_key",
+					kind: kind === "api_key" || kind === "oauth" || kind === "unknown" ? kind : "unknown",
+				});
+			}
+			this.providerAuthById = next;
+			this.providerAuthLoadedAt = Date.now();
+			this.recomputeProviderAuthConfigured();
+		} catch (err) {
+			console.error("Failed to load provider auth status:", err);
+			if (this.providerAuthLoadedAt === 0) {
+				this.providerAuthById = new Map();
+			}
+			this.recomputeProviderAuthConfigured();
+		} finally {
+			this.loadingProviderAuth = false;
+			this.render();
+		}
+	}
+
+	private async loadModelCatalog(force = false): Promise<void> {
+		if (this.loadingModelCatalog) return;
+		const stale = Date.now() - this.modelCatalogLoadedAt > MODEL_PICKER_CATALOG_CACHE_MS;
+		if (!force && this.modelCatalogLoadedAt > 0 && !stale) return;
+		this.loadingModelCatalog = true;
+		try {
+			const result = await rpcBridge.runPiCliCommand(["--list-models"], {
+				cwd: this.projectPath || ".",
+			});
+			if (result.exit_code !== 0) {
+				throw new Error(result.stderr || result.stdout || `pi --list-models failed with exit ${result.exit_code}`);
+			}
+			const parsed = parseListModelsCatalog(result.stdout || "");
+			if (parsed.length > 0) {
+				this.modelCatalog = parsed;
+				this.modelCatalogLoadedAt = Date.now();
+			}
+		} catch (err) {
+			console.error("Failed to load model catalog:", err);
+		} finally {
+			this.loadingModelCatalog = false;
+			this.render();
+		}
+	}
+
+	private resolveProviderSetupCommand(provider: string): string | null {
+		const providerKey = this.providerKey(provider);
+		if (!providerKey) return null;
+		const providerTokens = providerKey.split(/[-_.]+/).filter(Boolean);
+		let best: { name: string; score: number } | null = null;
+		for (const command of this.slashRuntimeCommands) {
+			if (command.source !== "extension") continue;
+			const name = normalizeText(command.name).toLowerCase().replace(/^\/+/, "");
+			if (!name) continue;
+			const description = normalizeText(command.description).toLowerCase();
+			const haystack = `${name} ${description}`;
+			let score = 0;
+			if (haystack.includes(providerKey)) score += 9;
+			score += providerTokens.filter((token) => token.length > 2 && haystack.includes(token)).length * 2;
+			if (/\b(config|setup|settings|auth|login)\b/.test(haystack)) score += 3;
+			if (/config/.test(name)) score += 2;
+			if (score <= 0) continue;
+			if (!best || score > best.score) {
+				best = { name, score };
+			}
+		}
+		return best?.name ?? null;
+	}
+
+	private async openProviderSetup(provider: string): Promise<boolean> {
+		const providerKey = this.providerKey(provider);
+		if (!providerKey) return false;
+		if (this.onOpenProviderConfig) {
+			try {
+				const handled = await this.onOpenProviderConfig(providerKey);
+				if (handled) return true;
+			} catch {
+				// ignore and continue fallback flow
+			}
+		}
+		await this.ensureSlashCommandsLoaded();
+		const setupCommand = this.resolveProviderSetupCommand(providerKey);
+		if (setupCommand && this.onOpenExtensionConfig) {
+			const handled = await this.onOpenExtensionConfig(setupCommand, "config");
+			if (handled) return true;
+		}
+		return false;
+	}
+
+	private async handleProviderAuthAction(provider: string, action: "login" | "logout"): Promise<void> {
+		const providerKey = this.providerKey(provider);
+		if (!providerKey) return;
+		if (this.runningProviderAuthAction) return;
+
+		this.runningProviderAuthAction = { provider: providerKey, action };
+		this.render();
+		const providerLabel = formatProviderDisplayName(providerKey);
+
+		try {
+			if (action === "login") {
+				const openedPackageConfig = await this.openProviderSetup(providerKey);
+				if (openedPackageConfig) {
+					this.pushNotice(`Opened ${providerLabel} setup`, "info");
+					return;
+				}
+				if (this.onOpenSettings) {
+					this.onOpenSettings("account");
+				}
+				this.appendSystemMessage(
+					`Open setup for **${providerLabel}** in Packages. For built-in OAuth providers, run \`pi\` in terminal and use \`/login\`.`,
+					{ label: "auth", markdown: true },
+				);
+				this.pushNotice(`Opened account setup for ${providerLabel}`, "info");
+				return;
+			}
+
+			const result = await rpcBridge.clearPiProviderAuth(providerKey);
+			if (result.removed) {
+				this.pushNotice(`Logged out of ${providerLabel}`, "success");
+			} else if (result.source === "environment") {
+				this.pushNotice(`${providerLabel} is configured via environment variable; remove env var to fully log out.`, "info");
+			} else {
+				this.pushNotice(`No stored auth.json credentials found for ${providerLabel}`, "info");
+			}
+			await Promise.all([
+				this.loadProviderAuthStatus(true),
+				this.loadAvailableModels(),
+				this.loadModelCatalog(true),
+			]);
+		} catch (err) {
+			console.error(`Provider auth action failed (${action}:${providerKey}):`, err);
+			this.pushNotice(err instanceof Error ? err.message : "Provider auth action failed", "error");
+		} finally {
+			this.runningProviderAuthAction = null;
+			this.render();
+		}
 	}
 
 	private async pickSessionImportPathFromDialog(): Promise<string | null> {
@@ -1241,13 +1477,20 @@ export class ChatView {
 		if (!this.loadingModels && this.availableModels.length === 0) {
 			void this.loadAvailableModels();
 		}
+		if (!this.loadingProviderAuth) {
+			void this.loadProviderAuthStatus();
+		}
+		if (!this.loadingModelCatalog && this.modelCatalog.length === 0) {
+			void this.loadModelCatalog();
+		}
 		const preferred = normalizeText(options.preferredProvider).toLowerCase();
 		if (preferred) {
-			const exact = this.availableModels.find((model) => model.provider.toLowerCase() === preferred)?.provider;
+			const providerPool = [...this.availableModels, ...this.modelCatalog];
+			const exact = providerPool.find((model) => model.provider.toLowerCase() === preferred)?.provider;
 			if (exact) {
 				this.modelPickerActiveProvider = exact;
 			} else {
-				const partial = this.availableModels.find((model) => model.provider.toLowerCase().includes(preferred))?.provider;
+				const partial = providerPool.find((model) => model.provider.toLowerCase().includes(preferred))?.provider;
 				if (partial) this.modelPickerActiveProvider = partial;
 			}
 		}
@@ -1269,13 +1512,14 @@ export class ChatView {
 		const token = byDelim.trim().toLowerCase();
 		if (!token) return null;
 
-		const providers = [...new Set(this.availableModels.map((model) => model.provider))];
+		const providerPool = [...this.availableModels, ...this.modelCatalog];
+		const providers = [...new Set(providerPool.map((model) => model.provider))];
 		const exact = providers.find((provider) => provider.toLowerCase() === token);
 		if (exact) return exact;
 		const partial = providers.find((provider) => provider.toLowerCase().includes(token));
 		if (partial) return partial;
 
-		const fuzzy = this.availableModels.filter((model) => `${model.provider}/${model.id}`.toLowerCase().includes(token));
+		const fuzzy = providerPool.filter((model) => `${model.provider}/${model.id}`.toLowerCase().includes(token));
 		if (fuzzy.length > 0) {
 			const uniqueProviders = [...new Set(fuzzy.map((model) => model.provider))];
 			if (uniqueProviders.length === 1) return uniqueProviders[0];
@@ -1518,11 +1762,21 @@ export class ChatView {
 				return;
 			}
 			case "login": {
-				this.showTerminalOnlyAuthGuidance("login", args);
+				const provider = this.normalizedAuthProviderArg(args);
+				if (!provider) {
+					this.openModelPicker();
+					return;
+				}
+				await this.handleProviderAuthAction(provider, "login");
 				return;
 			}
 			case "logout": {
-				this.showTerminalOnlyAuthGuidance("logout", args);
+				const provider = this.normalizedAuthProviderArg(args);
+				if (!provider) {
+					this.openModelPicker();
+					return;
+				}
+				await this.handleProviderAuthAction(provider, "logout");
 				return;
 			}
 			case "new": {
@@ -1550,13 +1804,21 @@ export class ChatView {
 					const handled = await this.onReloadRuntime();
 					if (handled) {
 						await this.ensureSlashCommandsLoaded(true);
+						await Promise.all([
+							this.loadProviderAuthStatus(true),
+							this.loadModelCatalog(true),
+						]);
 						this.pushNotice("Reloaded runtime state", "success");
 						return;
 					}
 				}
 				await this.ensureSlashCommandsLoaded(true);
 				await this.refreshFromBackend();
-				await this.loadAvailableModels();
+				await Promise.all([
+					this.loadAvailableModels(),
+					this.loadProviderAuthStatus(true),
+					this.loadModelCatalog(true),
+				]);
 				this.pushNotice("Reloaded runtime state", "success");
 				return;
 			}
@@ -1690,6 +1952,8 @@ export class ChatView {
 		if (!this.isConnected) return;
 		void this.refreshFromBackend();
 		void this.loadAvailableModels();
+		void this.loadProviderAuthStatus();
+		void this.loadModelCatalog();
 	}
 
 	disconnect(): void {
@@ -1731,6 +1995,7 @@ export class ChatView {
 			const currentSessionFile = state.sessionFile ?? null;
 			this.state = state;
 			this.syncComposerQueueFromState(state);
+			this.recomputeProviderAuthConfigured();
 			this.lastBackendSessionFile = currentSessionFile;
 			if ((previousSessionFile ?? "") !== (currentSessionFile ?? "")) {
 				this.sessionStats = {
@@ -1807,6 +2072,12 @@ export class ChatView {
 			if (!this.loadingModels && this.availableModels.length === 0) {
 				void this.loadAvailableModels();
 			}
+			if (!this.loadingProviderAuth && this.providerAuthLoadedAt === 0) {
+				void this.loadProviderAuthStatus();
+			}
+			if (!this.loadingModelCatalog && this.modelCatalog.length === 0) {
+				void this.loadModelCatalog();
+			}
 			push?.(`chat:refreshFromBackend ok session=${state.sessionFile ?? "-"} messages=${backendMessages.length}`);
 		} catch (err) {
 			console.error("Failed to refresh chat state:", err);
@@ -1819,7 +2090,11 @@ export class ChatView {
 	}
 
 	async refreshModels(): Promise<void> {
-		await this.loadAvailableModels();
+		await Promise.all([
+			this.loadAvailableModels(),
+			this.loadProviderAuthStatus(true),
+			this.loadModelCatalog(true),
+		]);
 	}
 
 	private mapBackendMessages(backendMessages: Array<Record<string, unknown>>): UiMessage[] {
@@ -2181,16 +2456,15 @@ export class ChatView {
 					label: `${provider}/${id}`,
 				});
 			}
-			if (mapped.length > 0) {
-				mapped.sort((a, b) => {
-					const providerCompare = formatProviderDisplayName(a.provider).localeCompare(formatProviderDisplayName(b.provider), undefined, {
-						sensitivity: "base",
-					});
-					if (providerCompare !== 0) return providerCompare;
-					return formatModelDisplayName(a.id).localeCompare(formatModelDisplayName(b.id), undefined, { sensitivity: "base" });
+			mapped.sort((a, b) => {
+				const providerCompare = formatProviderDisplayName(a.provider).localeCompare(formatProviderDisplayName(b.provider), undefined, {
+					sensitivity: "base",
 				});
-				this.availableModels = mapped;
-			}
+				if (providerCompare !== 0) return providerCompare;
+				return formatModelDisplayName(a.id).localeCompare(formatModelDisplayName(b.id), undefined, { sensitivity: "base" });
+			});
+			this.availableModels = mapped;
+			this.recomputeProviderAuthConfigured();
 			this.lastModelLoadError = null;
 			push?.(`chat:loadModels ok count=${mapped.length}`);
 		} catch (err) {
@@ -2216,6 +2490,7 @@ export class ChatView {
 			await rpcBridge.setModel(provider, modelId);
 			this.state = await rpcBridge.getState();
 			this.syncComposerQueueFromState(this.state);
+			this.recomputeProviderAuthConfigured();
 			if (this.state) this.onStateChange?.(this.state);
 			void this.refreshSessionStats(true);
 			this.pushNotice(`Switched to ${provider}/${modelId}`, "success");
@@ -6003,46 +6278,71 @@ export class ChatView {
 		const thinkingValue = (this.state?.thinkingLevel ?? "off") as ThinkingLevel;
 		const thinkingLabel = formatThinkingDisplayName(thinkingValue);
 
-		const groupedByProvider = new Map<string, { providerKey: string; providerLabel: string; models: ModelOption[] }>();
+		const availableByKey = new Map<string, ModelOption>();
 		for (const model of this.availableModels) {
-			const providerKey = model.provider;
-			const existing = groupedByProvider.get(providerKey);
-			if (existing) {
-				existing.models.push(model);
-			} else {
-				groupedByProvider.set(providerKey, {
-					providerKey,
-					providerLabel: formatProviderDisplayName(providerKey),
-					models: [model],
+			availableByKey.set(`${model.provider}::${model.id}`.toLowerCase(), model);
+		}
+
+		const catalogSeed = this.modelCatalog.length > 0 ? this.modelCatalog : this.availableModels;
+		const combinedByKey = new Map<string, ModelOption>();
+		for (const model of catalogSeed) {
+			const key = `${model.provider}::${model.id}`.toLowerCase();
+			if (!combinedByKey.has(key)) combinedByKey.set(key, model);
+		}
+		for (const model of this.availableModels) {
+			const key = `${model.provider}::${model.id}`.toLowerCase();
+			if (!combinedByKey.has(key)) combinedByKey.set(key, model);
+		}
+
+		if (currentProvider && currentModelId) {
+			const currentKey = `${currentProvider}::${currentModelId}`.toLowerCase();
+			if (!combinedByKey.has(currentKey)) {
+				combinedByKey.set(currentKey, {
+					provider: currentProvider,
+					id: currentModelId,
+					label: `${currentProvider}/${currentModelId}`,
+					reasoning: false,
 				});
 			}
 		}
 
-		if (currentProvider && currentModelId && !this.availableModels.some((m) => m.provider === currentProvider && m.id === currentModelId)) {
-			const existing = groupedByProvider.get(currentProvider);
-			const fallbackModel: ModelOption = {
-				provider: currentProvider,
-				id: currentModelId,
-				label: `${currentProvider}/${currentModelId}`,
-				reasoning: false,
-			};
-			if (existing) existing.models.unshift(fallbackModel);
-			else {
-				groupedByProvider.set(currentProvider, {
-					providerKey: currentProvider,
-					providerLabel: formatProviderDisplayName(currentProvider),
-					models: [fallbackModel],
+		const groupedByProvider = new Map<
+			string,
+			{ providerKey: string; providerLabel: string; models: Array<ModelOption & { selectable: boolean }> }
+		>();
+		for (const model of combinedByKey.values()) {
+			const providerKey = model.provider;
+			const modelKey = `${model.provider}::${model.id}`.toLowerCase();
+			const selectable = availableByKey.has(modelKey) || (model.provider === currentProvider && model.id === currentModelId);
+			const existing = groupedByProvider.get(providerKey);
+			if (existing) {
+				existing.models.push({ ...model, selectable });
+			} else {
+				groupedByProvider.set(providerKey, {
+					providerKey,
+					providerLabel: formatProviderDisplayName(providerKey),
+					models: [{ ...model, selectable }],
 				});
 			}
 		}
 
 		const providerGroups = Array.from(groupedByProvider.values())
-			.map((group) => ({
-				...group,
-				models: [...group.models].sort((a, b) =>
-					formatModelDisplayName(a.id).localeCompare(formatModelDisplayName(b.id), undefined, { sensitivity: "base" }),
-				),
-			}))
+			.map((group) => {
+				const authKey = this.providerKey(group.providerKey);
+				const hasSelectableModel = group.models.some((model) => model.selectable);
+				const authInfo = this.providerAuthById.get(authKey);
+				const authConfigured = this.providerAuthConfigured.has(authKey) || hasSelectableModel;
+				const authSource = authInfo?.source ?? (hasSelectableModel ? "runtime" : "missing");
+				return {
+					...group,
+					authConfigured,
+					authSource,
+					authKind: authInfo?.kind ?? "unknown",
+					models: [...group.models].sort((a, b) =>
+						formatModelDisplayName(a.id).localeCompare(formatModelDisplayName(b.id), undefined, { sensitivity: "base" }),
+					),
+				};
+			})
 			.sort((a, b) => a.providerLabel.localeCompare(b.providerLabel, undefined, { sensitivity: "base" }));
 
 		const resolvedActiveProvider = providerGroups.some((g) => g.providerKey === this.modelPickerActiveProvider)
@@ -6093,11 +6393,17 @@ export class ChatView {
 							type="button"
 							class="model-picker-trigger"
 							title=${currentModelTitle}
-							?disabled=${interactionLocked || this.loadingModels || this.settingModel}
+							?disabled=${interactionLocked || this.settingModel}
 							@click=${() => {
 								if (interactionLocked || this.settingModel) return;
 								if (!this.loadingModels && this.availableModels.length === 0) {
 									void this.loadAvailableModels();
+								}
+								if (!this.loadingProviderAuth) {
+									void this.loadProviderAuthStatus();
+								}
+								if (!this.loadingModelCatalog && this.modelCatalog.length === 0) {
+									void this.loadModelCatalog();
 								}
 								if (this.modelPickerOpen) {
 									this.modelPickerOpen = false;
@@ -6116,17 +6422,35 @@ export class ChatView {
 						${this.modelPickerOpen
 							? html`
 								<div class="model-picker-popover" role="listbox" aria-label="Available models">
-									${this.loadingModels
-										? html`<div class="model-picker-empty">Loading models…</div>`
-										: providerGroups.length === 0
-											? html`<div class="model-picker-empty">No models available</div>`
-											: html`
-												<div class="model-picker-providers">
-													${providerGroups.map(
-														(group) => html`
+									${providerGroups.length === 0
+										? html`<div class="model-picker-empty">${this.loadingModels || this.loadingModelCatalog ? "Loading models…" : "No models available"}</div>`
+										: html`
+											<div class="model-picker-providers">
+												${providerGroups.map((group) => {
+													const authKey = this.providerKey(group.providerKey);
+													const isActionBusy = this.runningProviderAuthAction?.provider === authKey;
+													const canLogout = group.authConfigured && group.authSource !== "environment";
+													const action = canLogout ? ("logout" as const) : ("login" as const);
+													const actionLabel = group.authConfigured
+														? group.authSource === "environment"
+															? "Env"
+															: "Logout"
+														: "Login";
+													const actionDisabled =
+														interactionLocked ||
+														this.settingModel ||
+														isActionBusy ||
+														(group.authConfigured && group.authSource === "environment");
+													const actionTitle = group.authConfigured
+														? group.authSource === "environment"
+															? "Configured from environment variable"
+															: `Logout from ${group.providerLabel}`
+														: `Set up ${group.providerLabel}`;
+													return html`
+														<div class="model-picker-provider-row ${group.providerKey === resolvedActiveProvider ? "active" : ""} ${group.authConfigured ? "" : "unauth"}">
 															<button
 																type="button"
-																class="model-picker-provider ${group.providerKey === resolvedActiveProvider ? "active" : ""}"
+																class="model-picker-provider ${group.providerKey === resolvedActiveProvider ? "active" : ""} ${group.authConfigured ? "" : "unauth"}"
 																@mouseenter=${() => {
 																	if (this.modelPickerActiveProvider === group.providerKey) return;
 																	this.modelPickerActiveProvider = group.providerKey;
@@ -6144,21 +6468,47 @@ export class ChatView {
 																}}
 															>
 																<span class="model-picker-provider-label">${group.providerLabel}</span>
+																<span class="model-picker-provider-state">${group.authConfigured ? "connected" : "setup"}</span>
 																<span class="model-picker-provider-caret" aria-hidden="true">›</span>
 															</button>
-														`,
-													)}
-												</div>
-												<div class="model-picker-models">
-													${activeProviderGroup
-														? activeProviderGroup.models.map(
-															(model) => html`
+															<button
+																type="button"
+																class="model-picker-provider-auth ${group.authConfigured ? "connected" : ""}"
+																title=${actionTitle}
+																?disabled=${actionDisabled}
+																@click=${(event: MouseEvent) => {
+																	event.preventDefault();
+																	event.stopPropagation();
+																	if (actionDisabled) return;
+																	void this.handleProviderAuthAction(group.providerKey, action);
+																}}
+															>
+																${isActionBusy ? "…" : actionLabel}
+															</button>
+														</div>
+													`;
+												})}
+											</div>
+											<div class="model-picker-models">
+												${activeProviderGroup
+													? html`
+														${!activeProviderGroup.authConfigured
+															? html`<div class="model-picker-auth-hint">Not connected yet. Use Login to set up this provider.</div>`
+															: nothing}
+														${activeProviderGroup.models.map((model) => {
+															const nextValue = `${model.provider}::${model.id}`;
+															const isActive = model.provider === currentProvider && model.id === currentModelId;
+															const isDisabled = !model.selectable;
+															return html`
 																<button
 																	type="button"
-																	class="model-picker-model ${model.provider === currentProvider && model.id === currentModelId ? "active" : ""}"
-																	title=${`${formatProviderDisplayName(model.provider)} / ${model.id}`}
+																	class="model-picker-model ${isActive ? "active" : ""} ${isDisabled ? "disabled" : ""}"
+																	title=${isDisabled
+																		? `${formatProviderDisplayName(model.provider)} / ${model.id} (setup required)`
+																		: `${formatProviderDisplayName(model.provider)} / ${model.id}`}
+																	?disabled=${interactionLocked || this.settingModel || isDisabled}
 																	@click=${() => {
-																		const nextValue = `${model.provider}::${model.id}`;
+																		if (isDisabled) return;
 																		this.modelPickerOpen = false;
 																		this.render();
 																		if (nextValue === currentModelValue) return;
@@ -6167,11 +6517,12 @@ export class ChatView {
 																>
 																	<span>${formatModelDisplayName(model.id)}</span>
 																</button>
-															`,
-														)
-														: html`<div class="model-picker-empty">No models</div>`}
-												</div>
-											`}
+															`;
+														})}
+													`
+													: html`<div class="model-picker-empty">No models</div>`}
+											</div>
+										`}
 								</div>
 							`
 							: nothing}

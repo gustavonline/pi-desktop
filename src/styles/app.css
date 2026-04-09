@@ -5903,16 +5903,23 @@ body.file-split-resizing #file-split-resize-handle::after {
 
 .model-picker-providers {
 	display: grid;
-	gap: 1px;
-	padding: 4px;
+	gap: 4px;
+	padding: 6px 4px;
 	grid-auto-rows: min-content;
 	align-content: start;
 	border-right: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
 	background: color-mix(in srgb, var(--bg-soft) 42%, transparent);
 }
 
+.model-picker-provider-row {
+	display: grid;
+	grid-template-columns: 1fr auto;
+	gap: 4px;
+	align-items: center;
+}
+
 .model-picker-provider {
-	height: 27px;
+	height: 28px;
 	border: none;
 	border-radius: 8px;
 	background: transparent;
@@ -5920,10 +5927,11 @@ body.file-split-resizing #file-split-resize-handle::after {
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
-	gap: 8px;
+	gap: 6px;
 	padding: 0 8px;
 	font-size: 12px;
 	cursor: pointer;
+	min-width: 0;
 }
 
 .model-picker-provider-label {
@@ -5933,6 +5941,14 @@ body.file-split-resizing #file-split-resize-handle::after {
 	overflow: hidden;
 	text-overflow: ellipsis;
 	text-align: left;
+}
+
+.model-picker-provider-state {
+	flex-shrink: 0;
+	font-size: 10px;
+	color: var(--muted-2);
+	text-transform: lowercase;
+	letter-spacing: 0.02em;
 }
 
 .model-picker-provider-caret {
@@ -5945,14 +5961,56 @@ body.file-split-resizing #file-split-resize-handle::after {
 	color: var(--text);
 }
 
+.model-picker-provider.unauth {
+	color: color-mix(in srgb, var(--muted) 72%, var(--bg));
+}
+
+.model-picker-provider-auth {
+	height: 24px;
+	border-radius: 999px;
+	border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+	background: color-mix(in srgb, var(--bg-soft) 78%, transparent);
+	color: var(--muted);
+	padding: 0 8px;
+	font-size: 10px;
+	font-weight: 600;
+	letter-spacing: 0.01em;
+	cursor: pointer;
+}
+
+.model-picker-provider-auth:hover {
+	color: var(--text);
+	border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+
+.model-picker-provider-auth.connected {
+	border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+	color: color-mix(in srgb, var(--text) 82%, var(--accent));
+}
+
+.model-picker-provider-auth:disabled {
+	opacity: 0.55;
+	cursor: default;
+}
+
 .model-picker-models {
 	display: grid;
-	gap: 1px;
-	padding: 4px;
+	gap: 4px;
+	padding: 6px 4px;
 	grid-auto-rows: min-content;
 	align-content: start;
-	max-height: 224px;
+	max-height: 236px;
 	overflow-y: auto;
+}
+
+.model-picker-auth-hint {
+	margin: 2px 4px 4px;
+	padding: 6px 8px;
+	border-radius: 8px;
+	font-size: 11px;
+	line-height: 1.35;
+	color: var(--muted-2);
+	background: color-mix(in srgb, var(--bg-soft) 74%, transparent);
 }
 
 .model-picker-model {
@@ -5974,6 +6032,18 @@ body.file-split-resizing #file-split-resize-handle::after {
 .model-picker-model.active {
 	background: color-mix(in srgb, var(--bg-soft) 82%, transparent);
 	color: var(--text);
+}
+
+.model-picker-model.disabled,
+.model-picker-model:disabled {
+	color: color-mix(in srgb, var(--muted) 70%, var(--bg));
+	cursor: not-allowed;
+}
+
+.model-picker-model.disabled:hover,
+.model-picker-model:disabled:hover {
+	background: transparent;
+	color: color-mix(in srgb, var(--muted) 70%, var(--bg));
 }
 
 .model-picker-empty {

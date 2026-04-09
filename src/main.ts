@@ -2924,6 +2924,14 @@ async function initialize(): Promise<void> {
 			await packagesView.refreshPackages(false);
 			return await packagesView.openExtensionConfigByCommand(normalizedName, args);
 		});
+		chatView.setOnOpenProviderConfig(async (provider) => {
+			const normalizedProvider = provider.trim().toLowerCase().replace(/^\/+/, "");
+			if (!normalizedProvider) return false;
+			openPackagesPane();
+			if (!packagesView) return false;
+			await packagesView.refreshPackages(false);
+			return await packagesView.openExtensionConfigByProvider(normalizedProvider);
+		});
 		chatView.setOnBeginRenameCurrentSession(() => {
 			const workspace = getActiveWorkspace();
 			if (!workspace) return false;
