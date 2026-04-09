@@ -262,7 +262,7 @@ const BUILTIN_SLASH_COMMANDS: Array<{ name: string; description: string }> = [
 	{ name: "terminal", description: "Toggle docked terminal" },
 	{ name: "fork", description: "Open fork flow, /fork <query> pre-fills message search" },
 	{ name: "tree", description: "Open full session tree across branches, /tree <query> pre-fills search" },
-	{ name: "login", description: "No arg opens model picker auth actions; /login <provider> opens setup" },
+	{ name: "login", description: "No arg opens model picker auth actions; /login <provider> opens provider login guidance/setup" },
 	{ name: "logout", description: "No arg opens model picker auth actions; /logout <provider> clears auth.json credentials" },
 	{ name: "new", description: "Start fresh session tab" },
 	{ name: "compact", description: "Manually compact context, /compact <instructions> optional" },
@@ -1280,7 +1280,7 @@ export class ChatView {
 	private resolveProviderSetupCommand(provider: string): string | null {
 		const providerKey = this.providerKey(provider);
 		if (!providerKey) return null;
-		const providerTokens = providerKey.split(/[-_.]+/).filter(Boolean);
+		const providerTokens = providerKey.split(/[-_.]+/).filter((token) => token.length > 2);
 		let best: { name: string; score: number } | null = null;
 		for (const command of this.slashRuntimeCommands) {
 			if (command.source !== "extension") continue;
@@ -1288,12 +1288,14 @@ export class ChatView {
 			if (!name) continue;
 			const description = normalizeText(command.description).toLowerCase();
 			const haystack = `${name} ${description}`;
+			const tokenHits = providerTokens.filter((token) => haystack.includes(token)).length;
+			const hasProviderMatch = haystack.includes(providerKey) || tokenHits > 0;
+			if (!hasProviderMatch) continue;
 			let score = 0;
-			if (haystack.includes(providerKey)) score += 9;
-			score += providerTokens.filter((token) => token.length > 2 && haystack.includes(token)).length * 2;
-			if (/\b(config|setup|settings|auth|login)\b/.test(haystack)) score += 3;
-			if (/config/.test(name)) score += 2;
-			if (score <= 0) continue;
+			if (haystack.includes(providerKey)) score += 8;
+			score += tokenHits * 3;
+			if (/\b(config|setup|settings|auth|login)\b/.test(haystack)) score += 2;
+			if (/config/.test(name)) score += 1;
 			if (!best || score > best.score) {
 				best = { name, score };
 			}
@@ -1332,6 +1334,15 @@ export class ChatView {
 
 		try {
 			if (action === "login") {
+				if (DEFAULT_OAUTH_PROVIDER_SET.has(providerKey)) {
+					this.onOpenTerminal?.();
+					this.appendSystemMessage(
+						`To log in to **${providerLabel}**, run \`pi\` in terminal, then run \`/login\` and choose **${providerLabel}** in the OAuth picker.`,
+						{ label: "auth", markdown: true },
+					);
+					this.pushNotice(`Open terminal and run pi → /login to connect ${providerLabel}`, "info");
+					return;
+				}
 				const openedPackageConfig = await this.openProviderSetup(providerKey);
 				if (openedPackageConfig) {
 					this.pushNotice(`Opened ${providerLabel} setup`, "info");
@@ -1341,7 +1352,7 @@ export class ChatView {
 					this.onOpenSettings("account");
 				}
 				this.appendSystemMessage(
-					`Open setup for **${providerLabel}** in Packages. For built-in OAuth providers, run \`pi\` in terminal and use \`/login\`.`,
+					`Open setup for **${providerLabel}** in Packages. If this provider supports OAuth, use \`pi\` in terminal and run \`/login\` to authorize.`,
 					{ label: "auth", markdown: true },
 				);
 				this.pushNotice(`Opened account setup for ${providerLabel}`, "info");

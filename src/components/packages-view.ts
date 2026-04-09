@@ -134,6 +134,15 @@ const SMART_NOTIFY_COMMAND_NAMES = new Set(["voice-notify"]);
 const SMART_NOTIFY_PRIMARY_SOURCE = normalizeRecommendedSource("npm:pi-smart-voice-notify");
 const SMART_NOTIFY_LEGACY_SOURCE = normalizeRecommendedSource("npm:pi-desktop-notify");
 const SMART_NOTIFY_INSTALL_SOURCE = "npm:pi-smart-voice-notify";
+const BUILTIN_OAUTH_PROVIDER_IDS = new Set(["anthropic", "github-copilot", "google-gemini-cli", "google-antigravity", "openai-codex"]);
+const PROVIDER_AUTH_CLEANUP_HINTS = new Map<string, string[]>([
+	["pi-cursor-agent", ["cursor-agent"]],
+	["cursor-agent", ["cursor-agent"]],
+	["pi-kilocode", ["kilo"]],
+	["kilocode", ["kilo"]],
+	["kilo-pi-provider", ["kilo"]],
+	["pi-kilo", ["kilo"]],
+]);
 
 function defaultAutoRenameConfigDraft(): AutoRenameConfigDraft {
 	return {
@@ -3030,6 +3039,87 @@ export class PackagesView {
 		}
 	}
 
+	private inferRemovedPackageAuthProviderCandidates(source: string): string[] {
+		const normalized = normalizeRecommendedSource(source);
+		if (!normalized.startsWith("npm:")) return [];
+		const packageName = normalized.slice(4);
+		if (!packageName) return [];
+		const packageTail = packageName.split("/").filter(Boolean).pop() || packageName;
+		const candidates = new Set<string>();
+		const hinted = [...(PROVIDER_AUTH_CLEANUP_HINTS.get(packageName) ?? []), ...(PROVIDER_AUTH_CLEANUP_HINTS.get(packageTail) ?? [])];
+		for (const provider of hinted) {
+			const normalizedProvider = provider.trim().toLowerCase();
+			if (normalizedProvider) candidates.add(normalizedProvider);
+		}
+		if (packageName.includes("cursor") || packageTail.includes("cursor")) {
+			candidates.add("cursor-agent");
+		}
+		if (packageName.includes("kilo") || packageTail.includes("kilo")) {
+			candidates.add("kilo");
+		}
+		const withoutPiPrefix = packageTail.startsWith("pi-") ? packageTail.slice(3) : packageTail;
+		if (withoutPiPrefix) {
+			candidates.add(withoutPiPrefix);
+			if (withoutPiPrefix.endsWith("-provider")) {
+				candidates.add(withoutPiPrefix.slice(0, -"-provider".length));
+			}
+		}
+		return [...candidates].filter(Boolean);
+	}
+
+	private async cleanupProviderAuthForRemovedPackage(source: string): Promise<string[]> {
+		const candidates = this.inferRemovedPackageAuthProviderCandidates(source);
+		if (candidates.length === 0) return [];
+		let authProviders: Array<{ provider: string; source: string; kind: string }> = [];
+		try {
+			const status = await rpcBridge.getPiAuthStatus();
+			authProviders = Array.isArray(status?.configured_providers)
+				? status.configured_providers.map((item) => ({
+					provider: String(item.provider || "").trim().toLowerCase(),
+					source: String(item.source || "").trim().toLowerCase(),
+					kind: String(item.kind || "").trim().toLowerCase(),
+				})).filter((item) => item.provider.length > 0)
+				: [];
+		} catch {
+			return [];
+		}
+
+		const packageTokens = normalizeRecommendedSource(source)
+			.replace(/^npm:/, "")
+			.split(/[\/_-]+/)
+			.map((token) => token.trim().toLowerCase())
+			.filter((token) => token.length >= 4 && token !== "provider" && token !== "package");
+
+		const targets = new Set<string>();
+		for (const auth of authProviders) {
+			if (auth.source === "environment") continue;
+			if (auth.kind !== "oauth") continue;
+			if (BUILTIN_OAUTH_PROVIDER_IDS.has(auth.provider)) continue;
+			const directMatch = candidates.some((candidate) => auth.provider === candidate || auth.provider.includes(candidate) || candidate.includes(auth.provider));
+			const tokenMatch = packageTokens.some((token) => auth.provider.includes(token));
+			if (directMatch || tokenMatch) {
+				targets.add(auth.provider);
+			}
+		}
+
+		if (targets.size === 0) return [];
+		const removed: string[] = [];
+		for (const provider of targets) {
+			try {
+				const result = await rpcBridge.clearPiProviderAuth(provider);
+				if (result.removed) {
+					removed.push(provider);
+				}
+			} catch {
+				// best-effort cleanup
+			}
+		}
+		if (removed.length > 0) {
+			this.commandOutput = `${this.commandOutput ? `${this.commandOutput}\n` : ""}[auth-cleanup] removed oauth credentials for: ${removed.join(", ")}\n`;
+		}
+		return removed;
+	}
+
 	private async removePackage(source: string, scope: "global" | "local"): Promise<void> {
 		const trimmed = source.trim();
 		if (!trimmed) return;
@@ -3041,7 +3131,12 @@ export class PackagesView {
 			refreshOnSuccess: true,
 		});
 		if (success) {
-			this.commandStatus = `Removed: ${trimmed}`;
+			const removedProviders = await this.cleanupProviderAuthForRemovedPackage(trimmed);
+			if (removedProviders.length > 0) {
+				this.commandStatus = `Removed: ${trimmed} · Cleared auth for ${removedProviders.join(", ")}`;
+			} else {
+				this.commandStatus = `Removed: ${trimmed}`;
+			}
 		}
 	}
 
