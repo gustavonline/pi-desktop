@@ -274,6 +274,16 @@ const BUILTIN_SLASH_COMMANDS: Array<{ name: string; description: string }> = [
 const MODEL_PICKER_AUTH_CACHE_MS = 15_000;
 const MODEL_PICKER_CATALOG_CACHE_MS = 60_000;
 
+// Mirrors built-in OAuth providers from @mariozechner/pi-ai/oauth.
+const DEFAULT_OAUTH_PROVIDER_IDS = [
+	"anthropic",
+	"github-copilot",
+	"google-gemini-cli",
+	"google-antigravity",
+	"openai-codex",
+] as const;
+const DEFAULT_OAUTH_PROVIDER_SET = new Set<string>(DEFAULT_OAUTH_PROVIDER_IDS);
+
 function uid(prefix = "id"): string {
 	return `${prefix}_${Math.random().toString(36).slice(2, 8)}_${Date.now().toString(36)}`;
 }
@@ -399,12 +409,20 @@ function formatProviderDisplayName(provider: string): string {
 	switch (normalized) {
 		case "openai":
 			return "OpenAI";
+		case "openai-codex":
+			return "OpenAI Codex";
 		case "anthropic":
 			return "Anthropic";
 		case "google":
 		case "googleai":
 		case "gemini":
 			return "Google";
+		case "google-gemini-cli":
+			return "Google Gemini CLI";
+		case "google-antigravity":
+			return "Google Antigravity";
+		case "github-copilot":
+			return "GitHub Copilot";
 		case "xai":
 			return "xAI";
 		case "openrouter":
@@ -413,6 +431,10 @@ function formatProviderDisplayName(provider: string): string {
 			return "Ollama";
 		case "lmstudio":
 			return "LM Studio";
+		case "cursor-agent":
+			return "Cursor";
+		case "kilo":
+			return "Kilo";
 		default:
 			return normalized
 				.split(/[-_\s]+/)
@@ -1245,10 +1267,8 @@ export class ChatView {
 				throw new Error(result.stderr || result.stdout || `pi --list-models failed with exit ${result.exit_code}`);
 			}
 			const parsed = parseListModelsCatalog(result.stdout || "");
-			if (parsed.length > 0) {
-				this.modelCatalog = parsed;
-				this.modelCatalogLoadedAt = Date.now();
-			}
+			this.modelCatalog = parsed;
+			this.modelCatalogLoadedAt = Date.now();
 		} catch (err) {
 			console.error("Failed to load model catalog:", err);
 		} finally {
@@ -6354,6 +6374,22 @@ export class ChatView {
 				});
 			}
 		}
+		for (const provider of this.providerAuthById.keys()) {
+			if (groupedByProvider.has(provider)) continue;
+			groupedByProvider.set(provider, {
+				providerKey: provider,
+				providerLabel: formatProviderDisplayName(provider),
+				models: [],
+			});
+		}
+		for (const provider of DEFAULT_OAUTH_PROVIDER_IDS) {
+			if (groupedByProvider.has(provider)) continue;
+			groupedByProvider.set(provider, {
+				providerKey: provider,
+				providerLabel: formatProviderDisplayName(provider),
+				models: [],
+			});
+		}
 		for (const forcedLoggedOutProvider of this.providerAuthForcedLoggedOut) {
 			if (groupedByProvider.has(forcedLoggedOutProvider)) continue;
 			groupedByProvider.set(forcedLoggedOutProvider, {
@@ -6376,6 +6412,7 @@ export class ChatView {
 					authConfigured,
 					authSource,
 					authKind: authInfo?.kind ?? "unknown",
+					isDefaultOAuthProvider: DEFAULT_OAUTH_PROVIDER_SET.has(authKey),
 					models: [...group.models].sort((a, b) =>
 						formatModelDisplayName(a.id).localeCompare(formatModelDisplayName(b.id), undefined, { sensitivity: "base" }),
 					),
@@ -6529,33 +6566,45 @@ export class ChatView {
 											<div class="model-picker-models">
 												${activeProviderGroup
 													? html`
-														${!activeProviderGroup.authConfigured
-															? html`<div class="model-picker-auth-hint">Not connected yet. Use Login to set up this provider.</div>`
-															: nothing}
-														${activeProviderGroup.models.map((model) => {
-															const nextValue = `${model.provider}::${model.id}`;
-															const isActive = model.provider === currentProvider && model.id === currentModelId;
-															const isDisabled = !model.selectable || !activeProviderGroup.authConfigured;
-															return html`
-																<button
-																	type="button"
-																	class="model-picker-model ${isActive ? "active" : ""} ${isDisabled ? "disabled" : ""}"
-																	title=${isDisabled
-																		? `${formatProviderDisplayName(model.provider)} / ${model.id} (setup required)`
-																		: `${formatProviderDisplayName(model.provider)} / ${model.id}`}
-																	?disabled=${interactionLocked || this.settingModel || isDisabled}
-																	@click=${() => {
-																		if (isDisabled) return;
-																		this.modelPickerOpen = false;
-																		this.render();
-																		if (nextValue === currentModelValue) return;
-																		void this.setModel(model.provider, model.id);
-																	}}
-																>
-																	<span>${formatModelDisplayName(model.id)}</span>
-																</button>
-															`;
-														})}
+														${activeProviderGroup.models.length === 0
+															? html`
+																<div class="model-picker-auth-hint">
+																	${activeProviderGroup.authConfigured
+																		? activeProviderGroup.isDefaultOAuthProvider
+																			? "Connected, but no models are available right now. Try /reload after login changes."
+																			: "Connected, but no models are loaded for this provider. Install/enable its package in Packages, then run /reload."
+																		: "Not connected yet. Use Login to set up this provider."}
+																</div>
+															`
+															: html`
+																${!activeProviderGroup.authConfigured
+																	? html`<div class="model-picker-auth-hint">Not connected yet. Use Login to set up this provider.</div>`
+																	: nothing}
+																${activeProviderGroup.models.map((model) => {
+																	const nextValue = `${model.provider}::${model.id}`;
+																	const isActive = model.provider === currentProvider && model.id === currentModelId;
+																	const isDisabled = !model.selectable || !activeProviderGroup.authConfigured;
+																	return html`
+																		<button
+																			type="button"
+																			class="model-picker-model ${isActive ? "active" : ""} ${isDisabled ? "disabled" : ""}"
+																			title=${isDisabled
+																				? `${formatProviderDisplayName(model.provider)} / ${model.id} (setup required)`
+																				: `${formatProviderDisplayName(model.provider)} / ${model.id}`}
+																			?disabled=${interactionLocked || this.settingModel || isDisabled}
+																			@click=${() => {
+																				if (isDisabled) return;
+																				this.modelPickerOpen = false;
+																				this.render();
+																				if (nextValue === currentModelValue) return;
+																				void this.setModel(model.provider, model.id);
+																			}}
+																		>
+																			<span>${formatModelDisplayName(model.id)}</span>
+																		</button>
+																	`;
+																})}
+															`}
 													`
 													: html`<div class="model-picker-empty">No models</div>`}
 											</div>
