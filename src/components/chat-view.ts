@@ -15,11 +15,17 @@ import {
 } from "../rpc/bridge.js";
 import { buildGitBranchIndex, findGitBranchEntryByQuery, type GitBranchEntry } from "../git/branches.js";
 import {
-	BUILTIN_SLASH_COMMANDS,
-	normalizeRuntimeSlashCommandSource,
-	type RuntimeSlashCommandSource,
-	withRuntimeCommandUsageHint,
-} from "../commands/slash-command-catalog.js";
+	createSlashPaletteItems,
+	filterSlashPaletteItemsByQuery,
+	findSlashPaletteItemByName,
+	getSlashQueryFromInput,
+	normalizeRuntimeSlashCommands,
+	parseSlashInputText,
+	type RuntimeSlashCommand,
+	type SlashCommandSource,
+	type SlashPaletteItem,
+	type SlashPaletteSection,
+} from "../commands/slash-command-runtime.js";
 
 type DeliveryMode = "prompt" | "steer" | "followUp";
 
@@ -170,25 +176,6 @@ interface ComposerSkillDraft {
 	name: string;
 	commandText: string;
 	scope: string | null;
-}
-
-type SlashPaletteSection = "CLI" | "Extensions" | "Prompts" | "Skills" | "Commands";
-type SlashCommandSource = "builtin" | RuntimeSlashCommandSource;
-
-interface RuntimeSlashCommand {
-	name: string;
-	description: string;
-	source: RuntimeSlashCommandSource;
-	rawSource: string;
-}
-
-interface SlashPaletteItem {
-	id: string;
-	section: SlashPaletteSection;
-	label: string;
-	hint: string;
-	commandName: string;
-	source: SlashCommandSource;
 }
 
 interface ToolCallGroup {
@@ -950,10 +937,7 @@ export class ChatView {
 	}
 
 	private slashQueryFromInput(): string | null {
-		const raw = this.inputText;
-		if (!raw.startsWith("/")) return null;
-		if (raw.includes("\n")) return null;
-		return raw.slice(1).trimStart();
+		return getSlashQueryFromInput(this.inputText);
 	}
 
 	private updateSlashPaletteStateFromInput(): void {
@@ -985,43 +969,7 @@ export class ChatView {
 	}
 
 	private parseSlashInput(value: string): { commandText: string; commandName: string; args: string } | null {
-		const raw = value.trim();
-		if (!raw.startsWith("/")) return null;
-		if (raw.includes("\n")) return null;
-		const body = raw.slice(1).trim();
-		if (!body) return null;
-		const splitIndex = body.search(/\s/);
-		if (splitIndex < 0) {
-			const commandToken = body.trim();
-			const commandName = commandToken.toLowerCase();
-			return {
-				commandName,
-				args: "",
-				commandText: `/${commandToken}`,
-			};
-		}
-		const commandToken = body.slice(0, splitIndex).trim();
-		const commandName = commandToken.toLowerCase();
-		const args = body.slice(splitIndex + 1).trim();
-		return {
-			commandName,
-			args,
-			commandText: `/${commandToken}${args ? ` ${args}` : ""}`,
-		};
-	}
-
-	private normalizeRuntimeSlashCommand(raw: Record<string, unknown>): RuntimeSlashCommand | null {
-		const rawSource = normalizeText(raw.source).toLowerCase();
-		const source = normalizeRuntimeSlashCommandSource(rawSource);
-		const name = normalizeText(raw.name).replace(/^\/+/, "").trim().toLowerCase();
-		if (!name) return null;
-		const description = withRuntimeCommandUsageHint(name, normalizeText(raw.description) || `Run /${name}`);
-		return {
-			name,
-			description,
-			source,
-			rawSource,
-		};
+		return parseSlashInputText(value);
 	}
 
 	private async ensureSlashCommandsLoaded(force = false): Promise<void> {
@@ -1031,29 +979,7 @@ export class ChatView {
 		if (this.slashPaletteOpen) this.render();
 		try {
 			const runtimeCommands = await rpcBridge.getCommands().catch(() => []);
-			const normalized: RuntimeSlashCommand[] = [];
-			const seen = new Set<string>();
-			for (const raw of runtimeCommands as Array<Record<string, unknown>>) {
-				const parsed = this.normalizeRuntimeSlashCommand(raw);
-				if (!parsed) continue;
-				const sourceKey = parsed.source === "other" ? parsed.rawSource || "other" : parsed.source;
-				const key = `${sourceKey}:${parsed.name}`;
-				if (seen.has(key)) continue;
-				seen.add(key);
-				normalized.push(parsed);
-			}
-			const sourceOrder: Record<RuntimeSlashCommand["source"], number> = {
-				extension: 0,
-				prompt: 1,
-				skill: 2,
-				other: 3,
-			};
-			normalized.sort((a, b) => {
-				const sourceDiff = sourceOrder[a.source] - sourceOrder[b.source];
-				if (sourceDiff !== 0) return sourceDiff;
-				return a.name.localeCompare(b.name);
-			});
-			this.slashRuntimeCommands = normalized;
+			this.slashRuntimeCommands = normalizeRuntimeSlashCommands(runtimeCommands as Array<Record<string, unknown>>);
 			this.slashCommandsUpdatedAt = Date.now();
 		} catch {
 			this.slashRuntimeCommands = this.slashRuntimeCommands.slice();
@@ -1064,80 +990,17 @@ export class ChatView {
 		}
 	}
 
-	private slashSectionForSource(source: SlashCommandSource): SlashPaletteSection {
-		switch (source) {
-			case "builtin":
-				return "CLI";
-			case "extension":
-				return "Extensions";
-			case "prompt":
-				return "Prompts";
-			case "skill":
-				return "Skills";
-			case "other":
-			default:
-				return "Commands";
-		}
-	}
-
 	private buildAllSlashPaletteItems(): SlashPaletteItem[] {
-		const builtinItems: SlashPaletteItem[] = BUILTIN_SLASH_COMMANDS.map((command) => ({
-			id: `builtin:${command.name}`,
-			section: "CLI",
-			label: `/${command.name}`,
-			hint: command.description,
-			commandName: command.name,
-			source: "builtin",
-		}));
-		const builtinNames = new Set(builtinItems.map((item) => item.commandName));
-		const runtimeItems: SlashPaletteItem[] = this.slashRuntimeCommands
-			.filter((command) => !builtinNames.has(command.name))
-			.map((command) => ({
-				id: `${command.rawSource || command.source}:${command.name}`,
-				section: this.slashSectionForSource(command.source),
-				label: `/${command.name}`,
-				hint: command.description,
-				commandName: command.name,
-				source: command.source,
-			}));
-		return [...builtinItems, ...runtimeItems];
-	}
-
-	private slashQueryToken(): string {
-		const raw = this.slashPaletteQuery.trim();
-		if (!raw) return "";
-		const [token] = raw.split(/\s+/, 1);
-		return (token || "").toLowerCase();
-	}
-
-	private matchesSlashQuery(query: string, ...values: string[]): boolean {
-		if (!query) return true;
-		const haystack = values.join(" ").toLowerCase();
-		return haystack.includes(query);
+		return createSlashPaletteItems(this.slashRuntimeCommands);
 	}
 
 	private getSlashPaletteItems(): SlashPaletteItem[] {
 		if (!this.slashPaletteOpen) return [];
-		const query = this.slashQueryToken();
-		const allItems = this.buildAllSlashPaletteItems();
-		if (!query) return allItems;
-		const startsWith: SlashPaletteItem[] = [];
-		const contains: SlashPaletteItem[] = [];
-		for (const item of allItems) {
-			if (!this.matchesSlashQuery(query, item.commandName, item.label, item.hint, item.section)) continue;
-			if (item.commandName.startsWith(query) || item.label.toLowerCase().startsWith(`/${query}`)) {
-				startsWith.push(item);
-			} else {
-				contains.push(item);
-			}
-		}
-		return [...startsWith, ...contains];
+		return filterSlashPaletteItemsByQuery(this.buildAllSlashPaletteItems(), this.slashPaletteQuery);
 	}
 
 	private findSlashPaletteItemByName(commandName: string): SlashPaletteItem | null {
-		const normalized = commandName.trim().toLowerCase();
-		if (!normalized) return null;
-		return this.buildAllSlashPaletteItems().find((item) => item.commandName === normalized) ?? null;
+		return findSlashPaletteItemByName(this.buildAllSlashPaletteItems(), commandName);
 	}
 
 	private unwrapQuotedArg(value: string): string {

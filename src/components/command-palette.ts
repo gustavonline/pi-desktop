@@ -3,16 +3,8 @@
  */
 
 import { html, nothing, render } from "lit";
-import { withRuntimeCommandUsageHint } from "../commands/slash-command-catalog.js";
+import { normalizeRuntimeSlashCommands } from "../commands/slash-command-runtime.js";
 import { rpcBridge } from "../rpc/bridge.js";
-
-interface RpcCommand {
-	name: string;
-	description?: string;
-	source?: string;
-	location?: string;
-	path?: string;
-}
 
 interface PaletteCommand {
 	id: string;
@@ -78,10 +70,10 @@ export class CommandPalette {
 	}
 
 	private async loadCommands(): Promise<void> {
-		let rpcCommands: RpcCommand[] = [];
+		let rpcCommands: Array<Record<string, unknown>> = [];
 		try {
 			const result = await rpcBridge.getCommands();
-			rpcCommands = result as unknown as RpcCommand[];
+			rpcCommands = Array.isArray(result) ? (result as Array<Record<string, unknown>>) : [];
 		} catch (err) {
 			console.error("Failed to load commands:", err);
 		}
@@ -94,19 +86,17 @@ export class CommandPalette {
 			action: action.action,
 		}));
 
-		const slashCommands: PaletteCommand[] = [];
-		for (const cmd of rpcCommands) {
-			const name = typeof cmd.name === "string" ? normalizeCommandName(cmd.name) : "";
-			if (!name) continue;
-			const source = typeof cmd.source === "string" && cmd.source.trim().length > 0 ? cmd.source.trim() : "runtime";
-			slashCommands.push({
+		const slashCommands: PaletteCommand[] = normalizeRuntimeSlashCommands(rpcCommands).map((command) => {
+			const source = command.rawSource || command.source || "runtime";
+			const name = normalizeCommandName(command.name);
+			return {
 				id: `${source}:${name}`,
 				name,
-				description: withRuntimeCommandUsageHint(name, cmd.description || `Run /${name}`),
+				description: command.description,
 				source,
 				commandText: `/${name}`,
-			});
-		}
+			};
+		});
 
 		this.commands = [...builtinCommands, ...slashCommands];
 	}
