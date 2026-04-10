@@ -21,6 +21,7 @@ export interface WorkflowMessage {
 	thinking?: string;
 	errorText?: string;
 	isStreaming?: boolean;
+	isThinkingStreaming?: boolean;
 }
 
 export interface WorkflowToolCallGroup {
