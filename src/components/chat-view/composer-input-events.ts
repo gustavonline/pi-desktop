@@ -34,7 +34,7 @@ interface HandleComposerDropEventParams {
 interface HandleComposerFilePickerChangeEventParams {
 	event: Event;
 	interactionLocked: boolean;
-	onPrepareImages: (files: FileList | File[]) => void | Promise<unknown>;
+	onPrepareFiles: (files: FileList | File[]) => void | Promise<unknown>;
 }
 
 interface HandleComposerKeyDownEventParams {
@@ -124,7 +124,7 @@ export function handleComposerDropEvent({
 export function handleComposerFilePickerChangeEvent({
 	event,
 	interactionLocked,
-	onPrepareImages,
+	onPrepareFiles,
 }: HandleComposerFilePickerChangeEventParams): void {
 	const input = event.target as HTMLInputElement;
 	if (interactionLocked) {
@@ -132,7 +132,7 @@ export function handleComposerFilePickerChangeEvent({
 		return;
 	}
 	const files = input.files;
-	if (files?.length) void onPrepareImages(files);
+	if (files?.length) void onPrepareFiles(files);
 	input.value = "";
 }
 

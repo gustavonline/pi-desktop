@@ -137,6 +137,7 @@ type UiRole = HistoryViewerRole;
 interface PendingImage {
 	id: string;
 	name: string;
+	path?: string;
 	mimeType: string;
 	data: string;
 	previewUrl: string;
@@ -2722,9 +2723,9 @@ export class ChatView {
 			const lowerPath = normalized.toLowerCase();
 			const lowerRoot = projectRoot.toLowerCase();
 			if (lowerPath === lowerRoot) {
-				token = "@.";
+				token = ".";
 			} else if (lowerPath.startsWith(`${lowerRoot}/`)) {
-				token = `@${normalized.slice(projectRoot.length + 1)}`;
+				token = `./${normalized.slice(projectRoot.length + 1)}`;
 			}
 		}
 		if (/\s/.test(token)) {
@@ -2778,6 +2779,20 @@ export class ChatView {
 		this.insertComposerTextAtCursor(tokens.join(" "));
 	}
 
+	private dedupeDroppedPaths(paths: string[]): string[] {
+		const seen = new Set<string>();
+		const unique: string[] = [];
+		for (const rawPath of paths) {
+			const normalized = this.normalizeDroppedPath(rawPath);
+			if (!normalized) continue;
+			const key = normalized.toLowerCase();
+			if (seen.has(key)) continue;
+			seen.add(key);
+			unique.push(normalized);
+		}
+		return unique;
+	}
+
 	private pathFromDroppedFile(file: File): string {
 		const maybePath = file as File & { path?: string; webkitRelativePath?: string };
 		const pathValue =
@@ -2806,6 +2821,7 @@ export class ChatView {
 					next.push({
 						id: uid("img"),
 						name,
+						path: cleanPath,
 						mimeType: mime,
 						data: base64,
 						previewUrl: `data:${mime};base64,${base64}`,
@@ -2830,8 +2846,16 @@ export class ChatView {
 
 	private handleDroppedDataTransfer(dataTransfer: DataTransfer | null): void {
 		if (!dataTransfer) return;
-		const uriPayload = dataTransfer.getData("text/uri-list") || dataTransfer.getData("text/plain") || "";
+		const customPayload = dataTransfer.getData("application/x-pi-file-path") || "";
+		const customPaths = customPayload
+			.split(/\r?\n/)
+			.map((value) => value.trim())
+			.filter(Boolean);
+		const uriPayload = [customPayload, dataTransfer.getData("text/uri-list"), dataTransfer.getData("text/plain")]
+			.map((value) => value || "")
+			.join("\n");
 		const uriPaths = this.extractFilePathsFromDropPayload(uriPayload);
+		const droppedPaths = this.dedupeDroppedPaths([...customPaths, ...uriPaths]);
 		const directFiles = Array.from(dataTransfer.files || []);
 		const fromItems = Array.from(dataTransfer.items || [])
 			.filter((item) => item.kind === "file")
@@ -2840,8 +2864,8 @@ export class ChatView {
 		const fileObjects = directFiles.length > 0 ? directFiles : fromItems;
 
 		const imageFiles = fileObjects.filter((file) => this.isImageFile(file));
-		const imagePaths = uriPaths.filter((path) => this.isImageName(this.fileNameFromPath(path)));
-		const filePathsFromUri = uriPaths.filter((path) => !this.isImageName(this.fileNameFromPath(path)));
+		const imagePaths = droppedPaths.filter((path) => this.isImageName(this.fileNameFromPath(path)));
+		const filePathsFromUri = droppedPaths.filter((path) => !this.isImageName(this.fileNameFromPath(path)));
 		const filePathsFromObjects = fileObjects
 			.filter((file) => !this.isImageFile(file))
 			.map((file) => this.pathFromDroppedFile(file))
@@ -2863,7 +2887,7 @@ export class ChatView {
 			handled = true;
 		}
 
-		const filePaths = filePathsFromUri.length > 0 ? filePathsFromUri : filePathsFromObjects;
+		const filePaths = this.dedupeDroppedPaths(filePathsFromUri.length > 0 ? filePathsFromUri : filePathsFromObjects);
 		if (filePaths.length > 0) {
 			this.appendDroppedPathReferences(filePaths);
 			handled = true;
@@ -2871,6 +2895,27 @@ export class ChatView {
 
 		if (!handled) {
 			this.pushNotice("No readable files found in drop payload", "info");
+		}
+	}
+
+	private async prepareComposerFiles(files: FileList | File[]): Promise<void> {
+		const list = Array.from(files || []);
+		if (list.length === 0) return;
+		const imageFiles = list.filter((file) => this.isImageFile(file));
+		const filePaths = this.dedupeDroppedPaths(
+			list
+				.filter((file) => !this.isImageFile(file))
+				.map((file) => this.pathFromDroppedFile(file))
+				.filter(Boolean),
+		);
+		if (imageFiles.length > 0) {
+			await this.prepareImages(imageFiles);
+		}
+		if (filePaths.length > 0) {
+			this.appendDroppedPathReferences(filePaths);
+		}
+		if (imageFiles.length === 0 && filePaths.length === 0) {
+			this.pushNotice("No readable files selected", "info");
 		}
 	}
 
@@ -2887,6 +2932,8 @@ export class ChatView {
 		for (const file of list) {
 			const safeName = file.name || `image-${Date.now()}.png`;
 			const mime = file.type || this.mimeFromFileName(safeName);
+			const rawPathHint = this.pathFromDroppedFile(file);
+			const pathHint = rawPathHint && rawPathHint !== safeName ? rawPathHint : undefined;
 			let base64 = "";
 
 			try {
@@ -2902,6 +2949,7 @@ export class ChatView {
 							next.push({
 								id: uid("img"),
 								name: safeName,
+								path: pathHint,
 								mimeType: parsedMime,
 								data: base64,
 								previewUrl: `data:${parsedMime};base64,${base64}`,
@@ -2924,6 +2972,7 @@ export class ChatView {
 			next.push({
 				id: uid("img"),
 				name: safeName,
+				path: pathHint,
 				mimeType: mime,
 				data: base64,
 				previewUrl: `data:${mime};base64,${base64}`,
@@ -4168,7 +4217,35 @@ export class ChatView {
 		});
 	}
 
-	private openComposerFilePicker(): void {
+	private async openComposerFilePicker(): Promise<void> {
+		if (this.isComposerInteractionLocked()) return;
+		try {
+			const { open } = await import("@tauri-apps/plugin-dialog");
+			const selected = await open({
+				multiple: true,
+				directory: false,
+				title: "Attach files",
+			});
+			if (selected === null) return;
+			const paths = this.dedupeDroppedPaths(
+				(Array.isArray(selected) ? selected : [selected])
+					.filter((value): value is string => typeof value === "string")
+					.map((value) => value.trim())
+					.filter(Boolean),
+			);
+			if (paths.length === 0) return;
+			const imagePaths = paths.filter((path) => this.isImageName(this.fileNameFromPath(path)));
+			const filePaths = paths.filter((path) => !this.isImageName(this.fileNameFromPath(path)));
+			if (imagePaths.length > 0) {
+				await this.prepareImagesFromPaths(imagePaths, { quietIfNone: true });
+			}
+			if (filePaths.length > 0) {
+				this.appendDroppedPathReferences(filePaths);
+			}
+			return;
+		} catch {
+			// fallback to file input
+		}
 		const input = this.container.querySelector("#file-picker") as HTMLInputElement | null;
 		input?.click();
 	}
@@ -4363,7 +4440,7 @@ export class ChatView {
 		handleComposerFilePickerChangeEvent({
 			event,
 			interactionLocked,
-			onPrepareImages: (files) => this.prepareImages(files),
+			onPrepareFiles: (files) => this.prepareComposerFiles(files),
 		});
 	}
 
@@ -4429,7 +4506,6 @@ export class ChatView {
 					<input
 						id="file-picker"
 						type="file"
-						accept="image/*"
 						multiple
 						style="display:none"
 						@change=${(event: Event) => this.handleComposerFilePickerChange(event, interactionLocked)}

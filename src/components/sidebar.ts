@@ -2214,10 +2214,25 @@ export class Sidebar {
 
 		return html`
 			<div>
-				<div class="sidebar-file-row ${node.isDirectory ? "dir" : "file"}" style=${`--indent:${indent}px`}>
+				<div
+					class="sidebar-file-row ${node.isDirectory ? "dir" : "file"}"
+					style=${`--indent:${indent}px`}
+					?draggable=${!node.isDirectory && !fileRenameActive}
+					@dragstart=${(event: DragEvent) => {
+						if (node.isDirectory || fileRenameActive) {
+							event.preventDefault();
+							return;
+						}
+						const transfer = event.dataTransfer;
+						if (!transfer) return;
+						transfer.effectAllowed = "copy";
+						transfer.setData("text/plain", node.path);
+						transfer.setData("text/uri-list", toFileUri(node.path));
+						transfer.setData("application/x-pi-file-path", node.path);
+					}}
+				>
 					<button
 						class="sidebar-file-main ${activeFile ? "active-file" : ""}"
-						?draggable=${!node.isDirectory && !fileRenameActive}
 						@click=${() => {
 							if (node.isDirectory) {
 								void this.toggleDirectory(projectId, node);
@@ -2229,18 +2244,6 @@ export class Sidebar {
 								this.render();
 								this.openFile(projectId, node.path);
 							}
-						}}
-						@dragstart=${(event: DragEvent) => {
-							if (node.isDirectory || fileRenameActive) {
-								event.preventDefault();
-								return;
-							}
-							const transfer = event.dataTransfer;
-							if (!transfer) return;
-							transfer.effectAllowed = "copy";
-							transfer.setData("text/plain", node.path);
-							transfer.setData("text/uri-list", toFileUri(node.path));
-							transfer.setData("application/x-pi-file-path", node.path);
 						}}
 						@contextmenu=${(e: MouseEvent) => this.handleFileContextMenu(e, projectId, node)}
 						title=${node.displayPath}

@@ -20,7 +20,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Terminal UX now uses a VS Code-style bottom dock inside chat instead of opening as a standalone terminal tab/pane, with an xterm-powered shell surface and close/clear dock controls.
 - Added fast docked-terminal toggles via command palette (`terminal`) and slash command (`/terminal`); keyboard shortcut parity across OS/layouts is being tracked in a dedicated follow-up.
 - Composer follow-up queue UX is now minimal and docked near the composer instead of injecting speculative queued bubbles into the chat timeline.
-- Files can now be dragged from the Files sidebar into the composer; non-image drops are inserted as inline path references (`@relative/path` when inside the active project) so paths can be edited directly before send.
+- Files can now be dragged from the Files sidebar into the composer; non-image drops are inserted as inline path references (`./relative/path` when inside the active project) so paths can be edited directly before send.
 - Pending image attachments in composer now render as compact inline chips in the same input row instead of a separate thumbnail strip above the textarea.
 - Welcome project dropdown now lists all projects in the current workspace and supports direct project switching (plus quick actions for add project, packages, and settings).
 - Welcome heading copy now rotates between Pi-style idle phrases for a calmer ambient experience.
