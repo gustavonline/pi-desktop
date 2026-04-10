@@ -62,6 +62,7 @@ import type { ForkOption, HistoryTreeRow, HistoryViewerRole } from "./chat-view/
 import { loadWelcomeDashboardInventory } from "./chat-view/welcome-dashboard-data.js";
 import { renderCenteredWelcomeView } from "./chat-view/welcome-dashboard-view.js";
 import { renderAssistantWorkflowView } from "./chat-view/assistant-workflow-view.js";
+import { mapBackendMessages as mapBackendMessagesView } from "./chat-view/backend-message-mapper.js";
 import { renderGitRepoControlView } from "./chat-view/git-repo-control-view.js";
 import {
 	renderAssistantMessageRow,
@@ -1597,173 +1598,14 @@ export class ChatView {
 	}
 
 	private mapBackendMessages(backendMessages: Array<Record<string, unknown>>): UiMessage[] {
-		const mapped: UiMessage[] = [];
-		const toolCallMap = new Map<string, ToolCallBlock>();
-
-		for (const raw of backendMessages) {
-			const role = raw.role as string | undefined;
-			if (!role) continue;
-			const sessionEntryId = typeof raw.id === "string" && raw.id.trim().length > 0 ? raw.id.trim() : undefined;
-
-			switch (role) {
-				case "user": {
-					const text = this.extractText(raw.content);
-					const attachments = this.extractImages(raw.content);
-					mapped.push({
-						id: uid("user"),
-						sessionEntryId,
-						role: "user",
-						text,
-						attachments,
-						toolCalls: [],
-					});
-					break;
-				}
-				case "assistant": {
-					const content = Array.isArray(raw.content) ? raw.content : [];
-					let text = "";
-					let thinking = "";
-					const toolCalls: ToolCallBlock[] = [];
-
-					for (const part of content) {
-						if (!part || typeof part !== "object") continue;
-						const p = part as Record<string, unknown>;
-						const type = p.type as string | undefined;
-
-						if (type === "text" && typeof p.text === "string") {
-							text += p.text;
-						}
-						const typeLower = (type ?? "").toLowerCase();
-						if (typeLower === "thinking" || typeLower === "reasoning" || typeLower.includes("thinking") || typeLower.includes("reason")) {
-							if (typeof p.thinking === "string") thinking += p.thinking;
-							else if (typeof p.reasoning === "string") thinking += p.reasoning;
-							else if (typeof p.text === "string") thinking += p.text;
-						}
-						if (type === "toolCall") {
-							const id = typeof p.id === "string" && p.id.trim().length > 0 ? p.id.trim() : uid("tc");
-							const existing = toolCalls.find((entry) => entry.id === id);
-							if (existing) {
-								existing.name = typeof p.name === "string" ? p.name : existing.name;
-								existing.args = (p.arguments as Record<string, unknown>) ?? existing.args;
-								existing.isRunning = false;
-								existing.isExpanded = false;
-								toolCallMap.set(existing.id, existing);
-								continue;
-							}
-							const tc: ToolCallBlock = {
-								id,
-								name: typeof p.name === "string" ? p.name : "tool",
-								args: (p.arguments as Record<string, unknown>) ?? {},
-								isRunning: false,
-								isExpanded: false,
-								startedAt: pickNumber(p, ["startedAt", "startTime", "timestamp", "ts"]) ?? undefined,
-								endedAt: pickNumber(p, ["endedAt", "endTime"]) ?? undefined,
-							};
-							toolCalls.push(tc);
-							toolCallMap.set(tc.id, tc);
-						}
-					}
-
-					const normalizedThinking = thinking.trim();
-					if (text.trim().length === 0 && normalizedThinking.length === 0 && toolCalls.length === 0) {
-						break;
-					}
-					mapped.push({
-						id: uid("assistant"),
-						sessionEntryId,
-						role: "assistant",
-						text,
-						thinking: normalizedThinking || undefined,
-						thinkingExpanded: this.allThinkingExpanded,
-						isThinkingStreaming: false,
-						toolCalls,
-					});
-					break;
-				}
-				case "toolResult": {
-					const toolCallId = raw.toolCallId as string | undefined;
-					const content = this.extractToolOutput(raw.content ?? raw.result ?? raw);
-					const isError = Boolean(raw.isError);
-					if (toolCallId && toolCallMap.has(toolCallId)) {
-						const tool = toolCallMap.get(toolCallId)!;
-						tool.result = content || "(no output)";
-						tool.isError = isError;
-						tool.isRunning = false;
-						tool.isExpanded = false;
-						tool.endedAt = Date.now();
-						if (!tool.startedAt) tool.startedAt = tool.endedAt;
-					} else {
-						const target = [...mapped].reverse().find((entry) => entry.role === "assistant");
-						if (target) {
-							target.toolCalls.push({
-								id: toolCallId || uid("tc"),
-								name: (typeof raw.toolName === "string" && raw.toolName.trim().length > 0 ? raw.toolName : "tool") as string,
-								args: {},
-								result: content || "(no output)",
-								isError,
-								isRunning: false,
-								isExpanded: false,
-								startedAt: Date.now(),
-								endedAt: Date.now(),
-							});
-						} else {
-							mapped.push({
-								id: uid("toolResult"),
-								sessionEntryId,
-								role: "system",
-								text: `Tool result${isError ? " (error)" : ""}:\n${content || "(no output)"}`,
-								label: "tool-result",
-								toolCalls: [],
-							});
-						}
-					}
-					break;
-				}
-				case "bashExecution": {
-					const command = typeof raw.command === "string" ? raw.command : "bash";
-					const output = typeof raw.output === "string" ? raw.output : "";
-					mapped.push({
-						id: uid("bash"),
-						sessionEntryId,
-						role: "system",
-						text: `!${command}\n${output}`,
-						label: "bash",
-						toolCalls: [],
-					});
-					break;
-				}
-				case "branchSummary":
-				case "compactionSummary": {
-					const summary = typeof raw.summary === "string" ? raw.summary : this.extractText(raw.content);
-					mapped.push({
-						id: uid(role),
-						sessionEntryId,
-						role: "system",
-						text: summary,
-						label: role === "branchSummary" ? "branch summary" : "compaction summary",
-						toolCalls: [],
-					});
-					break;
-				}
-				case "custom": {
-					const customType = typeof raw.customType === "string" ? raw.customType : "custom";
-					const content = this.extractText(raw.content);
-					mapped.push({
-						id: uid("custom"),
-						sessionEntryId,
-						role: "custom",
-						text: content,
-						label: customType,
-						toolCalls: [],
-					});
-					break;
-				}
-				default:
-					break;
-			}
-		}
-
-		return mapped;
+		return mapBackendMessagesView({
+			backendMessages,
+			allThinkingExpanded: this.allThinkingExpanded,
+			createId: uid,
+			extractText: this.extractText.bind(this),
+			extractImages: this.extractImages.bind(this),
+			extractToolOutput: this.extractToolOutput.bind(this),
+		}) as UiMessage[];
 	}
 
 	private extractText(content: unknown): string {
