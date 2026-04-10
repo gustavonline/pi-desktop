@@ -1335,13 +1335,12 @@ export class ChatView {
 		try {
 			if (action === "login") {
 				if (DEFAULT_OAUTH_PROVIDER_SET.has(providerKey)) {
-					const loginCommand = `pi login ${providerKey}`;
 					if (this.onOpenTerminal) {
-						await this.onOpenTerminal(loginCommand);
-						this.pushNotice(`Opened terminal and started OAuth login helper for ${providerLabel}`, "info");
+						await this.onOpenTerminal("pi");
+						this.pushNotice(`Opened terminal. In Pi, type /login and select ${providerLabel}.`, "info");
 						return;
 					}
-					this.pushNotice(`Open terminal and run: ${loginCommand}`, "info");
+					this.pushNotice(`Open terminal, run pi, then type /login and select ${providerLabel}.`, "info");
 					return;
 				}
 				const openedPackageConfig = await this.openProviderSetup(providerKey);
@@ -6532,7 +6531,9 @@ export class ChatView {
 														? group.authSource === "environment"
 															? "Configured from environment variable"
 															: `Logout from ${group.providerLabel}`
-														: `Set up ${group.providerLabel}`;
+														: group.isDefaultOAuthProvider
+															? `Open terminal login for ${group.providerLabel} (run pi, then /login)`
+															: `Set up ${group.providerLabel}`;
 													return html`
 														<div class="model-picker-provider-row ${group.providerKey === resolvedActiveProvider ? "active" : ""} ${group.authConfigured ? "" : "unauth"}">
 															<button
@@ -6585,12 +6586,16 @@ export class ChatView {
 																		? activeProviderGroup.isDefaultOAuthProvider
 																			? "Connected, but no models are available right now. Try /reload after login changes."
 																			: "Connected, but no models are loaded for this provider. Install/enable its package in Packages, then run /reload."
-																		: "Not connected yet. Use Login to set up this provider."}
+																		: activeProviderGroup.isDefaultOAuthProvider
+																								? "Not connected yet. Click Login, then in terminal run pi and type /login."
+																								: "Not connected yet. Use Login to set up this provider."}
 																</div>
 															`
 															: html`
 																${!activeProviderGroup.authConfigured
-																	? html`<div class="model-picker-auth-hint">Not connected yet. Use Login to set up this provider.</div>`
+																	? html`<div class="model-picker-auth-hint">${activeProviderGroup.isDefaultOAuthProvider
+																							? "Not connected yet. Click Login, then in terminal run pi and type /login."
+																							: "Not connected yet. Use Login to set up this provider."}</div>`
 																	: nothing}
 																${activeProviderGroup.models.map((model) => {
 																	const nextValue = `${model.provider}::${model.id}`;

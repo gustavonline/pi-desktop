@@ -223,7 +223,7 @@ export class TerminalPanel {
 				domEvent.preventDefault();
 				if (this.runningInteractive && this.runningChild) {
 					if (domEvent.key === "Enter") {
-						this.writeToRunningChild("\n");
+						this.writeToRunningChild("\r");
 						return;
 					}
 					if (domEvent.key === "Backspace") {
@@ -480,15 +480,31 @@ export class TerminalPanel {
 			if (loginMatch) {
 				const requestedProvider = (loginMatch[1] ?? "").trim().toLowerCase();
 				const infoText = requestedProvider
-					? `Running Pi OAuth helper. Use /login and select ${requestedProvider} in the provider picker.`
-					: "Running Pi OAuth helper. Use /login in the terminal picker.";
+					? `Running Pi in interactive mode. Type /login and select ${requestedProvider} in the provider picker.`
+					: "Running Pi in interactive mode. Type /login in the terminal picker.";
 				return {
 					shellCommand: piCommand,
 					infoText,
 					interactive: true,
-					initialInput: ["/login\n"],
-					initialInputStartDelayMs: 1000,
-					initialInputInterChunkDelayMs: 220,
+					initialInput: [],
+					initialInputStartDelayMs: 0,
+					initialInputInterChunkDelayMs: 0,
+				};
+			}
+
+			const logoutMatch = trimmed.match(/^pi\s+logout(?:\s+([a-z0-9._-]+))?$/i);
+			if (logoutMatch) {
+				const requestedProvider = (logoutMatch[1] ?? "").trim().toLowerCase();
+				const infoText = requestedProvider
+					? `Running Pi in interactive mode. Type /logout and select ${requestedProvider} in the provider picker.`
+					: "Running Pi in interactive mode. Type /logout in the terminal picker.";
+				return {
+					shellCommand: piCommand,
+					infoText,
+					interactive: true,
+					initialInput: [],
+					initialInputStartDelayMs: 0,
+					initialInputInterChunkDelayMs: 0,
 				};
 			}
 		}
