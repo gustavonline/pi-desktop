@@ -81,6 +81,14 @@ function shellSingleQuote(value: string): string {
 	return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
+const BUILTIN_OAUTH_PROVIDER_ORDER = [
+	"anthropic",
+	"github-copilot",
+	"google-gemini-cli",
+	"google-antigravity",
+	"openai-codex",
+] as const;
+
 export class TerminalPanel {
 	private container: HTMLElement;
 	private cwd: string | null = null;
@@ -99,6 +107,7 @@ export class TerminalPanel {
 	private shellProfile: ShellProfile | null = null;
 	private resolvingShellProfile: Promise<ShellProfile> | null = null;
 	private runningChild: Child | null = null;
+	private runningInteractive = false;
 	private queuedCommands: string[] = [];
 
 	constructor(container: HTMLElement) {
@@ -196,6 +205,39 @@ export class TerminalPanel {
 
 			if (this.running) {
 				domEvent.preventDefault();
+				if (this.runningInteractive && this.runningChild) {
+					if (domEvent.key === "Enter") {
+						this.writeToRunningChild("\n");
+						return;
+					}
+					if (domEvent.key === "Backspace") {
+						this.writeToRunningChild("\x7f");
+						return;
+					}
+					if (domEvent.key === "ArrowUp") {
+						this.writeToRunningChild("\x1b[A");
+						return;
+					}
+					if (domEvent.key === "ArrowDown") {
+						this.writeToRunningChild("\x1b[B");
+						return;
+					}
+					if (domEvent.key === "ArrowLeft") {
+						this.writeToRunningChild("\x1b[D");
+						return;
+					}
+					if (domEvent.key === "ArrowRight") {
+						this.writeToRunningChild("\x1b[C");
+						return;
+					}
+					if (domEvent.key === "Tab") {
+						this.writeToRunningChild("\t");
+						return;
+					}
+					if (isPrintableKey(domEvent, key)) {
+						this.writeToRunningChild(key);
+					}
+				}
 				return;
 			}
 
@@ -293,6 +335,14 @@ export class TerminalPanel {
 		this.replaceCurrentInput("");
 	}
 
+	private writeToRunningChild(value: string): void {
+		const child = this.runningChild;
+		if (!child || !value) return;
+		void child.write(value).catch(() => {
+			// Ignore transient stdin write failures while process is exiting.
+		});
+	}
+
 	private scrollTerminalToBottom(): void {
 		requestAnimationFrame(() => {
 			this.xterm?.scrollToBottom();
@@ -369,30 +419,59 @@ export class TerminalPanel {
 		}
 	}
 
-	private buildPiLoginBridgeCommand(rawProviderArg: string): string | null {
-		const provider = rawProviderArg.trim().toLowerCase();
-		const slashCommand = provider ? `/login ${provider}` : "/login";
-		const scriptedInput = shellSingleQuote(`${slashCommand}\n\n`);
+	private buildPiInteractiveBridgeCommand(): string | null {
 		const platform = navigator.platform.toLowerCase();
 		if (platform.includes("win")) return null;
 		if (platform.includes("mac")) {
-			return `printf %s ${scriptedInput} | script -q /dev/null pi`;
+			return "script -q /dev/null pi";
 		}
-		return `printf %s ${scriptedInput} | script -q -c ${shellSingleQuote("pi")} /dev/null`;
+		return `script -q -c ${shellSingleQuote("pi")} /dev/null`;
 	}
 
-	private resolveSpecialShellCommand(command: string): { shellCommand: string; infoText: string | null } {
-		const loginMatch = command.match(/^pi\s+login(?:\s+([a-z0-9._-]+))?$/i);
-		if (loginMatch) {
-			const bridgeCommand = this.buildPiLoginBridgeCommand(loginMatch[1] ?? "");
-			if (bridgeCommand) {
+	private resolveSpecialShellCommand(command: string): {
+		shellCommand: string;
+		infoText: string | null;
+		interactive: boolean;
+		initialInput: string[];
+	} {
+		const trimmed = command.trim();
+		const piCommand = this.buildPiInteractiveBridgeCommand();
+		if (piCommand) {
+			if (/^pi$/i.test(trimmed)) {
 				return {
-					shellCommand: bridgeCommand,
-					infoText: "Running Pi OAuth helper (pi + /login) in pseudo-terminal mode…",
+					shellCommand: piCommand,
+					infoText: "Running pi in interactive terminal mode.",
+					interactive: true,
+					initialInput: [],
+				};
+			}
+			const loginMatch = trimmed.match(/^pi\s+login(?:\s+([a-z0-9._-]+))?$/i);
+			if (loginMatch) {
+				const requestedProvider = (loginMatch[1] ?? "").trim().toLowerCase();
+				const infoText = requestedProvider
+					? `Running Pi OAuth helper. Select ${requestedProvider} in the /login provider picker.`
+					: "Running Pi OAuth helper. Use /login in the terminal picker.";
+				const initialInput: string[] = ["/login\n"];
+				const providerIndex = BUILTIN_OAUTH_PROVIDER_ORDER.indexOf(requestedProvider as (typeof BUILTIN_OAUTH_PROVIDER_ORDER)[number]);
+				if (providerIndex >= 0) {
+					const down = "\x1b[B".repeat(providerIndex);
+					if (down) initialInput.push(down);
+					initialInput.push("\n");
+				}
+				return {
+					shellCommand: piCommand,
+					infoText,
+					interactive: true,
+					initialInput,
 				};
 			}
 		}
-		return { shellCommand: command, infoText: null };
+		return {
+			shellCommand: command,
+			infoText: null,
+			interactive: false,
+			initialInput: [],
+		};
 	}
 
 	private async ensureShellProfile(): Promise<ShellProfile> {
@@ -451,9 +530,13 @@ export class TerminalPanel {
 		};
 	}
 
-	private async executeShell(command: string, options: { streamOutput?: boolean } = {}): Promise<TerminalExecResult> {
+	private async executeShell(
+		command: string,
+		options: { streamOutput?: boolean; initialInput?: string[] } = {},
+	): Promise<TerminalExecResult> {
 		const profile = await this.ensureShellProfile();
 		const streamOutput = options.streamOutput !== false;
+		const initialInput = Array.isArray(options.initialInput) ? options.initialInput : [];
 		const shellCommand = Command.create(profile.name, this.buildShellArgs(profile, command), {
 			cwd: this.cwd || undefined,
 		});
@@ -496,6 +579,23 @@ export class TerminalPanel {
 				void this.executeShellViaExecute(profile, command, streamOutput).then(settleWithResult).catch(settleWithError);
 			};
 
+			const sendInitialInput = async (child: Child): Promise<void> => {
+				if (initialInput.length === 0) return;
+				for (let i = 0; i < initialInput.length; i += 1) {
+					const chunk = initialInput[i] ?? "";
+					if (!chunk) continue;
+					try {
+						await child.write(chunk);
+					} catch (err) {
+						this.writeStdErr(err instanceof Error ? err.message : String(err));
+						return;
+					}
+					if (i < initialInput.length - 1) {
+						await new Promise((resolve) => setTimeout(resolve, 140));
+					}
+				}
+			};
+
 			const onStdout = (payload: string) => {
 				const text = normalizeText(payload);
 				if (!text) return;
@@ -534,6 +634,7 @@ export class TerminalPanel {
 				.then((child) => {
 					spawnedChild = child;
 					this.runningChild = child;
+					void sendInitialInput(child);
 				})
 				.catch((error) => {
 					if (this.isSpawnScopeError(error)) {
@@ -597,12 +698,16 @@ export class TerminalPanel {
 		}
 
 		this.running = true;
+		this.runningInteractive = resolved.interactive;
 		this.render();
 		try {
 			if (this.isCdCommand(command)) {
 				await this.executeCdCommand(command);
 			} else {
-				const result = await this.executeShell(resolved.shellCommand, { streamOutput: true });
+				const result = await this.executeShell(resolved.shellCommand, {
+					streamOutput: true,
+					initialInput: resolved.initialInput,
+				});
 				if (typeof result.code === "number" && result.code !== 0 && !result.stderr.trim()) {
 					this.writeStdErr(`exit ${result.code}`);
 				}
@@ -611,6 +716,7 @@ export class TerminalPanel {
 			this.writeStdErr(err instanceof Error ? err.message : String(err));
 		} finally {
 			this.running = false;
+			this.runningInteractive = false;
 			this.render();
 			this.printPrompt();
 			const next = this.queuedCommands.shift();
