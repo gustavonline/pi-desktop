@@ -27,6 +27,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Polished markdown code blocks toward a cleaner Codex-like appearance (single surface, tightened header/content spacing, smaller copy affordance, less chrome).
 - Composer slash palette now shows CLI-first command groups with runtime-discovered extension/prompt/skill commands, while keeping visual chrome minimal.
 - Extracted shared slash-command modules for both catalog metadata and runtime parsing/filtering (`slash-command-catalog` + `slash-command-runtime`), and aligned Command Palette + Composer to reuse the same normalization/filter logic instead of duplicating command handling.
+- Moved model/provider display + `pi --list-models` parsing utilities into `src/models/model-options.ts` so model catalog logic is separated from chat view orchestration.
 - Compaction status rendering was reduced to a minimal workflow-style row with collapsed-by-default details instead of a heavy status card.
 - Auto-rename extension recommendation and desktop config bridge now target `@byteowlz/pi-auto-rename`, with dynamic command-to-package resolution for config-intent slash commands (including `/auto-rename config`) instead of hardcoded package-name routing.
 - Recommended notifications extension now defaults to `pi-smart-voice-notify`, and Packages auto-migrates legacy `pi-desktop-notify` installs by installing the new package and removing the old one.
