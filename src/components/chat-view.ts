@@ -23,7 +23,6 @@ import {
 	type RuntimeSlashCommand,
 	type SlashCommandSource,
 	type SlashPaletteItem,
-	type SlashPaletteSection,
 } from "../commands/slash-command-runtime.js";
 import {
 	formatModelDisplayName,
@@ -46,6 +45,16 @@ import {
 	renderPendingImagesView,
 	renderQueuedComposerMessagesView,
 } from "./chat-view/composer-fragments-view.js";
+import {
+	handleComposerDragOverEvent,
+	handleComposerDropEvent,
+	handleComposerFilePickerChangeEvent,
+	handleComposerInputEvent,
+	handleComposerKeyDownEvent,
+	handleComposerPasteEvent,
+} from "./chat-view/composer-input-events.js";
+import { renderSlashPaletteView } from "./chat-view/composer-slash-palette-view.js";
+import { renderComposerStatsView } from "./chat-view/composer-stats-view.js";
 import {
 	displayProviderLabel as displayProviderLabelFromCatalog,
 	isOAuthProviderId as isOAuthProviderIdInCatalog,
@@ -6075,17 +6084,6 @@ export class ChatView {
 		});
 	}
 
-	private renderQueuedComposerMessages(): TemplateResult | typeof nothing {
-		return renderQueuedComposerMessagesView(this.queuedComposerMessages, truncate);
-	}
-
-	private renderPendingImages(): TemplateResult | typeof nothing {
-		return renderPendingImagesView(this.pendingImages, truncate, (id) => this.removePendingImage(id));
-	}
-
-	private renderComposerSkillDraftPill(): TemplateResult | typeof nothing {
-		return renderComposerSkillDraftPillView(this.selectedSkillDraft, skillGlyphIcon(), () => this.removeComposerSkillDraft());
-	}
 
 	private ensureActiveSlashItemVisible(): void {
 		if (!this.slashPaletteOpen || this.slashPaletteNavigationMode !== "keyboard") return;
@@ -6101,56 +6099,117 @@ export class ChatView {
 		});
 	}
 
+	private handleSlashPaletteMouseMove(event: MouseEvent): void {
+		if (this.slashPaletteNavigationMode === "keyboard") {
+			const moved = Math.abs(event.movementX) + Math.abs(event.movementY) > 0;
+			if (!moved) return;
+			this.slashPaletteNavigationMode = "pointer";
+		}
+		const target = event.target instanceof Element ? (event.target.closest(".composer-slash-item") as HTMLElement | null) : null;
+		if (!target) return;
+		const indexRaw = target.dataset.index;
+		if (!indexRaw) return;
+		const index = Number(indexRaw);
+		if (!Number.isFinite(index)) return;
+		if (this.slashPaletteIndex !== index) {
+			this.slashPaletteIndex = index;
+			this.render();
+		}
+	}
+
 	private renderSlashPalette(items: SlashPaletteItem[]): TemplateResult | typeof nothing {
-		if (!this.slashPaletteOpen) return nothing;
-		if (this.slashCommandsLoading && items.length === 0) {
-			return html`<div class="composer-slash-menu"><div class="composer-slash-empty">Loading commands…</div></div>`;
-		}
-		if (items.length === 0) {
-			return html`<div class="composer-slash-menu"><div class="composer-slash-empty">No commands match “/${this.slashPaletteQuery}”.</div></div>`;
-		}
-		const activeIndex = Math.max(0, Math.min(this.slashPaletteIndex, items.length - 1));
-		let currentSection: SlashPaletteSection | null = null;
-		return html`
-			<div
-				class="composer-slash-menu ${this.slashPaletteNavigationMode === "keyboard" ? "keyboard-nav" : ""}"
-				@mousemove=${(event: MouseEvent) => {
-					if (this.slashPaletteNavigationMode === "keyboard") {
-						const moved = Math.abs(event.movementX) + Math.abs(event.movementY) > 0;
-						if (!moved) return;
-						this.slashPaletteNavigationMode = "pointer";
-					}
-					const target = event.target instanceof Element ? event.target.closest(".composer-slash-item") as HTMLElement | null : null;
-					if (!target) return;
-					const indexRaw = target.dataset.index;
-					if (!indexRaw) return;
-					const index = Number(indexRaw);
-					if (!Number.isFinite(index)) return;
-					if (this.slashPaletteIndex !== index) {
-						this.slashPaletteIndex = index;
-						this.render();
-					}
-				}}
-			>
-				${items.map((item, index) => {
-					const sectionChanged = item.section !== currentSection;
-					currentSection = item.section;
-					return html`
-						${sectionChanged ? html`<div class="composer-slash-section">${item.section}</div>` : nothing}
-						<button
-							class="composer-slash-item ${index === activeIndex ? "active" : ""}"
-							data-index=${String(index)}
-							@click=${() => this.selectSlashPaletteItem(item)}
-						>
-							<span class="composer-slash-item-main">
-								<span class="composer-slash-item-label">${item.label}</span>
-								<span class="composer-slash-item-hint">${item.hint}</span>
-							</span>
-						</button>
-					`;
-				})}
-			</div>
-		`;
+		return renderSlashPaletteView({
+			open: this.slashPaletteOpen,
+			loading: this.slashCommandsLoading,
+			query: this.slashPaletteQuery,
+			items,
+			activeIndex: this.slashPaletteIndex,
+			navigationMode: this.slashPaletteNavigationMode,
+			onMouseMove: (event) => this.handleSlashPaletteMouseMove(event),
+			onSelect: (item) => this.selectSlashPaletteItem(item),
+		});
+	}
+
+	private setSessionStatsHover(next: boolean): void {
+		if (this.sessionStatsHover === next) return;
+		this.sessionStatsHover = next;
+		this.render();
+	}
+
+	private handleComposerInput(event: Event, interactionLocked: boolean): void {
+		handleComposerInputEvent({
+			event,
+			interactionLocked,
+			slashPaletteOpenBefore: this.slashPaletteOpen,
+			onSetInputText: (text) => {
+				this.inputText = text;
+			},
+			onResetComposerHistoryNavigation: () => this.resetComposerHistoryNavigation(),
+			onUpdateSlashPaletteStateFromInput: () => this.updateSlashPaletteStateFromInput(),
+			onIsSlashPaletteOpen: () => this.slashPaletteOpen,
+			onRender: () => this.render(),
+		});
+	}
+
+	private handleComposerPaste(event: ClipboardEvent, interactionLocked: boolean): void {
+		handleComposerPasteEvent({
+			event,
+			interactionLocked,
+			onPrepareImages: (files) => this.prepareImages(files),
+		});
+	}
+
+	private handleComposerDragOver(event: DragEvent, interactionLocked: boolean): void {
+		handleComposerDragOverEvent({ event, interactionLocked });
+	}
+
+	private handleComposerDrop(event: DragEvent, interactionLocked: boolean): void {
+		handleComposerDropEvent({
+			event,
+			interactionLocked,
+			onHandleDroppedDataTransfer: (dataTransfer) => this.handleDroppedDataTransfer(dataTransfer),
+		});
+	}
+
+	private handleComposerKeyDown(event: KeyboardEvent, interactionLocked: boolean, isStreaming: boolean): void {
+		handleComposerKeyDownEvent({
+			event,
+			interactionLocked,
+			isStreaming,
+			modelPickerOpen: this.modelPickerOpen,
+			inputText: this.inputText,
+			hasSelectedSkillDraft: Boolean(this.selectedSkillDraft),
+			slashPaletteOpen: this.slashPaletteOpen,
+			composerHistoryIndex: this.composerHistoryIndex,
+			onCloseModelPicker: () => this.closeModelPicker(),
+			onRemoveSelectedSkillDraft: () => this.removeComposerSkillDraft(),
+			onCycleThinkingLevel: (step) => this.cycleThinkingLevel(step),
+			shouldHandleComposerHistoryKey: (ev, textarea, direction) => this.shouldHandleComposerHistoryKey(ev, textarea, direction),
+			onNavigateComposerHistory: (direction) => this.navigateComposerHistory(direction),
+			getSlashPaletteItems: () => this.getSlashPaletteItems(),
+			onSetSlashPaletteNavigationMode: (mode) => {
+				this.slashPaletteNavigationMode = mode;
+			},
+			getSlashPaletteIndex: () => this.slashPaletteIndex,
+			onSetSlashPaletteIndex: (index) => {
+				this.slashPaletteIndex = index;
+			},
+			onPreviewSlashPaletteItem: (item) => this.previewSlashPaletteItem(item),
+			onRender: () => this.render(),
+			onEnsureActiveSlashItemVisible: () => this.ensureActiveSlashItemVisible(),
+			onCloseSlashPalette: () => this.closeSlashPalette(),
+			slashQueryFromInput: () => this.slashQueryFromInput(),
+			onExecuteSlashCommandFromComposer: () => this.executeSlashCommandFromComposer(),
+			onSendMessage: (mode) => this.sendMessage(mode),
+		});
+	}
+
+	private handleComposerFilePickerChange(event: Event, interactionLocked: boolean): void {
+		handleComposerFilePickerChangeEvent({
+			event,
+			interactionLocked,
+			onPrepareImages: (files) => this.prepareImages(files),
+		});
 	}
 
 	private renderComposer(): TemplateResult {
@@ -6173,11 +6232,11 @@ export class ChatView {
 		return html`
 			<div class="composer-shell">
 				<div class="composer-inner">
-					${this.renderQueuedComposerMessages()}
+					${renderQueuedComposerMessagesView(this.queuedComposerMessages, truncate)}
 					<div class="composer-panel">
-						${this.renderPendingImages()}
+						${renderPendingImagesView(this.pendingImages, truncate, (id) => this.removePendingImage(id))}
 						<div class="composer-row">
-							${this.renderComposerSkillDraftPill()}
+							${renderComposerSkillDraftPillView(this.selectedSkillDraft, skillGlyphIcon(), () => this.removeComposerSkillDraft())}
 							<textarea
 								id="chat-input"
 								class="chat-input"
@@ -6185,117 +6244,11 @@ export class ChatView {
 								rows="1"
 								?disabled=${interactionLocked}
 								.value=${this.inputText}
-								@input=${(e: Event) => {
-									if (interactionLocked) return;
-									const ta = e.target as HTMLTextAreaElement;
-									const hadSlashPalette = this.slashPaletteOpen;
-									this.inputText = ta.value;
-									this.resetComposerHistoryNavigation();
-									this.updateSlashPaletteStateFromInput();
-									ta.style.height = "auto";
-									ta.style.height = `${Math.min(ta.scrollHeight, 220)}px`;
-									if (this.slashPaletteOpen || hadSlashPalette) {
-										this.render();
-									}
-								}}
-								@paste=${(e: ClipboardEvent) => {
-									if (interactionLocked) {
-										e.preventDefault();
-										return;
-									}
-									const items = Array.from(e.clipboardData?.items || []);
-									const files = items
-										.filter((item) => item.type.startsWith("image/"))
-										.map((item) => item.getAsFile())
-										.filter((f): f is File => Boolean(f));
-									if (files.length > 0) {
-										e.preventDefault();
-										void this.prepareImages(files);
-									}
-								}}
-								@dragover=${(e: DragEvent) => {
-									e.preventDefault();
-									if (e.dataTransfer) e.dataTransfer.dropEffect = interactionLocked ? "none" : "copy";
-								}}
-								@drop=${(e: DragEvent) => {
-									e.preventDefault();
-									if (interactionLocked) return;
-									this.handleDroppedDataTransfer(e.dataTransfer ?? null);
-								}}
-								@keydown=${(e: KeyboardEvent) => {
-									if (interactionLocked) return;
-									if (e.key === "Escape" && this.modelPickerOpen) {
-										e.preventDefault();
-										this.closeModelPicker();
-										return;
-									}
-									if ((e.key === "Backspace" || e.key === "Delete") && this.inputText.length === 0 && this.selectedSkillDraft) {
-										e.preventDefault();
-										this.removeComposerSkillDraft();
-										return;
-									}
-									if (e.key === "Tab" && e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey) {
-										e.preventDefault();
-										void this.cycleThinkingLevel(1);
-										return;
-									}
-									const textarea = e.currentTarget as HTMLTextAreaElement;
-									const canHistoryUp = e.key === "ArrowUp" && this.shouldHandleComposerHistoryKey(e, textarea, "up");
-									const canHistoryDown = e.key === "ArrowDown" && this.shouldHandleComposerHistoryKey(e, textarea, "down");
-									const historyBrowsing = this.composerHistoryIndex >= 0;
-									if (canHistoryUp && (historyBrowsing || !this.slashPaletteOpen)) {
-										e.preventDefault();
-										this.navigateComposerHistory("up");
-										return;
-									}
-									if (canHistoryDown && historyBrowsing) {
-										e.preventDefault();
-										this.navigateComposerHistory("down");
-										return;
-									}
-									const liveSlashItems = this.getSlashPaletteItems();
-									if (this.slashPaletteOpen && liveSlashItems.length > 0) {
-										if (e.key === "ArrowDown") {
-											e.preventDefault();
-											this.slashPaletteNavigationMode = "keyboard";
-											this.slashPaletteIndex = (this.slashPaletteIndex + 1) % liveSlashItems.length;
-											const item = liveSlashItems[this.slashPaletteIndex];
-											if (item) this.previewSlashPaletteItem(item);
-											this.render();
-											this.ensureActiveSlashItemVisible();
-											return;
-										}
-										if (e.key === "ArrowUp") {
-											e.preventDefault();
-											this.slashPaletteNavigationMode = "keyboard";
-											this.slashPaletteIndex = (this.slashPaletteIndex - 1 + liveSlashItems.length) % liveSlashItems.length;
-											const item = liveSlashItems[this.slashPaletteIndex];
-											if (item) this.previewSlashPaletteItem(item);
-											this.render();
-											this.ensureActiveSlashItemVisible();
-											return;
-										}
-									}
-									if (this.slashPaletteOpen && e.key === "Escape") {
-										e.preventDefault();
-										this.closeSlashPalette();
-										this.render();
-										return;
-									}
-									if (e.key === "Enter" && !e.shiftKey) {
-										e.preventDefault();
-										if (!this.selectedSkillDraft && this.slashQueryFromInput() !== null) {
-											void this.executeSlashCommandFromComposer();
-											return;
-										}
-										if (e.altKey) {
-											void this.sendMessage("followUp");
-										} else {
-											const mode = isStreaming ? "steer" : "prompt";
-											void this.sendMessage(mode);
-										}
-									}
-								}}
+								@input=${(event: Event) => this.handleComposerInput(event, interactionLocked)}
+								@paste=${(event: ClipboardEvent) => this.handleComposerPaste(event, interactionLocked)}
+								@dragover=${(event: DragEvent) => this.handleComposerDragOver(event, interactionLocked)}
+								@drop=${(event: DragEvent) => this.handleComposerDrop(event, interactionLocked)}
+								@keydown=${(event: KeyboardEvent) => this.handleComposerKeyDown(event, interactionLocked, isStreaming)}
 							></textarea>
 						</div>
 						${this.renderSlashPalette(slashItems)}
@@ -6304,48 +6257,18 @@ export class ChatView {
 
 					<div class="composer-under-row">
 						${this.renderGitRepoControl()}
-						<div class="composer-stats-slot">
-							<div
-								class="session-stats-wrap"
-								@mouseenter=${() => {
-									this.sessionStatsHover = true;
-									this.render();
-								}}
-								@mouseleave=${() => {
-									this.sessionStatsHover = false;
-									this.render();
-								}}
-							>
-								<div class="session-stats-inline">
-									<button
-										type="button"
-										class="session-stats-ring ${this.refreshingSessionStats ? "loading" : ""}"
-										aria-label=${this.sessionStatsTooltip()}
-									>
-										<svg viewBox="0 0 24 24" aria-hidden="true">
-											<circle class="session-stats-ring-track" cx="12" cy="12" r=${ringRadius}></circle>
-											<circle
-												class="session-stats-ring-progress"
-												cx="12"
-												cy="12"
-												r=${ringRadius}
-												style=${`stroke-dasharray:${circumference};stroke-dashoffset:${strokeOffset};`}
-											></circle>
-										</svg>
-									</button>
-									<span class="session-stats-percent">${ratioPercent}</span>
-								</div>
-								${this.sessionStatsHover
-									? html`
-										<div class="session-stats-popover">
-											${statsLines.length > 0
-												? statsLines.map((line) => html`<div>${line}</div>`)
-												: html`<div>Session stats unavailable</div>`}
-										</div>
-									`
-									: nothing}
-							</div>
-						</div>
+						${renderComposerStatsView({
+							hover: this.sessionStatsHover,
+							refreshing: this.refreshingSessionStats,
+							tooltip: this.sessionStatsTooltip(),
+							ratioPercent,
+							ringRadius,
+							circumference,
+							strokeOffset,
+							statsLines,
+							onMouseEnter: () => this.setSessionStatsHover(true),
+							onMouseLeave: () => this.setSessionStatsHover(false),
+						})}
 					</div>
 
 					<input
@@ -6354,15 +6277,7 @@ export class ChatView {
 						accept="image/*"
 						multiple
 						style="display:none"
-						@change=${(e: Event) => {
-							if (interactionLocked) {
-								(e.target as HTMLInputElement).value = "";
-								return;
-							}
-							const files = (e.target as HTMLInputElement).files;
-							if (files?.length) void this.prepareImages(files);
-							(e.target as HTMLInputElement).value = "";
-						}}
+						@change=${(event: Event) => this.handleComposerFilePickerChange(event, interactionLocked)}
 					/>
 				</div>
 			</div>
