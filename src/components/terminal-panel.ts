@@ -480,14 +480,14 @@ export class TerminalPanel {
 			if (loginMatch) {
 				const requestedProvider = (loginMatch[1] ?? "").trim().toLowerCase();
 				const infoText = requestedProvider
-					? `Running Pi in interactive mode. Type /login and select ${requestedProvider} in the provider picker.`
-					: "Running Pi in interactive mode. Type /login in the terminal picker.";
+					? `Running Pi in interactive mode. Starting /login automatically; then select ${requestedProvider} in the provider picker.`
+					: "Running Pi in interactive mode. Starting /login automatically.";
 				return {
 					shellCommand: piCommand,
 					infoText,
 					interactive: true,
-					initialInput: [],
-					initialInputStartDelayMs: 0,
+					initialInput: ["/login\r"],
+					initialInputStartDelayMs: 1000,
 					initialInputInterChunkDelayMs: 0,
 				};
 			}
