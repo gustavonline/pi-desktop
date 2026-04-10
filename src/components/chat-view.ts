@@ -63,6 +63,13 @@ import { loadWelcomeDashboardInventory } from "./chat-view/welcome-dashboard-dat
 import { renderCenteredWelcomeView } from "./chat-view/welcome-dashboard-view.js";
 import { renderAssistantWorkflowView } from "./chat-view/assistant-workflow-view.js";
 import {
+	renderAssistantMessageRow,
+	renderChangelogMessageRow,
+	renderCompactionCycleRow,
+	renderMessageTimelineRows,
+	renderSystemMessageRow,
+} from "./chat-view/message-timeline-view.js";
+import {
 	collectAssistantWorkflow,
 	isStandaloneCodeBlockMarkdown,
 	normalizeThinkingText,
@@ -5160,184 +5167,55 @@ export class ChatView {
 	}
 
 	private renderMessageTimeline(): TemplateResult[] {
-		const rows: TemplateResult[] = [];
-		const compactionInsertAt = this.compactionCycle
-			? Math.max(0, Math.min(this.compactionInsertIndex ?? this.messages.length, this.messages.length))
-			: null;
-		let compactionInserted = false;
-		const maybeInsertCompaction = (position: number): void => {
-			if (compactionInserted) return;
-			if (compactionInsertAt === null) return;
-			if (position !== compactionInsertAt) return;
-			const row = this.renderCompactionCycle();
-			if (row !== nothing) {
-				rows.push(row as TemplateResult);
-			}
-			compactionInserted = true;
-		};
-
-		for (let index = 0; index < this.messages.length; index += 1) {
-			maybeInsertCompaction(index);
-			const msg = this.messages[index];
-			if (msg.role === "assistant") {
-				const workflowCandidate = this.collectAssistantWorkflow(index);
-				if (workflowCandidate) {
-					rows.push(this.renderAssistantWorkflow(workflowCandidate.workflow));
-					index = workflowCandidate.nextIndex - 1;
-					continue;
-				}
-			}
-			if (msg.role === "user") {
-				rows.push(this.renderUserMessage(msg));
-				continue;
-			}
-			if (msg.role === "assistant") {
-				if (!this.hasRenderableAssistantContent(msg)) {
-					continue;
-				}
-				rows.push(this.renderAssistantMessage(msg));
-				continue;
-			}
-			if (msg.label === "changelog") {
-				rows.push(this.renderChangelogMessage(msg));
-				continue;
-			}
-			rows.push(this.renderSystemMessage(msg));
-		}
-		maybeInsertCompaction(this.messages.length);
-		return rows;
+		return renderMessageTimelineRows({
+			messages: this.messages,
+			compactionCycle: this.compactionCycle,
+			compactionInsertIndex: this.compactionInsertIndex,
+			collectAssistantWorkflow: (index) => this.collectAssistantWorkflow(index),
+			renderAssistantWorkflow: (workflow) => this.renderAssistantWorkflow(workflow),
+			renderUserMessage: (message) => this.renderUserMessage(message),
+			hasRenderableAssistantContent: (message) => this.hasRenderableAssistantContent(message),
+			renderAssistantMessage: (message) => this.renderAssistantMessage(message),
+			renderChangelogMessage: (message) => this.renderChangelogMessage(message),
+			renderSystemMessage: (message) => this.renderSystemMessage(message),
+			renderCompactionCycle: () => this.renderCompactionCycle(),
+		});
 	}
 
 	private renderAssistantMessage(msg: UiMessage): TemplateResult {
-		const trimmedText = msg.text.trim();
-		const errorLine = (msg.errorText ?? "").trim();
-		const standaloneCodeBlock = this.isStandaloneCodeBlockMarkdown(trimmedText);
-		const canCopy = Boolean(errorLine.length > 0 || (trimmedText.length > 0 && !standaloneCodeBlock));
-		const formattedErrorLine = errorLine
-			? (/^error\b[:\s-]*/i.test(errorLine) ? errorLine : `Error: ${errorLine}`)
-			: "";
-
-		return html`
-			<div class="chat-row assistant-row" data-message-id=${msg.id}>
-				<div class="message-shell assistant-message-shell">
-					<div class="assistant-block">
-						${this.renderThinking(msg)}
-						${msg.text
-							? html`
-								<div class="assistant-content">
-									<markdown-block .content=${msg.text}></markdown-block>
-								</div>
-							`
-							: nothing}
-						${formattedErrorLine ? html`<div class="assistant-error-line">${formattedErrorLine}</div>` : nothing}
-					</div>
-					<div class="message-actions">
-						${canCopy
-							? html`<button class="message-action-btn icon" title="Copy message" @click=${() => this.copyMessage(msg)}>${uiIcon("copy")}</button>`
-							: nothing}
-					</div>
-				</div>
-			</div>
-		`;
+		return renderAssistantMessageRow({
+			message: msg,
+			renderThinking: (message) => this.renderThinking(message),
+			isStandaloneCodeBlockMarkdown: (value) => this.isStandaloneCodeBlockMarkdown(value),
+			copyIcon: uiIcon("copy"),
+			onCopyMessage: (message) => this.copyMessage(message),
+		});
 	}
 
 	private renderSystemMessage(msg: UiMessage): TemplateResult {
-		const isInline = msg.label === "share" || msg.label === "auth" || msg.label === "models";
-		return html`
-			<div class="chat-row system-row ${isInline ? "system-row-inline" : ""}" data-message-id=${msg.id}>
-				<div class="system-message ${isInline ? "system-message-inline" : ""}">
-					${msg.label ? html`<div class="system-label ${isInline ? "system-label-inline" : ""}">${msg.label}</div>` : nothing}
-					<div class="system-text ${isInline ? "system-text-inline" : ""}">
-						${msg.renderAsMarkdown ? html`<markdown-block .content=${msg.text}></markdown-block>` : msg.text}
-					</div>
-				</div>
-			</div>
-		`;
+		return renderSystemMessageRow({ message: msg });
 	}
 
 	private renderChangelogMessage(msg: UiMessage): TemplateResult {
-		const expanded = Boolean(msg.collapsibleExpanded);
-		const title = msg.collapsibleTitle?.trim() || "Changelog";
-		return html`
-			<div class="chat-row assistant-row assistant-workflow-row changelog-row" data-message-id=${msg.id}>
-				<div class="message-shell assistant-message-shell">
-					<div class="assistant-block">
-						<div class="changelog-inline">
-							<button
-								class="tool-workflow-line changelog-inline-toggle"
-								@click=${() => {
-									msg.collapsibleExpanded = !expanded;
-									this.render();
-								}}
-							>
-								<span class="tool-workflow-line-text">${title}</span>
-								<span class="tool-workflow-count">${expanded ? "hide" : "show"}</span>
-							</button>
-							${expanded
-								? html`
-									<div class="tool-workflow-details changelog-inline-details">
-										<div class="tool-workflow-output changelog-inline-output">
-											<markdown-block .content=${msg.text}></markdown-block>
-										</div>
-									</div>
-								`
-								: nothing}
-						</div>
-					</div>
-				</div>
-			</div>
-		`;
+		return renderChangelogMessageRow({
+			message: msg,
+			onToggleExpanded: (message, nextExpanded) => {
+				message.collapsibleExpanded = nextExpanded;
+				this.render();
+			},
+		});
 	}
 
 	private renderCompactionCycle(): TemplateResult | typeof nothing {
-		if (!this.compactionCycle) return nothing;
-		const cycle = this.compactionCycle;
-		const completed = cycle.endedAt ?? Date.now();
-		const elapsedSeconds = Math.max(1, Math.round((completed - cycle.startedAt) / 1000));
-		const elapsed = `${elapsedSeconds}s`;
-		const title =
-			cycle.status === "running"
-				? "Compacting context..."
-				: cycle.status === "done"
-					? "Compaction complete"
-					: cycle.status === "error"
-						? "Compaction failed"
-						: "Compaction aborted";
-		const normalizedSummary = cycle.summary.trim().toLowerCase();
-		const showSummaryLine =
-			cycle.status !== "running" &&
-			Boolean(cycle.summary.trim()) &&
-			!(["compaction complete", "compaction failed", "compaction aborted", "compacting context…", "compacting context"] as string[]).includes(normalizedSummary);
-		return html`
-			<div class="chat-row assistant-row assistant-workflow-row compaction-row" data-message-id=${cycle.id}>
-				<div class="message-shell assistant-message-shell">
-					<div class="assistant-block">
-						<div class="compaction-inline">
-							<button
-								class="tool-workflow-line compaction-inline-toggle"
-								@click=${() => {
-									cycle.expanded = !cycle.expanded;
-									this.render();
-								}}
-							>
-								${cycle.status === "running" ? html`<span class="tool-workflow-inline-pi" aria-hidden="true">${piGlyphIcon()}</span>` : nothing}
-								<span class="tool-workflow-line-text ${cycle.status === "running" ? "running" : ""}">${title}</span>
-								<span class="tool-workflow-count">${elapsed}</span>
-							</button>
-							${cycle.expanded
-								? html`
-									<div class="tool-workflow-details compaction-inline-details">
-										${showSummaryLine ? html`<div class="tool-workflow-output compaction-inline-summary">${cycle.summary}</div>` : nothing}
-										${cycle.errorMessage ? html`<div class="tool-workflow-output compaction-inline-error">${cycle.errorMessage}</div>` : nothing}
-										${cycle.details.map((line) => html`<div class="tool-workflow-output compaction-inline-line">${line}</div>`)}
-									</div>
-								`
-								: nothing}
-						</div>
-					</div>
-				</div>
-			</div>
-		`;
+		return renderCompactionCycleRow({
+			cycle: this.compactionCycle,
+			piGlyphIcon,
+			onToggleExpanded: (nextExpanded) => {
+				if (!this.compactionCycle) return;
+				this.compactionCycle.expanded = nextExpanded;
+				this.render();
+			},
+		});
 	}
 
 	private renderBindingState(): TemplateResult {
