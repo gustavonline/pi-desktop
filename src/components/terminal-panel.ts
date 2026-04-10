@@ -163,13 +163,17 @@ export class TerminalPanel {
 	private applyTheme(): void {
 		if (!this.xterm) return;
 		const styles = getComputedStyle(document.documentElement);
-		const background = styles.getPropertyValue("--bg").trim() || "#0f1115";
+		const panelRoot = this.container.querySelector<HTMLElement>(".terminal-panel-root");
+		const panelStyles = panelRoot ? getComputedStyle(panelRoot) : styles;
+		const background = panelStyles.getPropertyValue("--terminal-panel-bg").trim() || styles.getPropertyValue("--bg").trim() || "#0f1115";
 		const foreground = styles.getPropertyValue("--text").trim() || "#d7dce2";
 		const muted = styles.getPropertyValue("--muted").trim() || "#95a1b2";
+		const accent = styles.getPropertyValue("--accent").trim() || foreground;
 		this.xterm.options.theme = {
 			background,
 			foreground,
-			cursor: foreground,
+			cursor: accent,
+			cursorAccent: background,
 			selectionBackground: muted,
 		};
 	}
@@ -453,18 +457,27 @@ export class TerminalPanel {
 		}
 	}
 
-	private buildPiInteractiveBridgeCommand(): string | null {
+	private getCurrentTerminalDimensions(): { cols: number; rows: number } {
+		const cols = Math.max(60, Math.floor(this.xterm?.cols ?? 120));
+		const rows = Math.max(18, Math.floor(this.xterm?.rows ?? 36));
+		return { cols, rows };
+	}
+
+	private buildPiInteractiveBridgeCommand(dimensions?: { cols: number; rows: number }): string | null {
 		const platform = navigator.platform.toLowerCase();
 		if (platform.includes("win")) return null;
+		const cols = Math.max(60, Math.floor(dimensions?.cols ?? 120));
+		const rows = Math.max(18, Math.floor(dimensions?.rows ?? 36));
+		const boot = `stty cols ${cols} rows ${rows} 2>/dev/null; exec pi`;
 		if (platform.includes("mac")) {
-			return "script -q /dev/null pi";
+			return `script -q /dev/null /bin/sh -lc ${shellSingleQuote(boot)}`;
 		}
-		return `script -q -c ${shellSingleQuote("pi")} /dev/null`;
+		return `script -q -c ${shellSingleQuote(boot)} /dev/null`;
 	}
 
 	private resolveSpecialShellCommand(command: string): TerminalCommandResolution {
 		const trimmed = command.trim();
-		const piCommand = this.buildPiInteractiveBridgeCommand();
+		const piCommand = this.buildPiInteractiveBridgeCommand(this.getCurrentTerminalDimensions());
 		if (piCommand) {
 			if (/^pi$/i.test(trimmed)) {
 				return {
@@ -781,6 +794,7 @@ export class TerminalPanel {
 			return;
 		}
 
+		this.fitAddon?.fit();
 		const resolved = this.resolveSpecialShellCommand(command);
 		if (resolved.infoText) {
 			this.writeInfo(resolved.infoText);

@@ -1685,7 +1685,8 @@ body.file-split-resizing #file-split-resize-handle::after {
 	flex-direction: column;
 	height: 100%;
 	width: 100%;
-	background: var(--bg);
+	--terminal-panel-bg: color-mix(in srgb, var(--bg-elev) 70%, var(--bg));
+	background: var(--terminal-panel-bg);
 }
 
 .terminal-resize-handle {
@@ -1714,7 +1715,7 @@ body.file-split-resizing #file-split-resize-handle::after {
 	align-items: center;
 	gap: 10px;
 	padding: 0 10px;
-	background: color-mix(in srgb, var(--bg-elev) 70%, var(--bg));
+	background: var(--terminal-panel-bg);
 }
 
 .terminal-panel-title {
@@ -1745,18 +1746,21 @@ body.file-split-resizing #file-split-resize-handle::after {
 .terminal-panel-viewport {
 	flex: 1;
 	min-height: 0;
-	padding: 0;
+	padding: 0 10px;
 	overflow: hidden;
+	background: var(--terminal-panel-bg);
 	scrollbar-gutter: stable;
 }
 
 .terminal-panel-viewport .xterm {
 	width: 100%;
 	height: 100%;
+	background: var(--terminal-panel-bg);
 }
 
 .terminal-panel-viewport .xterm .xterm-viewport {
 	overflow-y: auto;
+	background: var(--terminal-panel-bg);
 }
 
 .packages-view-root {
