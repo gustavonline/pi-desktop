@@ -1221,6 +1221,27 @@ export class ChatView {
 		this.pushNotice("Select a slash command from the menu", "info");
 	}
 
+	async runSlashCommandText(commandText: string): Promise<boolean> {
+		const parsed = this.parseSlashInput(commandText);
+		if (!parsed) return false;
+		await this.ensureSlashCommandsLoaded();
+		const exact = this.findSlashPaletteItemByName(parsed.commandName);
+		if (exact) {
+			await this.runSlashCommand(parsed.commandText, exact, parsed.args);
+			return true;
+		}
+		const fallbackItem: SlashPaletteItem = {
+			id: `adhoc:${parsed.commandName}`,
+			section: "Commands",
+			label: `/${parsed.commandName}`,
+			hint: "Run runtime slash command",
+			commandName: parsed.commandName,
+			source: "other",
+		};
+		await this.runSlashCommand(parsed.commandText, fallbackItem, parsed.args);
+		return true;
+	}
+
 	private async runSlashCommand(commandText: string, item: SlashPaletteItem, args: string): Promise<void> {
 		const trimmedCommandText = commandText.trim();
 		if (!trimmedCommandText) return;

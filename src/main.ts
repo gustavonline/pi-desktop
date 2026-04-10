@@ -3064,6 +3064,10 @@ async function initialize(): Promise<void> {
 
 		extensionUiHandler?.setEditorTextHandler((text) => chatView?.setInputText(text));
 		wireCommandPaletteBuiltins();
+		commandPalette?.setOnRunSlashCommand(async (commandText) => {
+			if (!chatView) return false;
+			return await chatView.runSlashCommandText(commandText);
+		});
 
 		const startupWorkspace = getActiveWorkspace();
 		if (startupWorkspace) {

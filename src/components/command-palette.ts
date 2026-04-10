@@ -33,6 +33,7 @@ export class CommandPalette {
 	private searchQuery = "";
 	private selectedIndex = 0;
 	private onClose: (() => void) | null = null;
+	private onRunSlashCommand: ((commandText: string) => boolean | Promise<boolean>) | null = null;
 	private builtins: BuiltinAction[] = [];
 
 	constructor(container: HTMLElement) {
@@ -46,6 +47,10 @@ export class CommandPalette {
 
 	setOnClose(callback: () => void): void {
 		this.onClose = callback;
+	}
+
+	setOnRunSlashCommand(callback: ((commandText: string) => boolean | Promise<boolean>) | null): void {
+		this.onRunSlashCommand = callback;
 	}
 
 	async open(): Promise<void> {
@@ -123,6 +128,13 @@ export class CommandPalette {
 				return;
 			}
 			const text = command.commandText || `/${command.name}`;
+			if (this.onRunSlashCommand) {
+				const handled = await this.onRunSlashCommand(text);
+				if (handled) {
+					this.close();
+					return;
+				}
+			}
 			await rpcBridge.prompt(text);
 			this.close();
 		} catch (err) {
