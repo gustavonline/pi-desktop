@@ -1231,7 +1231,7 @@ export class ChatView {
 		this.onPromptSubmitted?.();
 	}
 
-	private openModelPicker(options: { preferredProvider?: string } = {}): void {
+	private ensureModelPickerDataLoaded(): void {
 		if (!this.loadingModels && this.availableModels.length === 0) {
 			void this.loadAvailableModels();
 		}
@@ -1244,6 +1244,26 @@ export class ChatView {
 		if (!this.loadingModelCatalog && this.modelCatalog.length === 0) {
 			void this.loadModelCatalog();
 		}
+	}
+
+	private setModelPickerActiveProvider(provider: string): void {
+		const normalized = normalizeText(provider);
+		if (!normalized || this.modelPickerActiveProvider === normalized) return;
+		this.modelPickerActiveProvider = normalized;
+		this.render();
+	}
+
+	private closeModelPicker(options: { focusComposer?: boolean } = {}): void {
+		if (!this.modelPickerOpen) return;
+		this.modelPickerOpen = false;
+		this.render();
+		if (options.focusComposer) {
+			requestAnimationFrame(() => this.focusInput());
+		}
+	}
+
+	private openModelPicker(options: { preferredProvider?: string } = {}): void {
+		this.ensureModelPickerDataLoaded();
 		const preferred = normalizeText(options.preferredProvider).toLowerCase();
 		if (preferred) {
 			const providerPool = [...this.availableModels, ...this.modelCatalog];
@@ -1263,6 +1283,14 @@ export class ChatView {
 		}
 		this.modelPickerOpen = true;
 		this.render();
+	}
+
+	private toggleModelPicker(preferredProvider = ""): void {
+		if (this.modelPickerOpen) {
+			this.closeModelPicker();
+			return;
+		}
+		this.openModelPicker({ preferredProvider });
 	}
 
 	private resolveProviderHintFromModelArg(rawArg: string): string | null {
@@ -1634,15 +1662,13 @@ export class ChatView {
 		if (!this.modelPickerOpen) return;
 		const target = event.target;
 		if (target instanceof Element && target.closest(".model-picker-root")) return;
-		this.modelPickerOpen = false;
-		this.render();
+		this.closeModelPicker();
 	};
 
 	private onGlobalEscapeForModelPicker = (event: KeyboardEvent): void => {
 		if (!this.modelPickerOpen || event.key !== "Escape") return;
 		event.preventDefault();
-		this.modelPickerOpen = false;
-		this.render();
+		this.closeModelPicker();
 	};
 
 	private bindModelPickerGlobalListeners(): void {
@@ -6040,20 +6066,13 @@ export class ChatView {
 						@keydown=${(event: KeyboardEvent) => {
 							if (event.key !== "Escape") return;
 							event.preventDefault();
-							this.modelPickerOpen = false;
-							this.render();
-							requestAnimationFrame(() => {
-								const textarea = this.container.querySelector("#chat-input") as HTMLTextAreaElement | null;
-								textarea?.focus();
-							});
+							this.closeModelPicker({ focusComposer: true });
 						}}
 						@focusout=${(event: FocusEvent) => {
 							const next = event.relatedTarget as Node | null;
 							const root = event.currentTarget as HTMLElement;
 							if (next && root.contains(next)) return;
-							if (!this.modelPickerOpen) return;
-							this.modelPickerOpen = false;
-							this.render();
+							this.closeModelPicker();
 						}}
 					>
 						<button
@@ -6063,26 +6082,7 @@ export class ChatView {
 							?disabled=${interactionLocked || this.settingModel}
 							@click=${() => {
 								if (interactionLocked || this.settingModel) return;
-								if (!this.loadingModels && this.availableModels.length === 0) {
-									void this.loadAvailableModels();
-								}
-								if (!this.loadingProviderAuth) {
-									void this.loadProviderAuthStatus();
-								}
-								if (!this.oauthProviderCatalogLoading) {
-									void this.loadOAuthProviderCatalog();
-								}
-								if (!this.loadingModelCatalog && this.modelCatalog.length === 0) {
-									void this.loadModelCatalog();
-								}
-								if (this.modelPickerOpen) {
-									this.modelPickerOpen = false;
-									this.render();
-									return;
-								}
-								if (resolvedActiveProvider) this.modelPickerActiveProvider = resolvedActiveProvider;
-								this.modelPickerOpen = true;
-								this.render();
+								this.toggleModelPicker(resolvedActiveProvider);
 							}}
 						>
 							<span class="model-picker-trigger-label">${currentProviderDisplay ? `${currentModelDisplay} · ${currentProviderDisplay}` : currentModelDisplay}</span>
@@ -6111,21 +6111,9 @@ export class ChatView {
 																type="button"
 																class="model-picker-provider ${group.providerKey === resolvedActiveProvider ? "active" : ""} ${group.authConfigured ? "" : "unauth"}"
 																title=${group.authConfigured ? `${group.providerLabel} connected` : `${group.providerLabel} needs setup`}
-																@mouseenter=${() => {
-																	if (this.modelPickerActiveProvider === group.providerKey) return;
-																	this.modelPickerActiveProvider = group.providerKey;
-																	this.render();
-																}}
-																@focus=${() => {
-																	if (this.modelPickerActiveProvider === group.providerKey) return;
-																	this.modelPickerActiveProvider = group.providerKey;
-																	this.render();
-																}}
-																@click=${() => {
-																	if (this.modelPickerActiveProvider === group.providerKey) return;
-																	this.modelPickerActiveProvider = group.providerKey;
-																	this.render();
-																}}
+																@mouseenter=${() => this.setModelPickerActiveProvider(group.providerKey)}
+																@focus=${() => this.setModelPickerActiveProvider(group.providerKey)}
+																@click=${() => this.setModelPickerActiveProvider(group.providerKey)}
 															>
 																<span class="model-picker-provider-label">${group.providerLabel}</span>
 															</button>
@@ -6174,8 +6162,7 @@ export class ChatView {
 																			?disabled=${interactionLocked || this.settingModel || isDisabled}
 																			@click=${() => {
 																				if (isDisabled) return;
-																				this.modelPickerOpen = false;
-																				this.render();
+																				this.closeModelPicker();
 																				if (nextValue === currentModelValue) return;
 																				void this.setModel(model.provider, model.id);
 																			}}
@@ -6441,8 +6428,7 @@ export class ChatView {
 									if (interactionLocked) return;
 									if (e.key === "Escape" && this.modelPickerOpen) {
 										e.preventDefault();
-										this.modelPickerOpen = false;
-										this.render();
+										this.closeModelPicker();
 										return;
 									}
 									if ((e.key === "Backspace" || e.key === "Delete") && this.inputText.length === 0 && this.selectedSkillDraft) {

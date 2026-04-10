@@ -32,6 +32,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Moved model selection argument resolution (`/model` provider-hint/candidate parsing) into `src/models/model-selection.ts`, keeping selection parsing as a dedicated model-domain module.
 - Extracted model-picker provider grouping/auth-state derivation into `src/models/model-picker-provider-groups.ts`, reducing complex inline provider/model aggregation logic in `chat-view`.
 - Extracted model-picker provider auth action/hint view-model logic into `src/models/model-picker-auth-ui.ts` to remove duplicated auth-copy/action-derivation branches from `chat-view` rendering.
+- Consolidated model-picker lifecycle interactions in `chat-view` (data preloading, toggle/open/close, active-provider updates) into focused helper methods to reduce inline template event-handler duplication.
 - Compaction status rendering was reduced to a minimal workflow-style row with collapsed-by-default details instead of a heavy status card.
 - Auto-rename extension recommendation and desktop config bridge now target `@byteowlz/pi-auto-rename`, with dynamic command-to-package resolution for config-intent slash commands (including `/auto-rename config`) instead of hardcoded package-name routing.
 - Recommended notifications extension now defaults to `pi-smart-voice-notify`, and Packages auto-migrates legacy `pi-desktop-notify` installs by installing the new package and removing the old one.
