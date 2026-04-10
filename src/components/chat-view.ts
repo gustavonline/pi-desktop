@@ -59,6 +59,8 @@ import { deriveForkSessionName, buildForkEntryIdByMessageId, resolveForkEntryId 
 import { compactTreeLinePrefix, parseSessionTreeRows } from "./chat-view/history-tree-utils.js";
 import { renderHistoryViewerView } from "./chat-view/history-viewer-view.js";
 import type { ForkOption, HistoryTreeRow, HistoryViewerRole } from "./chat-view/history-viewer-types.js";
+import { loadWelcomeDashboardInventory } from "./chat-view/welcome-dashboard-data.js";
+import { renderCenteredWelcomeView } from "./chat-view/welcome-dashboard-view.js";
 import {
 	displayProviderLabel as displayProviderLabelFromCatalog,
 	isOAuthProviderId as isOAuthProviderIdInCatalog,
@@ -206,12 +208,6 @@ function uid(prefix = "id"): string {
 function truncate(value: string, len: number): string {
 	if (value.length <= len) return value;
 	return `${value.slice(0, len - 1)}…`;
-}
-
-function joinFsPath(base: string, child: string): string {
-	const sep = base.includes("\\") ? "\\" : "/";
-	const cleanBase = base.replace(/[\\/]+$/, "");
-	return `${cleanBase}${sep}${child}`;
 }
 
 function normalizeComparablePath(value: string | null | undefined): string {
@@ -5706,83 +5702,6 @@ export class ChatView {
 		return this.renderCenteredWelcome();
 	}
 
-	private async openExternalUrl(url: string): Promise<void> {
-		try {
-			const { open } = await import("@tauri-apps/plugin-shell");
-			await open(url);
-		} catch {
-			window.open(url, "_blank", "noopener,noreferrer");
-		}
-	}
-
-	private async readDirSafe(path: string): Promise<Array<{ name: string; isDirectory: boolean; isFile: boolean; isSymlink: boolean }>> {
-		try {
-			const { exists, readDir } = await import("@tauri-apps/plugin-fs");
-			if (!(await exists(path))) return [];
-			return await readDir(path);
-		} catch {
-			return [];
-		}
-	}
-
-	private async collectSkillNames(skillsRoot: string): Promise<string[]> {
-		const names = new Set<string>();
-		const queue: Array<{ path: string; depth: number }> = [{ path: skillsRoot, depth: 0 }];
-
-		while (queue.length > 0) {
-			const next = queue.shift()!;
-			if (next.depth > 5) continue;
-			const entries = await this.readDirSafe(next.path);
-			for (const entry of entries) {
-				const fullPath = joinFsPath(next.path, entry.name);
-				if (entry.isDirectory) {
-					queue.push({ path: fullPath, depth: next.depth + 1 });
-					continue;
-				}
-				if (entry.isFile && entry.name.toLowerCase() === "skill.md") {
-					const parts = next.path.replace(/\\/g, "/").split("/");
-					names.add(parts[parts.length - 1] || next.path);
-				}
-			}
-		}
-
-		return [...names].sort((a, b) => a.localeCompare(b));
-	}
-
-	private async collectExtensionNames(extensionsRoot: string): Promise<string[]> {
-		const names = new Set<string>();
-		const queue: Array<{ path: string; depth: number }> = [{ path: extensionsRoot, depth: 0 }];
-
-		while (queue.length > 0) {
-			const next = queue.shift()!;
-			if (next.depth > 2) continue;
-			const entries = await this.readDirSafe(next.path);
-			for (const entry of entries) {
-				const fullPath = joinFsPath(next.path, entry.name);
-				if (entry.isDirectory) {
-					if (next.depth > 0) names.add(entry.name);
-					queue.push({ path: fullPath, depth: next.depth + 1 });
-					continue;
-				}
-				if (entry.isFile && entry.name.toLowerCase().endsWith(".json")) {
-					names.add(entry.name.replace(/\.json$/i, ""));
-				}
-			}
-		}
-
-		return [...names].sort((a, b) => a.localeCompare(b));
-	}
-
-	private async collectThemeNames(themesRoot: string): Promise<string[]> {
-		const entries = await this.readDirSafe(themesRoot);
-		const names = entries
-			.filter((entry) => entry.isFile && entry.name.toLowerCase().endsWith(".json"))
-			.map((entry) => entry.name.replace(/\.json$/i, ""))
-			.filter(Boolean)
-			.sort((a, b) => a.localeCompare(b));
-		return names;
-	}
-
 	private async refreshWelcomeDashboard(force = false): Promise<void> {
 		if (this.projectPath) return;
 		if (this.welcomeDashboard.loading) return;
@@ -5796,39 +5715,15 @@ export class ChatView {
 		this.render();
 
 		try {
-			const { homeDir } = await import("@tauri-apps/api/path");
-			const home = await homeDir();
-			const agentRoot = joinFsPath(joinFsPath(home, ".pi"), "agent");
-			const skillsRoot = joinFsPath(agentRoot, "skills");
-			const extensionsRoot = joinFsPath(agentRoot, "extensions");
-			const themesRoot = joinFsPath(agentRoot, "themes");
-
-			const [skills, extensions, themes] = await Promise.all([
-				this.collectSkillNames(skillsRoot),
-				this.collectExtensionNames(extensionsRoot),
-				this.collectThemeNames(themesRoot),
-			]);
-
-			let currentCliVersion: string | null = null;
-			let latestCliVersion: string | null = null;
-			let updateAvailable = false;
-			try {
-				const cliStatus = await rpcBridge.getCliUpdateStatus();
-				currentCliVersion = cliStatus.current_version ?? null;
-				latestCliVersion = cliStatus.latest_version ?? null;
-				updateAvailable = cliStatus.update_available;
-			} catch {
-				// Ignore status fetch errors for welcome state.
-			}
-
+			const inventory = await loadWelcomeDashboardInventory(() => rpcBridge.getCliUpdateStatus());
 			this.welcomeDashboard = {
 				loading: false,
-				skills,
-				extensions,
-				themes,
-				currentCliVersion,
-				latestCliVersion,
-				updateAvailable,
+				skills: inventory.skills,
+				extensions: inventory.extensions,
+				themes: inventory.themes,
+				currentCliVersion: inventory.currentCliVersion,
+				latestCliVersion: inventory.latestCliVersion,
+				updateAvailable: inventory.updateAvailable,
 				error: null,
 				updatedAt: Date.now(),
 			};
@@ -5860,62 +5755,36 @@ export class ChatView {
 		const projectLabel = activeProject?.name ?? (this.projectPath ? this.fileNameFromPath(this.projectPath) : "Add project");
 		const welcomeHeadline = this.welcomeHeadlines[this.welcomeHeadlineIndex] ?? this.welcomeHeadlines[0];
 
-		return html`
-			<div class="welcome-dashboard welcome-dashboard-minimal">
-				<div class="welcome-brand-lockup" aria-hidden="true">
-					<div class="welcome-brand-mark"><img src=${brandIconUrl} alt="Pi Desktop" /></div>
-				</div>
-				<h2>${welcomeHeadline}</h2>
-				<div class="welcome-project-wrap">
-					<button
-						class="welcome-project-trigger ${hasProject ? "active" : ""}"
-						@click=${() => {
-							this.welcomeProjectMenuOpen = !this.welcomeProjectMenuOpen;
-							this.render();
-						}}
-					>
-						<span>${projectLabel}</span>
-						<span class="welcome-project-caret ${this.welcomeProjectMenuOpen ? "open" : ""}">⌄</span>
-					</button>
-					${this.welcomeProjectMenuOpen
-						? html`
-							<div class="welcome-project-menu">
-								${this.welcomeProjects.map((project) => {
-									const isCurrent = project.id === activeProject?.id;
-									return html`
-										<button class="welcome-project-item ${isCurrent ? "current" : ""}" @click=${() => {
-											this.welcomeProjectMenuOpen = false;
-											if (!isCurrent) this.onSelectWelcomeProject?.(project.id);
-										}}>
-											<span>${project.name}</span>
-											<span>${isCurrent ? "✓" : ""}</span>
-										</button>
-									`;
-								})}
-								${this.welcomeProjects.length > 0 ? html`<div class="welcome-project-sep"></div>` : nothing}
-								<button class="welcome-project-item" @click=${() => {
-									this.welcomeProjectMenuOpen = false;
-									this.onAddProject?.();
-								}}>Add new project</button>
-								<div class="welcome-project-sep"></div>
-								<button class="welcome-project-item" @click=${() => {
-									this.welcomeProjectMenuOpen = false;
-									this.onOpenPackages?.();
-								}}>Packages</button>
-								<button class="welcome-project-item" @click=${() => {
-									this.welcomeProjectMenuOpen = false;
-									this.onOpenSettings?.();
-								}}>Settings</button>
-							</div>
-						`
-						: nothing}
-				</div>
-				<div class="welcome-meta-line muted ${this.welcomeProjectMenuOpen ? "hidden" : ""}">
-					${snapshot.loading ? "Refreshing local Pi inventory…" : `${snapshot.skills.length} skills · ${snapshot.extensions.length} extensions · ${snapshot.themes.length} themes`}
-				</div>
-				${snapshot.error ? html`<div class="welcome-error">${snapshot.error}</div>` : nothing}
-			</div>
-		`;
+		return renderCenteredWelcomeView({
+			brandIconUrl,
+			welcomeHeadline,
+			projectLabel,
+			hasProject,
+			projectMenuOpen: this.welcomeProjectMenuOpen,
+			projects: this.welcomeProjects,
+			activeProjectId: activeProject?.id ?? null,
+			snapshot,
+			onToggleProjectMenu: () => {
+				this.welcomeProjectMenuOpen = !this.welcomeProjectMenuOpen;
+				this.render();
+			},
+			onSelectProject: (projectId) => {
+				this.welcomeProjectMenuOpen = false;
+				if (projectId !== activeProject?.id) this.onSelectWelcomeProject?.(projectId);
+			},
+			onAddProject: () => {
+				this.welcomeProjectMenuOpen = false;
+				this.onAddProject?.();
+			},
+			onOpenPackages: () => {
+				this.welcomeProjectMenuOpen = false;
+				this.onOpenPackages?.();
+			},
+			onOpenSettings: () => {
+				this.welcomeProjectMenuOpen = false;
+				this.onOpenSettings?.();
+			},
+		});
 	}
 
 	private openComposerFilePicker(): void {
