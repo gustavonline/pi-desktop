@@ -44,16 +44,14 @@ export function renderPendingImagesView(
 ): TemplateResult | typeof nothing {
 	if (images.length === 0) return nothing;
 	return html`
-		<div class="composer-attachments">
+		<div class="composer-attachments inline" aria-label="Image attachments">
 			${images.map(
 				(img) => html`
-					<div class="composer-attachment">
-						<img src=${img.previewUrl} alt=${img.name} />
-						<div class="composer-attachment-meta">
-							<div>${truncateText(img.name, 18)}</div>
-							<div>${Math.max(1, Math.round(img.size / 1024))} KB</div>
-						</div>
-						<button @click=${() => onRemoveImage(img.id)}>✕</button>
+					<div class="composer-attachment" title=${img.name}>
+						<span class="composer-attachment-icon" aria-hidden="true">◉</span>
+						<span class="composer-attachment-name">${truncateText(img.name, 26)}</span>
+						<span class="composer-attachment-size">${Math.max(1, Math.round(img.size / 1024))} KB</span>
+						<button class="composer-attachment-remove" title="Remove image" @click=${() => onRemoveImage(img.id)}>✕</button>
 					</div>
 				`,
 			)}

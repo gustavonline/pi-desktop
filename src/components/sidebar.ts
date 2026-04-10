@@ -150,6 +150,14 @@ function isAbsolutePath(path: string): boolean {
 	return /^([a-zA-Z]:[\\/]|[\\/]{2}|\/)/.test(path);
 }
 
+function toFileUri(path: string): string {
+	let normalized = path.replace(/\\/g, "/");
+	if (/^[A-Za-z]:\//.test(normalized)) {
+		normalized = `/${normalized}`;
+	}
+	return `file://${encodeURI(normalized)}`;
+}
+
 function fileExtension(name: string): string {
 	const idx = name.lastIndexOf(".");
 	if (idx === -1) return "";
@@ -2209,6 +2217,7 @@ export class Sidebar {
 				<div class="sidebar-file-row ${node.isDirectory ? "dir" : "file"}" style=${`--indent:${indent}px`}>
 					<button
 						class="sidebar-file-main ${activeFile ? "active-file" : ""}"
+						?draggable=${!node.isDirectory && !fileRenameActive}
 						@click=${() => {
 							if (node.isDirectory) {
 								void this.toggleDirectory(projectId, node);
@@ -2220,6 +2229,18 @@ export class Sidebar {
 								this.render();
 								this.openFile(projectId, node.path);
 							}
+						}}
+						@dragstart=${(event: DragEvent) => {
+							if (node.isDirectory || fileRenameActive) {
+								event.preventDefault();
+								return;
+							}
+							const transfer = event.dataTransfer;
+							if (!transfer) return;
+							transfer.effectAllowed = "copy";
+							transfer.setData("text/plain", node.path);
+							transfer.setData("text/uri-list", toFileUri(node.path));
+							transfer.setData("application/x-pi-file-path", node.path);
 						}}
 						@contextmenu=${(e: MouseEvent) => this.handleFileContextMenu(e, projectId, node)}
 						title=${node.displayPath}

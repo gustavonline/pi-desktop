@@ -1433,7 +1433,17 @@ export class ChatView {
 			if (this.shouldIgnoreDuplicateDrop(paths.map((path) => this.fileNameFromPath(path)))) {
 				return;
 			}
-			void this.prepareImagesFromPaths(paths);
+			const imagePaths = paths.filter((path) => this.isImageName(this.fileNameFromPath(path)));
+			const filePaths = paths.filter((path) => !this.isImageName(this.fileNameFromPath(path)));
+			if (imagePaths.length > 0) {
+				void this.prepareImagesFromPaths(imagePaths, { quietIfNone: true });
+			}
+			if (filePaths.length > 0) {
+				this.appendDroppedPathReferences(filePaths);
+			}
+			if (imagePaths.length === 0 && filePaths.length === 0) {
+				this.pushNotice("No readable files found in drop payload", "info");
+			}
 		};
 
 		try {
@@ -2699,7 +2709,87 @@ export class ChatView {
 		return extractFilePathsFromDropPayloadValue(raw);
 	}
 
-	private async prepareImagesFromPaths(paths: string[]): Promise<void> {
+	private normalizeDroppedPath(path: string): string {
+		return path.replace(/\\/g, "/").trim();
+	}
+
+	private formatDroppedPathToken(path: string): string {
+		const normalized = this.normalizeDroppedPath(path);
+		if (!normalized) return "";
+		const projectRoot = this.projectPath ? this.normalizeDroppedPath(this.projectPath).replace(/\/+$/, "") : "";
+		let token = normalized;
+		if (projectRoot) {
+			const lowerPath = normalized.toLowerCase();
+			const lowerRoot = projectRoot.toLowerCase();
+			if (lowerPath === lowerRoot) {
+				token = "@.";
+			} else if (lowerPath.startsWith(`${lowerRoot}/`)) {
+				token = `@${normalized.slice(projectRoot.length + 1)}`;
+			}
+		}
+		if (/\s/.test(token)) {
+			return `"${token.replace(/"/g, '\\"')}"`;
+		}
+		return token;
+	}
+
+	private insertComposerTextAtCursor(snippet: string): void {
+		const text = snippet.trim();
+		if (!text) return;
+		const textarea = this.getComposerTextarea();
+		const current = this.inputText;
+		const start = textarea ? Math.min(textarea.selectionStart ?? current.length, current.length) : current.length;
+		const end = textarea ? Math.min(textarea.selectionEnd ?? current.length, current.length) : current.length;
+		const before = current.slice(0, start);
+		const after = current.slice(end);
+		const leadingSpace = before.length > 0 && !/\s$/.test(before) ? " " : "";
+		const trailingSpace = after.length > 0 && !/^\s/.test(after) ? " " : "";
+		const inserted = `${leadingSpace}${text}${trailingSpace}`;
+		const nextText = `${before}${inserted}${after}`;
+		const caret = before.length + inserted.length;
+
+		this.inputText = nextText;
+		this.resetComposerHistoryNavigation();
+		this.updateSlashPaletteStateFromInput();
+		this.render();
+		requestAnimationFrame(() => {
+			const nextTextarea = this.getComposerTextarea();
+			if (!nextTextarea) return;
+			nextTextarea.value = nextText;
+			nextTextarea.style.height = "auto";
+			nextTextarea.style.height = `${Math.min(nextTextarea.scrollHeight, 220)}px`;
+			nextTextarea.focus();
+			nextTextarea.setSelectionRange(caret, caret);
+		});
+	}
+
+	private appendDroppedPathReferences(paths: string[]): void {
+		const seen = new Set<string>();
+		const tokens: string[] = [];
+		for (const rawPath of paths) {
+			const token = this.formatDroppedPathToken(rawPath);
+			if (!token) continue;
+			const key = token.toLowerCase();
+			if (seen.has(key)) continue;
+			seen.add(key);
+			tokens.push(token);
+		}
+		if (tokens.length === 0) return;
+		this.insertComposerTextAtCursor(tokens.join(" "));
+	}
+
+	private pathFromDroppedFile(file: File): string {
+		const maybePath = file as File & { path?: string; webkitRelativePath?: string };
+		const pathValue =
+			typeof maybePath.path === "string" && maybePath.path.trim().length > 0
+				? maybePath.path
+				: typeof maybePath.webkitRelativePath === "string" && maybePath.webkitRelativePath.trim().length > 0
+					? maybePath.webkitRelativePath
+					: file.name || "";
+		return this.normalizeDroppedPath(pathValue);
+	}
+
+	private async prepareImagesFromPaths(paths: string[], options: { quietIfNone?: boolean } = {}): Promise<void> {
 		if (paths.length === 0) return;
 		try {
 			const { readFile } = await import("@tauri-apps/plugin-fs");
@@ -2726,7 +2816,9 @@ export class ChatView {
 				}
 			}
 			if (next.length === 0) {
-				this.pushNotice("Could not read dropped image files", "info");
+				if (!options.quietIfNone) {
+					this.pushNotice("Could not read dropped image files", "info");
+				}
 				return;
 			}
 			this.pendingImages = [...this.pendingImages, ...next];
@@ -2738,29 +2830,48 @@ export class ChatView {
 
 	private handleDroppedDataTransfer(dataTransfer: DataTransfer | null): void {
 		if (!dataTransfer) return;
+		const uriPayload = dataTransfer.getData("text/uri-list") || dataTransfer.getData("text/plain") || "";
+		const uriPaths = this.extractFilePathsFromDropPayload(uriPayload);
 		const directFiles = Array.from(dataTransfer.files || []);
-		if (directFiles.length > 0) {
-			if (this.shouldIgnoreDuplicateDrop(directFiles.map((file) => file.name || ""))) return;
-			void this.prepareImages(directFiles);
-			return;
-		}
 		const fromItems = Array.from(dataTransfer.items || [])
 			.filter((item) => item.kind === "file")
 			.map((item) => item.getAsFile())
 			.filter((f): f is File => Boolean(f));
-		if (fromItems.length > 0) {
-			if (this.shouldIgnoreDuplicateDrop(fromItems.map((file) => file.name || ""))) return;
-			void this.prepareImages(fromItems);
-			return;
+		const fileObjects = directFiles.length > 0 ? directFiles : fromItems;
+
+		const imageFiles = fileObjects.filter((file) => this.isImageFile(file));
+		const imagePaths = uriPaths.filter((path) => this.isImageName(this.fileNameFromPath(path)));
+		const filePathsFromUri = uriPaths.filter((path) => !this.isImageName(this.fileNameFromPath(path)));
+		const filePathsFromObjects = fileObjects
+			.filter((file) => !this.isImageFile(file))
+			.map((file) => this.pathFromDroppedFile(file))
+			.filter(Boolean);
+
+		const signatureNames = [
+			...imageFiles.map((file) => file.name || ""),
+			...imagePaths.map((path) => this.fileNameFromPath(path)),
+			...(filePathsFromUri.length > 0 ? filePathsFromUri : filePathsFromObjects).map((path) => this.fileNameFromPath(path)),
+		];
+		if (signatureNames.length > 0 && this.shouldIgnoreDuplicateDrop(signatureNames)) return;
+
+		let handled = false;
+		if (imageFiles.length > 0) {
+			void this.prepareImages(imageFiles);
+			handled = true;
+		} else if (imagePaths.length > 0) {
+			void this.prepareImagesFromPaths(imagePaths, { quietIfNone: true });
+			handled = true;
 		}
-		const uriPayload = dataTransfer.getData("text/uri-list") || dataTransfer.getData("text/plain") || "";
-		const paths = this.extractFilePathsFromDropPayload(uriPayload);
-		if (paths.length > 0) {
-			if (this.shouldIgnoreDuplicateDrop(paths.map((path) => this.fileNameFromPath(path)))) return;
-			void this.prepareImagesFromPaths(paths);
-			return;
+
+		const filePaths = filePathsFromUri.length > 0 ? filePathsFromUri : filePathsFromObjects;
+		if (filePaths.length > 0) {
+			this.appendDroppedPathReferences(filePaths);
+			handled = true;
 		}
-		this.pushNotice("No readable files found in drop payload", "info");
+
+		if (!handled) {
+			this.pushNotice("No readable files found in drop payload", "info");
+		}
 	}
 
 	private async prepareImages(files: FileList | File[]): Promise<void> {
@@ -4278,9 +4389,9 @@ export class ChatView {
 				<div class="composer-inner">
 					${renderQueuedComposerMessagesView(this.queuedComposerMessages, truncate)}
 					<div class="composer-panel">
-						${renderPendingImagesView(this.pendingImages, truncate, (id) => this.removePendingImage(id))}
 						<div class="composer-row">
 							${renderComposerSkillDraftPillView(this.selectedSkillDraft, skillGlyphIcon(), () => this.removeComposerSkillDraft())}
+							${renderPendingImagesView(this.pendingImages, truncate, (id) => this.removePendingImage(id))}
 							<textarea
 								id="chat-input"
 								class="chat-input"
