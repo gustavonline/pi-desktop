@@ -2233,6 +2233,19 @@ export class Sidebar {
 				>
 					<button
 						class="sidebar-file-main ${activeFile ? "active-file" : ""}"
+						?draggable=${!node.isDirectory && !fileRenameActive}
+						@dragstart=${(event: DragEvent) => {
+							if (node.isDirectory || fileRenameActive) {
+								event.preventDefault();
+								return;
+							}
+							const transfer = event.dataTransfer;
+							if (!transfer) return;
+							transfer.effectAllowed = "copy";
+							transfer.setData("text/plain", node.path);
+							transfer.setData("text/uri-list", toFileUri(node.path));
+							transfer.setData("application/x-pi-file-path", node.path);
+						}}
 						@click=${() => {
 							if (node.isDirectory) {
 								void this.toggleDirectory(projectId, node);

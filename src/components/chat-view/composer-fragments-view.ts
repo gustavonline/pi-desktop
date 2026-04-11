@@ -13,6 +13,13 @@ export interface PendingComposerImageView {
 	previewUrl: string;
 }
 
+export interface PendingComposerFileView {
+	id: string;
+	name: string;
+	path: string;
+	token: string;
+}
+
 export interface ComposerSkillDraftView {
 	name: string;
 }
@@ -52,6 +59,33 @@ export function renderPendingImagesView(
 						<img class="composer-attachment-thumb" src=${img.previewUrl} alt=${img.name} />
 						<span class="composer-attachment-name">${truncateText(img.name, 16)}</span>
 						<button class="composer-attachment-remove" title="Remove image" @click=${() => onRemoveImage(img.id)}>✕</button>
+					</div>
+				`,
+			)}
+		</div>
+	`;
+}
+
+function fileBadgeLabel(name: string): string {
+	const match = name.toLowerCase().match(/\.([a-z0-9]{1,5})$/i);
+	if (!match || !match[1]) return "FILE";
+	return match[1].toUpperCase();
+}
+
+export function renderPendingFileReferencesView(
+	files: PendingComposerFileView[],
+	truncateText: (value: string, len: number) => string,
+	onRemoveFile: (id: string) => void,
+): TemplateResult | typeof nothing {
+	if (files.length === 0) return nothing;
+	return html`
+		<div class="composer-attachments inline file" aria-label="File references">
+			${files.map(
+				(file) => html`
+					<div class="composer-attachment" title=${file.path}>
+						<span class="composer-attachment-thumb file" aria-hidden="true">${fileBadgeLabel(file.name)}</span>
+						<span class="composer-attachment-name">${truncateText(file.token, 14)}</span>
+						<button class="composer-attachment-remove" title="Remove file reference" @click=${() => onRemoveFile(file.id)}>✕</button>
 					</div>
 				`,
 			)}

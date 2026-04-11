@@ -6517,7 +6517,7 @@ body.file-split-resizing #file-split-resize-handle::after {
 
 .composer-attachments.inline {
 	margin-top: 5px;
-	max-width: min(46%, 360px);
+	max-width: min(34%, 260px);
 	overflow-x: auto;
 	padding: 0 0 2px;
 }
@@ -6525,9 +6525,9 @@ body.file-split-resizing #file-split-resize-handle::after {
 .composer-attachment {
 	display: inline-flex;
 	align-items: center;
-	gap: 5px;
+	gap: 4px;
 	max-width: 100%;
-	padding: 2px 7px 2px 3px;
+	padding: 2px 6px 2px 2px;
 	border-radius: 999px;
 	border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
 	background: color-mix(in srgb, var(--bg-soft) 56%, transparent);
@@ -6538,15 +6538,27 @@ body.file-split-resizing #file-split-resize-handle::after {
 }
 
 .composer-attachment-thumb {
-	width: 16px;
-	height: 16px;
+	width: 14px;
+	height: 14px;
 	border-radius: 4px;
 	object-fit: cover;
 	flex-shrink: 0;
 }
 
+.composer-attachment-thumb.file {
+	display: inline-grid;
+	place-items: center;
+	font-size: 7px;
+	font-weight: 700;
+	letter-spacing: 0.02em;
+	color: var(--muted-2);
+	background: color-mix(in srgb, var(--bg) 82%, var(--bg-soft));
+	border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+	text-transform: uppercase;
+}
+
 .composer-attachment-name {
-	max-width: 86px;
+	max-width: 58px;
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;

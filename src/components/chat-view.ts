@@ -42,6 +42,7 @@ import { isExtensionConfigIntent, normalizeExtensionCommandName } from "../exten
 import { renderComposerControlsView } from "./chat-view/composer-controls-view.js";
 import {
 	renderComposerSkillDraftPillView,
+	renderPendingFileReferencesView,
 	renderPendingImagesView,
 	renderQueuedComposerMessagesView,
 } from "./chat-view/composer-fragments-view.js";
@@ -142,6 +143,13 @@ interface PendingImage {
 	data: string;
 	previewUrl: string;
 	size: number;
+}
+
+interface PendingFileReference {
+	id: string;
+	name: string;
+	path: string;
+	token: string;
 }
 
 interface QueuedComposerMessage {
@@ -485,6 +493,7 @@ export class ChatView {
 	private runningProviderAuthAction: { provider: string; action: "login" | "logout" } | null = null;
 	private sendingPrompt = false;
 	private pendingImages: PendingImage[] = [];
+	private pendingFileReferences: PendingFileReference[] = [];
 	private notices: Notice[] = [];
 	private changelogCacheMarkdown: string | null = null;
 	private changelogCacheAt = 0;
@@ -1187,8 +1196,8 @@ export class ChatView {
 		const slashQuery = this.slashQueryFromInput();
 		const parsed = this.parseSlashInput(this.inputText);
 		if (!parsed && slashQuery === null) return;
-		if (this.pendingImages.length > 0) {
-			this.pushNotice("Slash commands cannot be sent with image attachments", "info");
+		if (this.pendingImages.length > 0 || this.pendingFileReferences.length > 0) {
+			this.pushNotice("Slash commands cannot be sent with pending attachments", "info");
 			return;
 		}
 		await this.ensureSlashCommandsLoaded();
@@ -2734,49 +2743,27 @@ export class ChatView {
 		return token;
 	}
 
-	private insertComposerTextAtCursor(snippet: string): void {
-		const text = snippet.trim();
-		if (!text) return;
-		const textarea = this.getComposerTextarea();
-		const current = this.inputText;
-		const start = textarea ? Math.min(textarea.selectionStart ?? current.length, current.length) : current.length;
-		const end = textarea ? Math.min(textarea.selectionEnd ?? current.length, current.length) : current.length;
-		const before = current.slice(0, start);
-		const after = current.slice(end);
-		const leadingSpace = before.length > 0 && !/\s$/.test(before) ? " " : "";
-		const trailingSpace = after.length > 0 && !/^\s/.test(after) ? " " : "";
-		const inserted = `${leadingSpace}${text}${trailingSpace}`;
-		const nextText = `${before}${inserted}${after}`;
-		const caret = before.length + inserted.length;
-
-		this.inputText = nextText;
-		this.resetComposerHistoryNavigation();
-		this.updateSlashPaletteStateFromInput();
-		this.render();
-		requestAnimationFrame(() => {
-			const nextTextarea = this.getComposerTextarea();
-			if (!nextTextarea) return;
-			nextTextarea.value = nextText;
-			nextTextarea.style.height = "auto";
-			nextTextarea.style.height = `${Math.min(nextTextarea.scrollHeight, 220)}px`;
-			nextTextarea.focus();
-			nextTextarea.setSelectionRange(caret, caret);
-		});
-	}
-
 	private appendDroppedPathReferences(paths: string[]): void {
-		const seen = new Set<string>();
-		const tokens: string[] = [];
+		const seen = new Set<string>(this.pendingFileReferences.map((entry) => entry.token.toLowerCase()));
+		const next: PendingFileReference[] = [];
 		for (const rawPath of paths) {
-			const token = this.formatDroppedPathToken(rawPath);
+			const normalizedPath = this.normalizeDroppedPath(rawPath);
+			if (!normalizedPath) continue;
+			const token = this.formatDroppedPathToken(normalizedPath);
 			if (!token) continue;
 			const key = token.toLowerCase();
 			if (seen.has(key)) continue;
 			seen.add(key);
-			tokens.push(token);
+			next.push({
+				id: uid("file"),
+				name: this.fileNameFromPath(normalizedPath),
+				path: normalizedPath,
+				token,
+			});
 		}
-		if (tokens.length === 0) return;
-		this.insertComposerTextAtCursor(tokens.join(" "));
+		if (next.length === 0) return;
+		this.pendingFileReferences = [...this.pendingFileReferences, ...next];
+		this.render();
 	}
 
 	private dedupeDroppedPaths(paths: string[]): string[] {
@@ -3011,6 +2998,19 @@ export class ChatView {
 		this.render();
 	}
 
+	private removePendingFileReference(id: string): void {
+		this.pendingFileReferences = this.pendingFileReferences.filter((entry) => entry.id !== id);
+		this.render();
+	}
+
+	private composedPromptText(rawText: string): string {
+		const baseText = rawText.trim();
+		const fileTokens = this.pendingFileReferences.map((entry) => entry.token).filter((token) => token.length > 0);
+		if (fileTokens.length === 0) return baseText;
+		const fileBlock = fileTokens.join("\n");
+		return baseText ? `${baseText}\n\n${fileBlock}` : fileBlock;
+	}
+
 	private currentIsStreaming(): boolean {
 		return Boolean(this.state?.isStreaming) || this.messages.some((m) => m.isStreaming);
 	}
@@ -3222,6 +3222,7 @@ export class ChatView {
 	private clearComposer(): void {
 		this.inputText = "";
 		this.pendingImages = [];
+		this.pendingFileReferences = [];
 		this.selectedSkillDraft = null;
 		this.resetComposerHistoryNavigation();
 		this.closeSlashPalette();
@@ -3234,10 +3235,10 @@ export class ChatView {
 			mode,
 			bindingStatusText: this.bindingStatusText,
 			isComposerInteractionLocked: this.isComposerInteractionLocked.bind(this),
-			inputText: this.inputText,
+			inputText: this.composedPromptText(this.inputText),
 			selectedSkillCommandText: this.selectedSkillDraft?.commandText?.trim() ?? "",
 			pendingImages: [...this.pendingImages],
-			slashQueryFromInput: this.slashQueryFromInput.bind(this),
+			slashQueryFromInput: () => (this.pendingFileReferences.length > 0 ? null : this.slashQueryFromInput()),
 			executeSlashCommandFromComposer: this.executeSlashCommandFromComposer.bind(this),
 			rememberComposerHistoryEntry: this.rememberComposerHistoryEntry.bind(this),
 			currentIsStreaming: this.currentIsStreaming.bind(this),
@@ -4448,7 +4449,9 @@ export class ChatView {
 		const isStreaming = this.currentIsStreaming();
 		const interactionLocked = this.isComposerInteractionLocked();
 		const slashItems = this.getSlashPaletteItems();
-		const canSendBase = !interactionLocked && (this.inputText.trim().length > 0 || this.pendingImages.length > 0 || Boolean(this.selectedSkillDraft));
+		const canSendBase =
+			!interactionLocked &&
+			(this.inputText.trim().length > 0 || this.pendingImages.length > 0 || this.pendingFileReferences.length > 0 || Boolean(this.selectedSkillDraft));
 		const canSend = canSendBase;
 		if (slashItems.length > 0 && this.slashPaletteIndex >= slashItems.length) {
 			this.slashPaletteIndex = slashItems.length - 1;
@@ -4469,6 +4472,7 @@ export class ChatView {
 						<div class="composer-row">
 							${renderComposerSkillDraftPillView(this.selectedSkillDraft, skillGlyphIcon(), () => this.removeComposerSkillDraft())}
 							${renderPendingImagesView(this.pendingImages, truncate, (id) => this.removePendingImage(id))}
+							${renderPendingFileReferencesView(this.pendingFileReferences, truncate, (id) => this.removePendingFileReference(id))}
 							<textarea
 								id="chat-input"
 								class="chat-input"
