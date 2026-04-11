@@ -2843,7 +2843,19 @@ export class ChatView {
 			.split(/\r?\n/)
 			.map((value) => value.trim())
 			.filter(Boolean);
-		const uriPayload = [customPayload, dataTransfer.getData("text/uri-list"), dataTransfer.getData("text/plain")]
+		const customJsonPayload = dataTransfer.getData("application/x-pi-file-paths-json") || "";
+		let customJsonPaths: string[] = [];
+		if (customJsonPayload) {
+			try {
+				const parsed = JSON.parse(customJsonPayload) as unknown;
+				if (Array.isArray(parsed)) {
+					customJsonPaths = parsed.filter((value): value is string => typeof value === "string");
+				}
+			} catch {
+				// ignore malformed payload
+			}
+		}
+		const uriPayload = [customPayload, customJsonPaths.join("\n"), dataTransfer.getData("text/uri-list"), dataTransfer.getData("text/plain")]
 			.map((value) => value || "")
 			.join("\n");
 		const uriPaths = this.extractFilePathsFromDropPayload(uriPayload);
@@ -2853,10 +2865,14 @@ export class ChatView {
 			.map((item) => item.getAsFile())
 			.filter((f): f is File => Boolean(f));
 		const fileObjects = directFiles.length > 0 ? directFiles : fromItems;
-		const shouldUseSidebarFallbackPaths = customPaths.length === 0 && uriPaths.length === 0 && fileObjects.length === 0;
+		const shouldUseSidebarFallbackPaths =
+			customPaths.length === 0 &&
+			customJsonPaths.length === 0 &&
+			uriPaths.length === 0 &&
+			fileObjects.length === 0;
 		const fallbackSidebarPaths = shouldUseSidebarFallbackPaths ? peekActiveDraggedFilePaths() : [];
-		const droppedPaths = this.dedupeDroppedPaths([...customPaths, ...uriPaths, ...fallbackSidebarPaths]);
-		if (fallbackSidebarPaths.length > 0) {
+		const droppedPaths = this.dedupeDroppedPaths([...customPaths, ...customJsonPaths, ...uriPaths, ...fallbackSidebarPaths]);
+		if (customPaths.length > 0 || customJsonPaths.length > 0 || fallbackSidebarPaths.length > 0) {
 			clearActiveDraggedFilePaths();
 		}
 
@@ -4645,6 +4661,7 @@ export class ChatView {
 					if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
 				}}
 				@drop=${(e: DragEvent) => {
+					if (e.defaultPrevented) return;
 					e.preventDefault();
 					if (!hasProject) return;
 					this.handleDroppedDataTransfer(e.dataTransfer ?? null);

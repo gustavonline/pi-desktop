@@ -108,6 +108,7 @@ export function handleComposerPasteEvent({
 
 export function handleComposerDragOverEvent({ event, interactionLocked }: HandleComposerDragOverEventParams): void {
 	event.preventDefault();
+	event.stopPropagation();
 	if (event.dataTransfer) event.dataTransfer.dropEffect = interactionLocked ? "none" : "copy";
 }
 
@@ -117,6 +118,7 @@ export function handleComposerDropEvent({
 	onHandleDroppedDataTransfer,
 }: HandleComposerDropEventParams): void {
 	event.preventDefault();
+	event.stopPropagation();
 	if (interactionLocked) return;
 	onHandleDroppedDataTransfer(event.dataTransfer ?? null);
 }

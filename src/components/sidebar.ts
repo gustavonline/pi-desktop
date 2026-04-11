@@ -3,7 +3,7 @@
  */
 
 import { html, nothing, render, type TemplateResult } from "lit";
-import { clearActiveDraggedFilePaths, setActiveDraggedFilePaths } from "./file-drag-transfer.js";
+import { setActiveDraggedFilePaths } from "./file-drag-transfer.js";
 import { EMOJI_CATALOG } from "./workspace-tabs.js";
 
 export type SidebarMode = "projects" | "files";
@@ -2219,7 +2219,8 @@ export class Sidebar {
 	}
 
 	private handleFileDragEnd(): void {
-		clearActiveDraggedFilePaths();
+		// Keep active drag payload alive briefly for drop-target fallback paths.
+		// It will be cleared by the drop consumer or TTL expiry.
 	}
 
 	private renderFileNode(projectId: string, node: FileNode, query: string): TemplateResult | typeof nothing {
