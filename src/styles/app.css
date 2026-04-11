@@ -4380,6 +4380,8 @@ body.file-split-resizing #file-split-resize-handle::after {
 	cursor: pointer;
 	color: var(--muted);
 	min-width: 0;
+	-webkit-user-select: none;
+	user-select: none;
 }
 
 .sidebar-file-row.is-draggable {
@@ -4413,6 +4415,8 @@ body.file-split-resizing #file-split-resize-handle::after {
 	color: var(--muted);
 	flex-shrink: 0;
 	font-size: 10px;
+	-webkit-user-select: none;
+	user-select: none;
 }
 
 .sidebar-file-icon {
@@ -4422,6 +4426,8 @@ body.file-split-resizing #file-split-resize-handle::after {
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
+	-webkit-user-select: none;
+	user-select: none;
 }
 
 .sidebar-file-icon svg {

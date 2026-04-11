@@ -2838,6 +2838,8 @@ export class ChatView {
 
 	private handleDroppedDataTransfer(dataTransfer: DataTransfer | null): void {
 		if (!dataTransfer) return;
+
+		const activeSidebarPaths = peekActiveDraggedFilePaths();
 		const customPayload = dataTransfer.getData("application/x-pi-file-path") || "";
 		const customPaths = customPayload
 			.split(/\r?\n/)
@@ -2859,35 +2861,51 @@ export class ChatView {
 			.map((value) => value || "")
 			.join("\n");
 		const uriPaths = this.extractFilePathsFromDropPayload(uriPayload);
+		const droppedPathsFromPayload = this.dedupeDroppedPaths([...customPaths, ...customJsonPaths, ...uriPaths]);
+
 		const directFiles = Array.from(dataTransfer.files || []);
 		const fromItems = Array.from(dataTransfer.items || [])
 			.filter((item) => item.kind === "file")
 			.map((item) => item.getAsFile())
 			.filter((f): f is File => Boolean(f));
 		const fileObjects = directFiles.length > 0 ? directFiles : fromItems;
-		const shouldUseSidebarFallbackPaths =
-			customPaths.length === 0 &&
-			customJsonPaths.length === 0 &&
-			uriPaths.length === 0 &&
-			fileObjects.length === 0;
-		const fallbackSidebarPaths = shouldUseSidebarFallbackPaths ? peekActiveDraggedFilePaths() : [];
-		const droppedPaths = this.dedupeDroppedPaths([...customPaths, ...customJsonPaths, ...uriPaths, ...fallbackSidebarPaths]);
+
+		const imageFiles = fileObjects.filter((file) => this.isImageFile(file));
+		const imagePathsFromPayload = droppedPathsFromPayload.filter((path) => this.isImageName(this.fileNameFromPath(path)));
+		const filePathsFromPayload = droppedPathsFromPayload.filter((path) => !this.isImageName(this.fileNameFromPath(path)));
+		const filePathsFromObjects = this.dedupeDroppedPaths(
+			fileObjects
+				.filter((file) => !this.isImageFile(file))
+				.map((file) => this.pathFromDroppedFile(file))
+				.filter(Boolean),
+		);
+
+		const hasPayloadCandidates =
+			imageFiles.length > 0 ||
+			imagePathsFromPayload.length > 0 ||
+			filePathsFromPayload.length > 0 ||
+			filePathsFromObjects.length > 0;
+		const fallbackSidebarPaths = !hasPayloadCandidates ? this.dedupeDroppedPaths(activeSidebarPaths) : [];
+		const fallbackImagePaths = fallbackSidebarPaths.filter((path) => this.isImageName(this.fileNameFromPath(path)));
+		const fallbackFilePaths = fallbackSidebarPaths.filter((path) => !this.isImageName(this.fileNameFromPath(path)));
+
+		const imagePaths = imagePathsFromPayload.length > 0 ? imagePathsFromPayload : fallbackImagePaths;
+		const filePaths = this.dedupeDroppedPaths(
+			filePathsFromPayload.length > 0
+				? filePathsFromPayload
+				: filePathsFromObjects.length > 0
+					? filePathsFromObjects
+					: fallbackFilePaths,
+		);
+
 		if (customPaths.length > 0 || customJsonPaths.length > 0 || fallbackSidebarPaths.length > 0) {
 			clearActiveDraggedFilePaths();
 		}
 
-		const imageFiles = fileObjects.filter((file) => this.isImageFile(file));
-		const imagePaths = droppedPaths.filter((path) => this.isImageName(this.fileNameFromPath(path)));
-		const filePathsFromUri = droppedPaths.filter((path) => !this.isImageName(this.fileNameFromPath(path)));
-		const filePathsFromObjects = fileObjects
-			.filter((file) => !this.isImageFile(file))
-			.map((file) => this.pathFromDroppedFile(file))
-			.filter(Boolean);
-
 		const signatureNames = [
 			...imageFiles.map((file) => file.name || ""),
 			...imagePaths.map((path) => this.fileNameFromPath(path)),
-			...(filePathsFromUri.length > 0 ? filePathsFromUri : filePathsFromObjects).map((path) => this.fileNameFromPath(path)),
+			...filePaths.map((path) => this.fileNameFromPath(path)),
 		];
 		if (signatureNames.length > 0 && this.shouldIgnoreDuplicateDrop(signatureNames)) return;
 
@@ -2900,7 +2918,6 @@ export class ChatView {
 			handled = true;
 		}
 
-		const filePaths = this.dedupeDroppedPaths(filePathsFromUri.length > 0 ? filePathsFromUri : filePathsFromObjects);
 		if (filePaths.length > 0) {
 			this.appendDroppedPathReferences(filePaths);
 			handled = true;
