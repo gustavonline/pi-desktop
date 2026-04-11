@@ -1440,23 +1440,25 @@ export class ChatView {
 			const payload = event.payload as { type?: string; paths?: string[] };
 			if (payload?.type !== "drop") return;
 			if (!this.projectPath) return;
-			const paths = Array.isArray(payload.paths) ? payload.paths : [];
-			if (paths.length === 0) {
-				this.pushNotice("No readable files found in drop payload", "info");
+
+			const nativePaths = Array.isArray(payload.paths) ? payload.paths : [];
+			if (this.handleDroppedPathCandidates(nativePaths, { quietImageReadFailure: true })) {
+				if (nativePaths.length > 0) {
+					clearActiveDraggedFilePaths();
+				}
 				return;
 			}
-			if (this.shouldIgnoreDuplicateDrop(paths.map((path) => this.fileNameFromPath(path)))) {
-				return;
+
+			const sidebarFallbackPaths = peekActiveDraggedFilePaths();
+			if (sidebarFallbackPaths.length > 0) {
+				const handledFromSidebarFallback = this.handleDroppedPathCandidates(sidebarFallbackPaths, {
+					quietImageReadFailure: true,
+				});
+				clearActiveDraggedFilePaths();
+				if (handledFromSidebarFallback) return;
 			}
-			const imagePaths = paths.filter((path) => this.isImageName(this.fileNameFromPath(path)));
-			const filePaths = paths.filter((path) => !this.isImageName(this.fileNameFromPath(path)));
-			if (imagePaths.length > 0) {
-				void this.prepareImagesFromPaths(imagePaths, { quietIfNone: true });
-			}
-			if (filePaths.length > 0) {
-				this.appendDroppedPathReferences(filePaths);
-			}
-			if (imagePaths.length === 0 && filePaths.length === 0) {
+
+			if (nativePaths.length > 0) {
 				this.pushNotice("No readable files found in drop payload", "info");
 			}
 		};
@@ -2785,6 +2787,33 @@ export class ChatView {
 		return unique;
 	}
 
+	private handleDroppedPathCandidates(
+		paths: string[],
+		options: { quietImageReadFailure?: boolean } = {},
+	): boolean {
+		const normalizedPaths = this.dedupeDroppedPaths(paths);
+		if (normalizedPaths.length === 0) return false;
+		const signatureNames = normalizedPaths.map((path) => this.fileNameFromPath(path));
+		if (signatureNames.length > 0 && this.shouldIgnoreDuplicateDrop(signatureNames)) {
+			return true;
+		}
+		const imagePaths = normalizedPaths.filter((path) => this.isImageName(this.fileNameFromPath(path)));
+		const filePaths = normalizedPaths.filter((path) => !this.isImageName(this.fileNameFromPath(path)));
+
+		let handled = false;
+		if (imagePaths.length > 0) {
+			void this.prepareImagesFromPaths(imagePaths, {
+				quietIfNone: options.quietImageReadFailure ?? true,
+			});
+			handled = true;
+		}
+		if (filePaths.length > 0) {
+			this.appendDroppedPathReferences(filePaths);
+			handled = true;
+		}
+		return handled;
+	}
+
 	private pathFromDroppedFile(file: File): string {
 		const maybePath = file as File & { path?: string; webkitRelativePath?: string };
 		const pathValue =
@@ -2837,9 +2866,20 @@ export class ChatView {
 	}
 
 	private handleDroppedDataTransfer(dataTransfer: DataTransfer | null): void {
-		if (!dataTransfer) return;
-
 		const activeSidebarPaths = peekActiveDraggedFilePaths();
+		if (!dataTransfer) {
+			const handledFromSidebarFallback = this.handleDroppedPathCandidates(activeSidebarPaths, {
+				quietImageReadFailure: true,
+			});
+			if (activeSidebarPaths.length > 0) {
+				clearActiveDraggedFilePaths();
+			}
+			if (!handledFromSidebarFallback && activeSidebarPaths.length > 0) {
+				this.pushNotice("No readable files found in drop payload", "info");
+			}
+			return;
+		}
+
 		const customPayload = dataTransfer.getData("application/x-pi-file-path") || "";
 		const customPaths = customPayload
 			.split(/\r?\n/)
@@ -2921,6 +2961,16 @@ export class ChatView {
 		if (filePaths.length > 0) {
 			this.appendDroppedPathReferences(filePaths);
 			handled = true;
+		}
+
+		if (!handled && activeSidebarPaths.length > 0) {
+			const handledFromSidebarFallback = this.handleDroppedPathCandidates(activeSidebarPaths, {
+				quietImageReadFailure: true,
+			});
+			clearActiveDraggedFilePaths();
+			if (handledFromSidebarFallback) {
+				handled = true;
+			}
 		}
 
 		if (!handled) {
