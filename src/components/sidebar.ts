@@ -2215,6 +2215,7 @@ export class Sidebar {
 			return;
 		}
 		this.primeFileDragPayload(node, fileRenameActive);
+		document.documentElement.classList.add("sidebar-file-drag-active");
 		const transfer = event.dataTransfer;
 		if (!transfer) return;
 		transfer.effectAllowed = "copy";
@@ -2238,6 +2239,7 @@ export class Sidebar {
 	}
 
 	private handleFileDragEnd(): void {
+		document.documentElement.classList.remove("sidebar-file-drag-active");
 		// Keep active drag payload alive briefly for drop-target fallback paths.
 		// It will be cleared by the drop consumer or TTL expiry.
 	}
@@ -2254,21 +2256,15 @@ export class Sidebar {
 
 		return html`
 			<div>
-				<div
-					class="sidebar-file-row ${node.isDirectory ? "dir" : "file"} ${!node.isDirectory && !fileRenameActive ? "is-draggable" : ""}"
-					style=${`--indent:${indent}px`}
-					.draggable=${!node.isDirectory && !fileRenameActive}
-					@pointerdown=${(event: PointerEvent) => this.primeFileDragPayload(node, fileRenameActive, event)}
-					@dragstart=${(event: DragEvent) => this.handleFileDragStart(event, node, fileRenameActive)}
-					@dragend=${() => this.handleFileDragEnd()}
-				>
+				<div class="sidebar-file-row ${node.isDirectory ? "dir" : "file"}" style=${`--indent:${indent}px`}>
 					<button
-						class="sidebar-file-main ${activeFile ? "active-file" : ""}"
+						class="sidebar-file-main ${activeFile ? "active-file" : ""} ${!node.isDirectory && !fileRenameActive ? "is-draggable" : ""}"
 						.draggable=${!node.isDirectory && !fileRenameActive}
 						@pointerdown=${(event: PointerEvent) => this.primeFileDragPayload(node, fileRenameActive, event)}
 						@dragstart=${(event: DragEvent) => this.handleFileDragStart(event, node, fileRenameActive)}
 						@dragend=${() => this.handleFileDragEnd()}
 						@click=${() => {
+							document.documentElement.classList.remove("sidebar-file-drag-active");
 							clearActiveDraggedFilePaths();
 							if (node.isDirectory) {
 								void this.toggleDirectory(projectId, node);
