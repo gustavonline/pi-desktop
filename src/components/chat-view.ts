@@ -4521,12 +4521,14 @@ export class ChatView {
 							<textarea
 								id="chat-input"
 								class="chat-input"
+								draggable="false"
 								placeholder=${interactionLocked ? (connectivityStatus || "Session not ready…") : "Describe the next change — type / for commands"}
 								rows="1"
 								?disabled=${interactionLocked}
 								.value=${this.inputText}
 								@input=${(event: Event) => this.handleComposerInput(event, interactionLocked)}
 								@paste=${(event: ClipboardEvent) => this.handleComposerPaste(event, interactionLocked)}
+								@dragstart=${(event: DragEvent) => event.preventDefault()}
 								@dragover=${(event: DragEvent) => this.handleComposerDragOver(event, interactionLocked)}
 								@drop=${(event: DragEvent) => this.handleComposerDrop(event, interactionLocked)}
 								@keydown=${(event: KeyboardEvent) => this.handleComposerKeyDown(event, interactionLocked, isStreaming)}

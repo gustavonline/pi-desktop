@@ -3,7 +3,7 @@
  */
 
 import { html, nothing, render, type TemplateResult } from "lit";
-import { setActiveDraggedFilePaths } from "./file-drag-transfer.js";
+import { clearActiveDraggedFilePaths, setActiveDraggedFilePaths } from "./file-drag-transfer.js";
 import { EMOJI_CATALOG } from "./workspace-tabs.js";
 
 export type SidebarMode = "projects" | "files";
@@ -2203,19 +2203,30 @@ export class Sidebar {
 		`;
 	}
 
+	private primeFileDragPayload(node: FileNode, fileRenameActive: boolean, event?: PointerEvent | MouseEvent): void {
+		if (node.isDirectory || fileRenameActive) return;
+		if (event && event.button !== 0) return;
+		setActiveDraggedFilePaths([node.path]);
+	}
+
 	private handleFileDragStart(event: DragEvent, node: FileNode, fileRenameActive: boolean): void {
 		if (node.isDirectory || fileRenameActive) {
 			event.preventDefault();
 			return;
 		}
+		this.primeFileDragPayload(node, fileRenameActive);
 		const transfer = event.dataTransfer;
 		if (!transfer) return;
-		setActiveDraggedFilePaths([node.path]);
 		transfer.effectAllowed = "copy";
-		transfer.setData("text/plain", node.path);
-		transfer.setData("text/uri-list", toFileUri(node.path));
-		transfer.setData("application/x-pi-file-path", node.path);
-		transfer.setData("application/x-pi-file-paths-json", JSON.stringify([node.path]));
+		try {
+			transfer.setData("text/plain", node.path);
+			transfer.setData("text", node.path);
+			transfer.setData("text/uri-list", toFileUri(node.path));
+			transfer.setData("application/x-pi-file-path", node.path);
+			transfer.setData("application/x-pi-file-paths-json", JSON.stringify([node.path]));
+		} catch {
+			// Some desktop runtimes reject custom MIME types; fallback channel remains active.
+		}
 		const dragSource = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
 		if (dragSource) {
 			try {
@@ -2247,15 +2258,18 @@ export class Sidebar {
 					class="sidebar-file-row ${node.isDirectory ? "dir" : "file"} ${!node.isDirectory && !fileRenameActive ? "is-draggable" : ""}"
 					style=${`--indent:${indent}px`}
 					.draggable=${!node.isDirectory && !fileRenameActive}
+					@pointerdown=${(event: PointerEvent) => this.primeFileDragPayload(node, fileRenameActive, event)}
 					@dragstart=${(event: DragEvent) => this.handleFileDragStart(event, node, fileRenameActive)}
 					@dragend=${() => this.handleFileDragEnd()}
 				>
 					<button
 						class="sidebar-file-main ${activeFile ? "active-file" : ""}"
 						.draggable=${!node.isDirectory && !fileRenameActive}
+						@pointerdown=${(event: PointerEvent) => this.primeFileDragPayload(node, fileRenameActive, event)}
 						@dragstart=${(event: DragEvent) => this.handleFileDragStart(event, node, fileRenameActive)}
 						@dragend=${() => this.handleFileDragEnd()}
 						@click=${() => {
+							clearActiveDraggedFilePaths();
 							if (node.isDirectory) {
 								void this.toggleDirectory(projectId, node);
 							} else {

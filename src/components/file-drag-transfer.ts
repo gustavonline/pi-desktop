@@ -1,7 +1,7 @@
 let activeDraggedFilePaths: string[] = [];
 let activeDraggedAt = 0;
 
-const ACTIVE_DRAG_TTL_MS = 4_000;
+const ACTIVE_DRAG_TTL_MS = 8_000;
 
 function normalizePath(path: string): string {
 	return path.replace(/\\/g, "/").trim();
