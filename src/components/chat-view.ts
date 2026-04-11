@@ -42,7 +42,6 @@ import { isExtensionConfigIntent, normalizeExtensionCommandName } from "../exten
 import { renderComposerControlsView } from "./chat-view/composer-controls-view.js";
 import {
 	renderComposerSkillDraftPillView,
-	renderPendingFileReferencesView,
 	renderPendingImagesView,
 	renderQueuedComposerMessagesView,
 } from "./chat-view/composer-fragments-view.js";
@@ -92,7 +91,6 @@ import {
 	extractFilePathsFromDropPayload as extractFilePathsFromDropPayloadValue,
 	fileNameFromPath as fileNameFromPathValue,
 	isImageFile as isImageFileValue,
-	isImageName as isImageNameValue,
 	mimeFromFileName as mimeFromFileNameValue,
 	toBase64Bytes,
 } from "./chat-view/image-file-utils.js";
@@ -498,6 +496,7 @@ export class ChatView {
 	private sendingPrompt = false;
 	private pendingImages: PendingImage[] = [];
 	private pendingFileReferences: PendingFileReference[] = [];
+	private pendingAttachmentInsertIndex: number | null = null;
 	private notices: Notice[] = [];
 	private changelogCacheMarkdown: string | null = null;
 	private changelogCacheAt = 0;
@@ -791,9 +790,43 @@ export class ChatView {
 		return this.container.querySelector("#chat-input") as HTMLTextAreaElement | null;
 	}
 
+	private getComposerOverlayElement(): HTMLElement | null {
+		return this.container.querySelector("#chat-input-overlay") as HTMLElement | null;
+	}
+
+	private clampComposerInsertIndex(index: number | null | undefined): number {
+		const max = this.inputText.length;
+		if (typeof index !== "number" || !Number.isFinite(index)) return max;
+		return Math.max(0, Math.min(max, Math.floor(index)));
+	}
+
+	private getComposerInsertIndex(): number {
+		const textarea = this.getComposerTextarea();
+		if (!textarea) return this.inputText.length;
+		const selectionStart = typeof textarea.selectionStart === "number" ? textarea.selectionStart : this.inputText.length;
+		return this.clampComposerInsertIndex(selectionStart);
+	}
+
+	private consumePendingAttachmentInsertIndex(): number {
+		const pending = this.pendingAttachmentInsertIndex;
+		this.pendingAttachmentInsertIndex = null;
+		if (typeof pending === "number" && Number.isFinite(pending)) {
+			return this.clampComposerInsertIndex(pending);
+		}
+		return this.getComposerInsertIndex();
+	}
+
+	private syncComposerOverlayScroll(): void {
+		const textarea = this.getComposerTextarea();
+		const overlay = this.getComposerOverlayElement();
+		if (!textarea || !overlay) return;
+		overlay.scrollTop = textarea.scrollTop;
+		overlay.scrollLeft = textarea.scrollLeft;
+	}
+
 	private syncComposerTextarea(
 		text: string,
-		options: { maxHeight?: number; focus?: boolean; moveCaretToEnd?: boolean } = {},
+		options: { maxHeight?: number; focus?: boolean; moveCaretToEnd?: boolean; selectionIndex?: number } = {},
 	): void {
 		const textarea = this.getComposerTextarea();
 		if (!textarea) return;
@@ -802,22 +835,88 @@ export class ChatView {
 		if (typeof options.maxHeight === "number" && options.maxHeight > 0) {
 			textarea.style.height = `${Math.min(textarea.scrollHeight, options.maxHeight)}px`;
 		}
-		if (options.moveCaretToEnd) {
+		if (typeof options.selectionIndex === "number" && Number.isFinite(options.selectionIndex)) {
+			const index = Math.max(0, Math.min(text.length, Math.floor(options.selectionIndex)));
+			textarea.setSelectionRange(index, index);
+		} else if (options.moveCaretToEnd) {
 			const end = text.length;
 			textarea.setSelectionRange(end, end);
 		}
 		if (options.focus) textarea.focus();
+		this.syncComposerOverlayScroll();
 	}
 
 	private syncComposerTextareaDeferred(
 		text: string,
-		options: { maxHeight?: number; focus?: boolean; moveCaretToEnd?: boolean } = {},
+		options: { maxHeight?: number; focus?: boolean; moveCaretToEnd?: boolean; selectionIndex?: number } = {},
 	): void {
 		requestAnimationFrame(() => this.syncComposerTextarea(text, options));
 	}
 
+	private insertPathTokensAtComposerIndex(tokens: string[], insertionIndex?: number): void {
+		const normalizedTokens = tokens.map((token) => token.trim()).filter((token) => token.length > 0);
+		if (normalizedTokens.length === 0) return;
+		let nextText = this.inputText;
+		let cursor = this.clampComposerInsertIndex(insertionIndex);
+		for (const token of normalizedTokens) {
+			const before = nextText.slice(0, cursor);
+			const after = nextText.slice(cursor);
+			const prefix = before.length > 0 && !/\s$/.test(before) ? " " : "";
+			const suffix = after.length > 0 && !/^\s/.test(after) ? " " : "";
+			const insertText = `${prefix}${token}${suffix}`;
+			nextText = `${before}${insertText}${after}`;
+			cursor = before.length + insertText.length;
+		}
+		this.inputText = nextText;
+		this.resetComposerHistoryNavigation();
+		this.updateSlashPaletteStateFromInput();
+		this.syncPendingFileReferencesWithComposerText();
+		this.render();
+		this.syncComposerTextareaDeferred(nextText, {
+			maxHeight: 220,
+			focus: true,
+			selectionIndex: cursor,
+		});
+	}
+
+	private findStandaloneTokenMatch(source: string, token: string): { start: number; end: number } | null {
+		const normalizedToken = token.trim();
+		if (!normalizedToken) return null;
+		const escaped = normalizedToken.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+		const pattern = new RegExp(`(^|\\s)${escaped}(?=\\s|$)`);
+		const match = pattern.exec(source);
+		if (!match) return null;
+		const prefix = match[1] ?? "";
+		const start = match.index + prefix.length;
+		return { start, end: start + normalizedToken.length };
+	}
+
+	private removeStandaloneTokenOccurrence(source: string, token: string): string {
+		const match = this.findStandaloneTokenMatch(source, token);
+		if (!match) return source;
+		let before = source.slice(0, match.start);
+		let after = source.slice(match.end);
+		if (before.endsWith(" ") && after.startsWith(" ")) {
+			after = after.slice(1);
+		}
+		if (before.length === 0 && after.startsWith(" ")) {
+			after = after.slice(1);
+		}
+		const merged = `${before}${after}`;
+		return merged.replace(/[ \t]{2,}/g, " ");
+	}
+
+	private syncPendingFileReferencesWithComposerText(): void {
+		if (this.pendingFileReferences.length === 0) return;
+		const source = this.inputText;
+		const next = this.pendingFileReferences.filter((entry) => Boolean(this.findStandaloneTokenMatch(source, entry.token)));
+		if (next.length === this.pendingFileReferences.length) return;
+		this.pendingFileReferences = next;
+	}
+
 	setInputText(text: string): void {
 		this.inputText = text;
+		this.syncPendingFileReferencesWithComposerText();
 		this.resetComposerHistoryNavigation();
 		this.updateSlashPaletteStateFromInput();
 		this.render();
@@ -829,6 +928,7 @@ export class ChatView {
 		if (draft) {
 			this.selectedSkillDraft = draft;
 			this.inputText = "";
+			this.syncPendingFileReferencesWithComposerText();
 			this.resetComposerHistoryNavigation();
 			this.updateSlashPaletteStateFromInput();
 			this.render();
@@ -837,6 +937,7 @@ export class ChatView {
 		}
 		this.selectedSkillDraft = null;
 		this.inputText = commandText;
+		this.syncPendingFileReferencesWithComposerText();
 		this.resetComposerHistoryNavigation();
 		this.closeSlashPalette();
 		this.render();
@@ -902,7 +1003,10 @@ export class ChatView {
 		this.slashPaletteQuery = "";
 		this.slashPaletteIndex = 0;
 		this.slashPaletteNavigationMode = "pointer";
-		if (clearInput) this.inputText = "";
+		if (clearInput) {
+			this.inputText = "";
+			this.syncPendingFileReferencesWithComposerText();
+		}
 	}
 
 	private parseSlashInput(value: string): { commandText: string; commandName: string; args: string } | null {
@@ -1420,6 +1524,7 @@ export class ChatView {
 		const commandText = `/${item.commandName}${args ? ` ${args}` : ""}`;
 		if (this.inputText === commandText) return;
 		this.inputText = commandText;
+		this.syncPendingFileReferencesWithComposerText();
 		this.syncComposerTextareaDeferred(commandText, {
 			maxHeight: 220,
 			moveCaretToEnd: true,
@@ -1442,7 +1547,8 @@ export class ChatView {
 			if (!this.projectPath) return;
 
 			const nativePaths = Array.isArray(payload.paths) ? payload.paths : [];
-			if (this.handleDroppedPathCandidates(nativePaths, { quietImageReadFailure: true })) {
+			const insertionIndex = this.getComposerInsertIndex();
+			if (this.handleDroppedPathCandidates(nativePaths, { insertionIndex })) {
 				if (nativePaths.length > 0) {
 					clearActiveDraggedFilePaths();
 				}
@@ -1452,7 +1558,7 @@ export class ChatView {
 			const sidebarFallbackPaths = peekActiveDraggedFilePaths();
 			if (sidebarFallbackPaths.length > 0) {
 				const handledFromSidebarFallback = this.handleDroppedPathCandidates(sidebarFallbackPaths, {
-					quietImageReadFailure: true,
+					insertionIndex,
 				});
 				clearActiveDraggedFilePaths();
 				if (handledFromSidebarFallback) return;
@@ -2690,10 +2796,6 @@ export class ChatView {
 		}, 4200);
 	}
 
-	private isImageName(name: string): boolean {
-		return isImageNameValue(name);
-	}
-
 	private mimeFromFileName(name: string): string {
 		return mimeFromFileNameValue(name);
 	}
@@ -2730,29 +2832,27 @@ export class ChatView {
 		return path.replace(/\\/g, "/").trim();
 	}
 
+	private isAbsoluteFilePath(path: string): boolean {
+		const normalized = this.normalizeDroppedPath(path);
+		if (!normalized) return false;
+		if (normalized.startsWith("/")) return true;
+		if (normalized.startsWith("//")) return true;
+		return /^[a-zA-Z]:\//.test(normalized);
+	}
+
 	private formatDroppedPathToken(path: string): string {
 		const normalized = this.normalizeDroppedPath(path);
 		if (!normalized) return "";
-		const projectRoot = this.projectPath ? this.normalizeDroppedPath(this.projectPath).replace(/\/+$/, "") : "";
-		let token = normalized;
-		if (projectRoot) {
-			const lowerPath = normalized.toLowerCase();
-			const lowerRoot = projectRoot.toLowerCase();
-			if (lowerPath === lowerRoot) {
-				token = ".";
-			} else if (lowerPath.startsWith(`${lowerRoot}/`)) {
-				token = `./${normalized.slice(projectRoot.length + 1)}`;
-			}
+		if (/\s/.test(normalized)) {
+			return `"${normalized.replace(/"/g, '\\"')}"`;
 		}
-		if (/\s/.test(token)) {
-			return `"${token.replace(/"/g, '\\"')}"`;
-		}
-		return token;
+		return normalized;
 	}
 
-	private appendDroppedPathReferences(paths: string[]): void {
+	private appendDroppedPathReferences(paths: string[], insertionIndex?: number): void {
 		const seen = new Set<string>(this.pendingFileReferences.map((entry) => entry.token.toLowerCase()));
 		const next: PendingFileReference[] = [];
+		const insertAt = this.clampComposerInsertIndex(insertionIndex);
 		for (const rawPath of paths) {
 			const normalizedPath = this.normalizeDroppedPath(rawPath);
 			if (!normalizedPath) continue;
@@ -2770,7 +2870,10 @@ export class ChatView {
 		}
 		if (next.length === 0) return;
 		this.pendingFileReferences = [...this.pendingFileReferences, ...next];
-		this.render();
+		this.insertPathTokensAtComposerIndex(
+			next.map((entry) => entry.token),
+			insertAt,
+		);
 	}
 
 	private dedupeDroppedPaths(paths: string[]): string[] {
@@ -2789,29 +2892,16 @@ export class ChatView {
 
 	private handleDroppedPathCandidates(
 		paths: string[],
-		options: { quietImageReadFailure?: boolean } = {},
+		options: { insertionIndex?: number } = {},
 	): boolean {
-		const normalizedPaths = this.dedupeDroppedPaths(paths);
+		const normalizedPaths = this.dedupeDroppedPaths(paths).filter((path) => this.isAbsoluteFilePath(path));
 		if (normalizedPaths.length === 0) return false;
 		const signatureNames = normalizedPaths.map((path) => this.fileNameFromPath(path));
 		if (signatureNames.length > 0 && this.shouldIgnoreDuplicateDrop(signatureNames)) {
 			return true;
 		}
-		const imagePaths = normalizedPaths.filter((path) => this.isImageName(this.fileNameFromPath(path)));
-		const filePaths = normalizedPaths.filter((path) => !this.isImageName(this.fileNameFromPath(path)));
-
-		let handled = false;
-		if (imagePaths.length > 0) {
-			void this.prepareImagesFromPaths(imagePaths, {
-				quietIfNone: options.quietImageReadFailure ?? true,
-			});
-			handled = true;
-		}
-		if (filePaths.length > 0) {
-			this.appendDroppedPathReferences(filePaths);
-			handled = true;
-		}
-		return handled;
+		this.appendDroppedPathReferences(normalizedPaths, options.insertionIndex);
+		return true;
 	}
 
 	private pathFromDroppedFile(file: File): string {
@@ -2825,51 +2915,12 @@ export class ChatView {
 		return this.normalizeDroppedPath(pathValue);
 	}
 
-	private async prepareImagesFromPaths(paths: string[], options: { quietIfNone?: boolean } = {}): Promise<void> {
-		if (paths.length === 0) return;
-		try {
-			const { readFile } = await import("@tauri-apps/plugin-fs");
-			const next: PendingImage[] = [];
-			for (const path of paths) {
-				const cleanPath = path.trim();
-				if (!cleanPath) continue;
-				const name = this.fileNameFromPath(cleanPath);
-				if (!this.isImageName(name)) continue;
-				try {
-					const bytes = await readFile(cleanPath);
-					const mime = this.mimeFromFileName(name);
-					const base64 = this.toBase64(bytes);
-					next.push({
-						id: uid("img"),
-						name,
-						path: cleanPath,
-						mimeType: mime,
-						data: base64,
-						previewUrl: `data:${mime};base64,${base64}`,
-						size: bytes.length,
-					});
-				} catch {
-					// ignore unreadable file
-				}
-			}
-			if (next.length === 0) {
-				if (!options.quietIfNone) {
-					this.pushNotice("Could not read dropped image files", "info");
-				}
-				return;
-			}
-			this.pendingImages = [...this.pendingImages, ...next];
-			this.render();
-		} catch {
-			this.pushNotice("Drag/drop is blocked by file permissions", "error");
-		}
-	}
-
-	private handleDroppedDataTransfer(dataTransfer: DataTransfer | null): void {
+	private handleDroppedDataTransfer(dataTransfer: DataTransfer | null, options: { insertionIndex?: number } = {}): void {
 		const activeSidebarPaths = peekActiveDraggedFilePaths();
+		const insertionIndex = this.clampComposerInsertIndex(options.insertionIndex);
 		if (!dataTransfer) {
 			const handledFromSidebarFallback = this.handleDroppedPathCandidates(activeSidebarPaths, {
-				quietImageReadFailure: true,
+				insertionIndex,
 			});
 			if (activeSidebarPaths.length > 0) {
 				clearActiveDraggedFilePaths();
@@ -2901,7 +2952,9 @@ export class ChatView {
 			.map((value) => value || "")
 			.join("\n");
 		const uriPaths = this.extractFilePathsFromDropPayload(uriPayload);
-		const droppedPathsFromPayload = this.dedupeDroppedPaths([...customPaths, ...customJsonPaths, ...uriPaths]);
+		const droppedPathsFromPayload = this.dedupeDroppedPaths([...customPaths, ...customJsonPaths, ...uriPaths]).filter((path) =>
+			this.isAbsoluteFilePath(path),
+		);
 
 		const directFiles = Array.from(dataTransfer.files || []);
 		const fromItems = Array.from(dataTransfer.items || [])
@@ -2909,94 +2962,65 @@ export class ChatView {
 			.map((item) => item.getAsFile())
 			.filter((f): f is File => Boolean(f));
 		const fileObjects = directFiles.length > 0 ? directFiles : fromItems;
-
-		const imageFiles = fileObjects.filter((file) => this.isImageFile(file));
-		const imagePathsFromPayload = droppedPathsFromPayload.filter((path) => this.isImageName(this.fileNameFromPath(path)));
-		const filePathsFromPayload = droppedPathsFromPayload.filter((path) => !this.isImageName(this.fileNameFromPath(path)));
-		const filePathsFromObjects = this.dedupeDroppedPaths(
+		const droppedPathsFromObjects = this.dedupeDroppedPaths(
 			fileObjects
-				.filter((file) => !this.isImageFile(file))
 				.map((file) => this.pathFromDroppedFile(file))
-				.filter(Boolean),
+				.filter((path) => this.isAbsoluteFilePath(path)),
 		);
+		const droppedPaths = this.dedupeDroppedPaths([...droppedPathsFromPayload, ...droppedPathsFromObjects]);
 
-		const hasPayloadCandidates =
-			imageFiles.length > 0 ||
-			imagePathsFromPayload.length > 0 ||
-			filePathsFromPayload.length > 0 ||
-			filePathsFromObjects.length > 0;
-		const fallbackSidebarPaths = !hasPayloadCandidates ? this.dedupeDroppedPaths(activeSidebarPaths) : [];
-		const fallbackImagePaths = fallbackSidebarPaths.filter((path) => this.isImageName(this.fileNameFromPath(path)));
-		const fallbackFilePaths = fallbackSidebarPaths.filter((path) => !this.isImageName(this.fileNameFromPath(path)));
-
-		const imagePaths = imagePathsFromPayload.length > 0 ? imagePathsFromPayload : fallbackImagePaths;
-		const filePaths = this.dedupeDroppedPaths(
-			filePathsFromPayload.length > 0
-				? filePathsFromPayload
-				: filePathsFromObjects.length > 0
-					? filePathsFromObjects
-					: fallbackFilePaths,
-		);
+		const hasPathCandidates = droppedPaths.length > 0;
+		const fallbackSidebarPaths = !hasPathCandidates ? this.dedupeDroppedPaths(activeSidebarPaths).filter((path) => this.isAbsoluteFilePath(path)) : [];
+		const candidatePaths = hasPathCandidates ? droppedPaths : fallbackSidebarPaths;
 
 		if (customPaths.length > 0 || customJsonPaths.length > 0 || fallbackSidebarPaths.length > 0) {
 			clearActiveDraggedFilePaths();
 		}
 
-		const signatureNames = [
-			...imageFiles.map((file) => file.name || ""),
-			...imagePaths.map((path) => this.fileNameFromPath(path)),
-			...filePaths.map((path) => this.fileNameFromPath(path)),
-		];
-		if (signatureNames.length > 0 && this.shouldIgnoreDuplicateDrop(signatureNames)) return;
+		if (candidatePaths.length > 0) {
+			const signatureNames = candidatePaths.map((path) => this.fileNameFromPath(path));
+			if (signatureNames.length > 0 && this.shouldIgnoreDuplicateDrop(signatureNames)) return;
+			this.appendDroppedPathReferences(candidatePaths, insertionIndex);
+			return;
+		}
 
-		let handled = false;
+		const imageFiles = fileObjects.filter((file) => this.isImageFile(file));
 		if (imageFiles.length > 0) {
 			void this.prepareImages(imageFiles);
-			handled = true;
-		} else if (imagePaths.length > 0) {
-			void this.prepareImagesFromPaths(imagePaths, { quietIfNone: true });
-			handled = true;
+			return;
 		}
 
-		if (filePaths.length > 0) {
-			this.appendDroppedPathReferences(filePaths);
-			handled = true;
-		}
-
-		if (!handled && activeSidebarPaths.length > 0) {
+		if (activeSidebarPaths.length > 0) {
 			const handledFromSidebarFallback = this.handleDroppedPathCandidates(activeSidebarPaths, {
-				quietImageReadFailure: true,
+				insertionIndex,
 			});
 			clearActiveDraggedFilePaths();
-			if (handledFromSidebarFallback) {
-				handled = true;
-			}
+			if (handledFromSidebarFallback) return;
 		}
 
-		if (!handled) {
-			this.pushNotice("No readable files found in drop payload", "info");
-		}
+		this.pushNotice("No readable files found in drop payload", "info");
 	}
 
-	private async prepareComposerFiles(files: FileList | File[]): Promise<void> {
+	private async prepareComposerFiles(files: FileList | File[], insertionIndex?: number): Promise<void> {
 		const list = Array.from(files || []);
 		if (list.length === 0) return;
-		const imageFiles = list.filter((file) => this.isImageFile(file));
 		const filePaths = this.dedupeDroppedPaths(
 			list
-				.filter((file) => !this.isImageFile(file))
 				.map((file) => this.pathFromDroppedFile(file))
-				.filter(Boolean),
+				.filter((path) => this.isAbsoluteFilePath(path)),
 		);
+		if (filePaths.length > 0) {
+			this.appendDroppedPathReferences(filePaths, insertionIndex);
+			return;
+		}
+
+		const imageFiles = list.filter((file) => this.isImageFile(file));
 		if (imageFiles.length > 0) {
 			await this.prepareImages(imageFiles);
+			return;
 		}
-		if (filePaths.length > 0) {
-			this.appendDroppedPathReferences(filePaths);
-		}
-		if (imageFiles.length === 0 && filePaths.length === 0) {
-			this.pushNotice("No readable files selected", "info");
-		}
+
+		this.pushNotice("No readable files selected", "info");
 	}
 
 	private async prepareImages(files: FileList | File[]): Promise<void> {
@@ -3092,16 +3116,89 @@ export class ChatView {
 	}
 
 	private removePendingFileReference(id: string): void {
+		const removed = this.pendingFileReferences.find((entry) => entry.id === id) ?? null;
 		this.pendingFileReferences = this.pendingFileReferences.filter((entry) => entry.id !== id);
+		if (removed?.token) {
+			this.inputText = this.removeStandaloneTokenOccurrence(this.inputText, removed.token);
+			this.resetComposerHistoryNavigation();
+			this.updateSlashPaletteStateFromInput();
+		}
+		this.syncPendingFileReferencesWithComposerText();
 		this.render();
+		this.syncComposerTextareaDeferred(this.inputText, { maxHeight: 220, focus: true });
+	}
+
+	private fileBadgeLabel(name: string): string {
+		const match = name.toLowerCase().match(/\.([a-z0-9]{1,5})$/i);
+		if (!match || !match[1]) return "FILE";
+		return match[1].toUpperCase();
+	}
+
+	private collectComposerFileTokenMatches(source: string): Array<{ start: number; end: number; entry: PendingFileReference }> {
+		if (!source || this.pendingFileReferences.length === 0) return [];
+		const matches: Array<{ start: number; end: number; entry: PendingFileReference }> = [];
+		for (const entry of this.pendingFileReferences) {
+			const match = this.findStandaloneTokenMatch(source, entry.token);
+			if (!match) continue;
+			const overlaps = matches.some((existing) => match.start < existing.end && existing.start < match.end);
+			if (overlaps) continue;
+			matches.push({ start: match.start, end: match.end, entry });
+		}
+		matches.sort((a, b) => a.start - b.start);
+		return matches;
+	}
+
+	private renderComposerInlineFilePill(entry: PendingFileReference): TemplateResult {
+		return html`
+			<span class="composer-inline-file-pill" title=${entry.path}>
+				<span class="composer-inline-file-thumb" aria-hidden="true">${this.fileBadgeLabel(entry.name)}</span>
+				<span class="composer-inline-file-name">${entry.path}</span>
+				<button
+					type="button"
+					class="composer-inline-file-remove"
+					title="Remove file reference"
+					@mousedown=${(event: MouseEvent) => {
+						event.preventDefault();
+						event.stopPropagation();
+					}}
+					@click=${(event: MouseEvent) => {
+						event.preventDefault();
+						event.stopPropagation();
+						this.removePendingFileReference(entry.id);
+					}}
+				>
+					✕
+				</button>
+			</span>
+		`;
+	}
+
+	private renderComposerInputOverlay(): TemplateResult | typeof nothing {
+		const source = this.inputText;
+		if (!source) return nothing;
+		const matches = this.collectComposerFileTokenMatches(source);
+		if (matches.length === 0) {
+			return html`<span class="chat-input-overlay-text">${source}</span>`;
+		}
+		const segments: Array<TemplateResult> = [];
+		let cursor = 0;
+		for (const match of matches) {
+			const prefix = source.slice(cursor, match.start);
+			if (prefix.length > 0) {
+				segments.push(html`<span class="chat-input-overlay-text">${prefix}</span>`);
+			}
+			segments.push(this.renderComposerInlineFilePill(match.entry));
+			cursor = match.end;
+		}
+		const suffix = source.slice(cursor);
+		if (suffix.length > 0) {
+			segments.push(html`<span class="chat-input-overlay-text">${suffix}</span>`);
+		}
+		return segments.length > 0 ? html`${segments}` : nothing;
 	}
 
 	private composedPromptText(rawText: string): string {
-		const baseText = rawText.trim();
-		const fileTokens = this.pendingFileReferences.map((entry) => entry.token).filter((token) => token.length > 0);
-		if (fileTokens.length === 0) return baseText;
-		const fileBlock = fileTokens.join("\n");
-		return baseText ? `${baseText}\n\n${fileBlock}` : fileBlock;
+		return rawText.trim();
 	}
 
 	private currentIsStreaming(): boolean {
@@ -3278,6 +3375,7 @@ export class ChatView {
 
 	private applyComposerText(text: string): void {
 		this.inputText = text;
+		this.syncPendingFileReferencesWithComposerText();
 		this.updateSlashPaletteStateFromInput();
 		this.render();
 		this.syncComposerTextareaDeferred(text, {
@@ -3316,6 +3414,7 @@ export class ChatView {
 		this.inputText = "";
 		this.pendingImages = [];
 		this.pendingFileReferences = [];
+		this.pendingAttachmentInsertIndex = null;
 		this.selectedSkillDraft = null;
 		this.resetComposerHistoryNavigation();
 		this.closeSlashPalette();
@@ -3324,6 +3423,7 @@ export class ChatView {
 	}
 
 	async sendMessage(mode: DeliveryMode = this.pendingDeliveryMode): Promise<void> {
+		this.syncPendingFileReferencesWithComposerText();
 		await sendMessageFlow({
 			mode,
 			bindingStatusText: this.bindingStatusText,
@@ -4315,6 +4415,8 @@ export class ChatView {
 
 	private async openComposerFilePicker(): Promise<void> {
 		if (this.isComposerInteractionLocked()) return;
+		const insertionIndex = this.getComposerInsertIndex();
+		this.pendingAttachmentInsertIndex = insertionIndex;
 		try {
 			const { open } = await import("@tauri-apps/plugin-dialog");
 			const selected = await open({
@@ -4322,28 +4424,29 @@ export class ChatView {
 				directory: false,
 				title: "Attach files",
 			});
+			this.pendingAttachmentInsertIndex = null;
 			if (selected === null) return;
 			const paths = this.dedupeDroppedPaths(
 				(Array.isArray(selected) ? selected : [selected])
 					.filter((value): value is string => typeof value === "string")
 					.map((value) => value.trim())
-					.filter(Boolean),
+					.filter((value) => this.isAbsoluteFilePath(value)),
 			);
-			if (paths.length === 0) return;
-			const imagePaths = paths.filter((path) => this.isImageName(this.fileNameFromPath(path)));
-			const filePaths = paths.filter((path) => !this.isImageName(this.fileNameFromPath(path)));
-			if (imagePaths.length > 0) {
-				await this.prepareImagesFromPaths(imagePaths, { quietIfNone: true });
+			if (paths.length === 0) {
+				this.pushNotice("Could not resolve absolute file paths", "info");
+				return;
 			}
-			if (filePaths.length > 0) {
-				this.appendDroppedPathReferences(filePaths);
-			}
+			this.appendDroppedPathReferences(paths, insertionIndex);
 			return;
 		} catch {
 			// fallback to file input
 		}
 		const input = this.container.querySelector("#file-picker") as HTMLInputElement | null;
-		input?.click();
+		if (!input) {
+			this.pendingAttachmentInsertIndex = null;
+			return;
+		}
+		input.click();
 	}
 
 	private renderComposerControls(canSend: boolean, isStreaming: boolean, interactionLocked: boolean): TemplateResult {
@@ -4465,18 +4568,25 @@ export class ChatView {
 	}
 
 	private handleComposerInput(event: Event, interactionLocked: boolean): void {
+		const hadInlineTokens = this.pendingFileReferences.length > 0;
 		handleComposerInputEvent({
 			event,
 			interactionLocked,
 			slashPaletteOpenBefore: this.slashPaletteOpen,
 			onSetInputText: (text) => {
 				this.inputText = text;
+				this.syncPendingFileReferencesWithComposerText();
 			},
 			onResetComposerHistoryNavigation: () => this.resetComposerHistoryNavigation(),
 			onUpdateSlashPaletteStateFromInput: () => this.updateSlashPaletteStateFromInput(),
 			onIsSlashPaletteOpen: () => this.slashPaletteOpen,
 			onRender: () => this.render(),
 		});
+		const hasInlineTokens = this.pendingFileReferences.length > 0;
+		if (hadInlineTokens || hasInlineTokens) {
+			this.render();
+		}
+		this.syncComposerOverlayScroll();
 	}
 
 	private handleComposerPaste(event: ClipboardEvent, interactionLocked: boolean): void {
@@ -4492,10 +4602,13 @@ export class ChatView {
 	}
 
 	private handleComposerDrop(event: DragEvent, interactionLocked: boolean): void {
+		const target = event.currentTarget instanceof HTMLTextAreaElement ? event.currentTarget : this.getComposerTextarea();
+		const selectionStart = target && typeof target.selectionStart === "number" ? target.selectionStart : this.getComposerInsertIndex();
+		const insertionIndex = this.clampComposerInsertIndex(selectionStart);
 		handleComposerDropEvent({
 			event,
 			interactionLocked,
-			onHandleDroppedDataTransfer: (dataTransfer) => this.handleDroppedDataTransfer(dataTransfer),
+			onHandleDroppedDataTransfer: (dataTransfer) => this.handleDroppedDataTransfer(dataTransfer, { insertionIndex }),
 		});
 	}
 
@@ -4536,8 +4649,11 @@ export class ChatView {
 		handleComposerFilePickerChangeEvent({
 			event,
 			interactionLocked,
-			onPrepareFiles: (files) => this.prepareComposerFiles(files),
+			onPrepareFiles: (files) => this.prepareComposerFiles(files, this.consumePendingAttachmentInsertIndex()),
 		});
+		if (interactionLocked) {
+			this.pendingAttachmentInsertIndex = null;
+		}
 	}
 
 	private renderComposer(): TemplateResult {
@@ -4567,22 +4683,31 @@ export class ChatView {
 						<div class="composer-row">
 							${renderComposerSkillDraftPillView(this.selectedSkillDraft, skillGlyphIcon(), () => this.removeComposerSkillDraft())}
 							${renderPendingImagesView(this.pendingImages, truncate, (id) => this.removePendingImage(id))}
-							${renderPendingFileReferencesView(this.pendingFileReferences, truncate, (id) => this.removePendingFileReference(id))}
-							<textarea
-								id="chat-input"
-								class="chat-input"
-								draggable="false"
-								placeholder=${interactionLocked ? (connectivityStatus || "Session not ready…") : "Describe the next change — type / for commands"}
-								rows="1"
-								?disabled=${interactionLocked}
-								.value=${this.inputText}
-								@input=${(event: Event) => this.handleComposerInput(event, interactionLocked)}
-								@paste=${(event: ClipboardEvent) => this.handleComposerPaste(event, interactionLocked)}
-								@dragstart=${(event: DragEvent) => event.preventDefault()}
-								@dragover=${(event: DragEvent) => this.handleComposerDragOver(event, interactionLocked)}
-								@drop=${(event: DragEvent) => this.handleComposerDrop(event, interactionLocked)}
-								@keydown=${(event: KeyboardEvent) => this.handleComposerKeyDown(event, interactionLocked, isStreaming)}
-							></textarea>
+							<div class="chat-input-wrap">
+								${this.pendingFileReferences.length > 0
+									? html`
+										<div id="chat-input-overlay" class="chat-input-overlay" aria-hidden="true">
+											${this.renderComposerInputOverlay()}
+										</div>
+									`
+									: nothing}
+								<textarea
+									id="chat-input"
+									class="chat-input ${this.pendingFileReferences.length > 0 ? "has-overlay" : ""}"
+									draggable="false"
+									placeholder=${interactionLocked ? (connectivityStatus || "Session not ready…") : "Describe the next change — type / for commands"}
+									rows="1"
+									?disabled=${interactionLocked}
+									.value=${this.inputText}
+									@input=${(event: Event) => this.handleComposerInput(event, interactionLocked)}
+									@paste=${(event: ClipboardEvent) => this.handleComposerPaste(event, interactionLocked)}
+									@dragstart=${(event: DragEvent) => event.preventDefault()}
+									@dragover=${(event: DragEvent) => this.handleComposerDragOver(event, interactionLocked)}
+									@drop=${(event: DragEvent) => this.handleComposerDrop(event, interactionLocked)}
+									@scroll=${() => this.syncComposerOverlayScroll()}
+									@keydown=${(event: KeyboardEvent) => this.handleComposerKeyDown(event, interactionLocked, isStreaming)}
+								></textarea>
+							</div>
 						</div>
 						${this.renderSlashPalette(slashItems)}
 						${this.renderComposerControls(canSend, isStreaming, interactionLocked)}
@@ -4733,7 +4858,7 @@ export class ChatView {
 					if (e.defaultPrevented) return;
 					e.preventDefault();
 					if (!hasProject) return;
-					this.handleDroppedDataTransfer(e.dataTransfer ?? null);
+					this.handleDroppedDataTransfer(e.dataTransfer ?? null, { insertionIndex: this.getComposerInsertIndex() });
 				}}
 			>
 				<div class="chat-scroll ${hasProject ? "" : "welcome-scroll"}" id="chat-scroll" @scroll=${(e: Event) => this.handleChatScroll(e)}>
@@ -4760,6 +4885,7 @@ export class ChatView {
 
 	render(): void {
 		this.doRender();
+		this.syncComposerOverlayScroll();
 		if (this.projectPath) {
 			this.scrollToBottom();
 		}

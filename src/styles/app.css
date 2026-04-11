@@ -5788,6 +5788,13 @@ body.file-split-resizing #file-split-resize-handle::after {
 	gap: 8px;
 }
 
+.chat-input-wrap {
+	position: relative;
+	flex: 1;
+	min-width: 0;
+	display: flex;
+}
+
 .chat-input {
 	width: 100%;
 	flex: 1;
@@ -5803,8 +5810,107 @@ body.file-split-resizing #file-split-resize-handle::after {
 	line-height: 1.4;
 }
 
+.chat-input.has-overlay {
+	position: relative;
+	z-index: 2;
+	color: transparent;
+	caret-color: var(--text);
+	-webkit-text-fill-color: transparent;
+}
+
+.chat-input.has-overlay::selection {
+	color: transparent;
+	-webkit-text-fill-color: transparent;
+}
+
+.chat-input-overlay {
+	position: absolute;
+	inset: 0;
+	z-index: 1;
+	padding: 8px 12px 8px;
+	overflow: hidden;
+	pointer-events: none;
+	color: var(--text);
+	font-size: 14px;
+	line-height: 1.4;
+	white-space: pre-wrap;
+	word-break: break-word;
+	user-select: none;
+}
+
+.chat-input-overlay-text {
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+
+.composer-inline-file-pill {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	max-width: min(100%, 340px);
+	padding: 0 4px;
+	border-radius: 8px;
+	vertical-align: baseline;
+	pointer-events: auto;
+}
+
+.composer-inline-file-pill:hover,
+.composer-inline-file-pill:focus-within {
+	background: color-mix(in srgb, var(--bg-soft) 76%, transparent);
+}
+
+.composer-inline-file-thumb {
+	display: inline-grid;
+	place-items: center;
+	min-width: 14px;
+	height: 14px;
+	font-size: 7px;
+	font-weight: 700;
+	letter-spacing: 0.02em;
+	text-transform: uppercase;
+	color: var(--muted-2);
+}
+
+.composer-inline-file-name {
+	max-width: 240px;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	color: var(--muted);
+	font-size: 13px;
+}
+
+.composer-inline-file-remove {
+	width: 14px;
+	height: 14px;
+	border: none;
+	border-radius: 999px;
+	background: transparent;
+	color: var(--muted);
+	display: inline-grid;
+	place-items: center;
+	line-height: 1;
+	padding: 0;
+	opacity: 0;
+	cursor: pointer;
+}
+
+.composer-inline-file-pill:hover .composer-inline-file-remove,
+.composer-inline-file-pill:focus-within .composer-inline-file-remove {
+	opacity: 1;
+}
+
+.composer-inline-file-remove:hover {
+	color: var(--text);
+	background: color-mix(in srgb, var(--bg-soft) 72%, transparent);
+}
+
 .chat-input::placeholder {
 	color: var(--muted-2);
+}
+
+.chat-input.has-overlay::placeholder {
+	-webkit-text-fill-color: var(--muted-2);
 }
 
 .composer-panel .chat-input:focus {
