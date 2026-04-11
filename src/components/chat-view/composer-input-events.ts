@@ -25,10 +25,6 @@ interface HandleComposerDragOverEventParams {
 	interactionLocked: boolean;
 }
 
-interface HandleComposerDragLeaveEventParams {
-	event: DragEvent;
-}
-
 interface HandleComposerDropEventParams {
 	event: DragEvent;
 	interactionLocked: boolean;
@@ -113,18 +109,7 @@ export function handleComposerPasteEvent({
 export function handleComposerDragOverEvent({ event, interactionLocked }: HandleComposerDragOverEventParams): void {
 	event.preventDefault();
 	event.stopPropagation();
-	const target = event.currentTarget;
-	if (target instanceof HTMLElement) {
-		target.classList.add("is-drop-hover");
-	}
 	if (event.dataTransfer) event.dataTransfer.dropEffect = interactionLocked ? "none" : "copy";
-}
-
-export function handleComposerDragLeaveEvent({ event }: HandleComposerDragLeaveEventParams): void {
-	const target = event.currentTarget;
-	if (target instanceof HTMLElement) {
-		target.classList.remove("is-drop-hover");
-	}
 }
 
 export function handleComposerDropEvent({
@@ -134,10 +119,6 @@ export function handleComposerDropEvent({
 }: HandleComposerDropEventParams): void {
 	event.preventDefault();
 	event.stopPropagation();
-	const target = event.currentTarget;
-	if (target instanceof HTMLElement) {
-		target.classList.remove("is-drop-hover");
-	}
 	if (interactionLocked) return;
 	onHandleDroppedDataTransfer(event.dataTransfer ?? null);
 }

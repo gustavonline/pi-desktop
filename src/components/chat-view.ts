@@ -47,7 +47,6 @@ import {
 	renderQueuedComposerMessagesView,
 } from "./chat-view/composer-fragments-view.js";
 import {
-	handleComposerDragLeaveEvent,
 	handleComposerDragOverEvent,
 	handleComposerDropEvent,
 	handleComposerFilePickerChangeEvent,
@@ -148,8 +147,6 @@ interface PendingImage {
 	data: string;
 	previewUrl: string;
 	size: number;
-	token?: string;
-	insertAt?: number;
 }
 
 interface PendingFileReference {
@@ -157,7 +154,6 @@ interface PendingFileReference {
 	name: string;
 	path: string;
 	token: string;
-	insertAt?: number;
 }
 
 interface QueuedComposerMessage {
@@ -502,7 +498,6 @@ export class ChatView {
 	private sendingPrompt = false;
 	private pendingImages: PendingImage[] = [];
 	private pendingFileReferences: PendingFileReference[] = [];
-	private pendingAttachmentInsertIndex: number | null = null;
 	private notices: Notice[] = [];
 	private changelogCacheMarkdown: string | null = null;
 	private changelogCacheAt = 0;
@@ -707,7 +702,6 @@ export class ChatView {
 		this.modelPickerOpen = false;
 		this.selectedSkillDraft = null;
 		this.pendingFileReferences = [];
-		this.pendingAttachmentInsertIndex = null;
 		this.slashPaletteOpen = false;
 		this.slashPaletteQuery = "";
 		this.slashPaletteIndex = 0;
@@ -795,34 +789,6 @@ export class ChatView {
 
 	private getComposerTextarea(): HTMLTextAreaElement | null {
 		return this.container.querySelector("#chat-input") as HTMLTextAreaElement | null;
-	}
-
-	private clampComposerInsertIndex(index: number | null | undefined): number {
-		const max = this.inputText.length;
-		if (typeof index !== "number" || !Number.isFinite(index)) return max;
-		return Math.max(0, Math.min(max, Math.floor(index)));
-	}
-
-	private getComposerInsertIndex(): number {
-		const textarea = this.getComposerTextarea();
-		if (!textarea) return this.inputText.length;
-		const selectionStart = typeof textarea.selectionStart === "number" ? textarea.selectionStart : this.inputText.length;
-		return this.clampComposerInsertIndex(selectionStart);
-	}
-
-	private consumePendingAttachmentInsertIndex(): number {
-		const pending = this.pendingAttachmentInsertIndex;
-		this.pendingAttachmentInsertIndex = null;
-		if (typeof pending === "number" && Number.isFinite(pending)) {
-			return this.clampComposerInsertIndex(pending);
-		}
-		return this.getComposerInsertIndex();
-	}
-
-	private clearComposerDropUiState(): void {
-		const textarea = this.getComposerTextarea();
-		textarea?.classList.remove("is-drop-hover");
-		document.documentElement.classList.remove("sidebar-file-drag-active");
 	}
 
 	private syncComposerTextarea(
@@ -1474,11 +1440,9 @@ export class ChatView {
 			const payload = event.payload as { type?: string; paths?: string[] };
 			if (payload?.type !== "drop") return;
 			if (!this.projectPath) return;
-			this.clearComposerDropUiState();
 
 			const nativePaths = Array.isArray(payload.paths) ? payload.paths : [];
-			const insertionIndex = this.getComposerInsertIndex();
-			if (this.handleDroppedPathCandidates(nativePaths, { quietImageReadFailure: true, insertionIndex })) {
+			if (this.handleDroppedPathCandidates(nativePaths, { quietImageReadFailure: true })) {
 				if (nativePaths.length > 0) {
 					clearActiveDraggedFilePaths();
 				}
@@ -1489,7 +1453,6 @@ export class ChatView {
 			if (sidebarFallbackPaths.length > 0) {
 				const handledFromSidebarFallback = this.handleDroppedPathCandidates(sidebarFallbackPaths, {
 					quietImageReadFailure: true,
-					insertionIndex,
 				});
 				clearActiveDraggedFilePaths();
 				if (handledFromSidebarFallback) return;
@@ -2787,10 +2750,9 @@ export class ChatView {
 		return token;
 	}
 
-	private appendDroppedPathReferences(paths: string[], insertionIndex?: number): void {
+	private appendDroppedPathReferences(paths: string[]): void {
 		const seen = new Set<string>(this.pendingFileReferences.map((entry) => entry.token.toLowerCase()));
 		const next: PendingFileReference[] = [];
-		const insertAt = this.clampComposerInsertIndex(insertionIndex);
 		for (const rawPath of paths) {
 			const normalizedPath = this.normalizeDroppedPath(rawPath);
 			if (!normalizedPath) continue;
@@ -2804,7 +2766,6 @@ export class ChatView {
 				name: this.fileNameFromPath(normalizedPath),
 				path: normalizedPath,
 				token,
-				insertAt,
 			});
 		}
 		if (next.length === 0) return;
@@ -2828,7 +2789,7 @@ export class ChatView {
 
 	private handleDroppedPathCandidates(
 		paths: string[],
-		options: { quietImageReadFailure?: boolean; insertionIndex?: number } = {},
+		options: { quietImageReadFailure?: boolean } = {},
 	): boolean {
 		const normalizedPaths = this.dedupeDroppedPaths(paths);
 		if (normalizedPaths.length === 0) return false;
@@ -2843,12 +2804,11 @@ export class ChatView {
 		if (imagePaths.length > 0) {
 			void this.prepareImagesFromPaths(imagePaths, {
 				quietIfNone: options.quietImageReadFailure ?? true,
-				insertionIndex: options.insertionIndex,
 			});
 			handled = true;
 		}
 		if (filePaths.length > 0) {
-			this.appendDroppedPathReferences(filePaths, options.insertionIndex);
+			this.appendDroppedPathReferences(filePaths);
 			handled = true;
 		}
 		return handled;
@@ -2865,15 +2825,11 @@ export class ChatView {
 		return this.normalizeDroppedPath(pathValue);
 	}
 
-	private async prepareImagesFromPaths(
-		paths: string[],
-		options: { quietIfNone?: boolean; insertionIndex?: number } = {},
-	): Promise<void> {
+	private async prepareImagesFromPaths(paths: string[], options: { quietIfNone?: boolean } = {}): Promise<void> {
 		if (paths.length === 0) return;
 		try {
 			const { readFile } = await import("@tauri-apps/plugin-fs");
 			const next: PendingImage[] = [];
-			const insertAt = this.clampComposerInsertIndex(options.insertionIndex);
 			for (const path of paths) {
 				const cleanPath = path.trim();
 				if (!cleanPath) continue;
@@ -2891,8 +2847,6 @@ export class ChatView {
 						data: base64,
 						previewUrl: `data:${mime};base64,${base64}`,
 						size: bytes.length,
-						token: this.formatDroppedPathToken(cleanPath) || undefined,
-						insertAt,
 					});
 				} catch {
 					// ignore unreadable file
@@ -2911,13 +2865,11 @@ export class ChatView {
 		}
 	}
 
-	private handleDroppedDataTransfer(dataTransfer: DataTransfer | null, options: { insertionIndex?: number } = {}): void {
-		this.clearComposerDropUiState();
+	private handleDroppedDataTransfer(dataTransfer: DataTransfer | null): void {
 		const activeSidebarPaths = peekActiveDraggedFilePaths();
 		if (!dataTransfer) {
 			const handledFromSidebarFallback = this.handleDroppedPathCandidates(activeSidebarPaths, {
 				quietImageReadFailure: true,
-				insertionIndex: options.insertionIndex,
 			});
 			if (activeSidebarPaths.length > 0) {
 				clearActiveDraggedFilePaths();
@@ -2999,22 +2951,21 @@ export class ChatView {
 
 		let handled = false;
 		if (imageFiles.length > 0) {
-			void this.prepareImages(imageFiles, { insertionIndex: options.insertionIndex });
+			void this.prepareImages(imageFiles);
 			handled = true;
 		} else if (imagePaths.length > 0) {
-			void this.prepareImagesFromPaths(imagePaths, { quietIfNone: true, insertionIndex: options.insertionIndex });
+			void this.prepareImagesFromPaths(imagePaths, { quietIfNone: true });
 			handled = true;
 		}
 
 		if (filePaths.length > 0) {
-			this.appendDroppedPathReferences(filePaths, options.insertionIndex);
+			this.appendDroppedPathReferences(filePaths);
 			handled = true;
 		}
 
 		if (!handled && activeSidebarPaths.length > 0) {
 			const handledFromSidebarFallback = this.handleDroppedPathCandidates(activeSidebarPaths, {
 				quietImageReadFailure: true,
-				insertionIndex: options.insertionIndex,
 			});
 			clearActiveDraggedFilePaths();
 			if (handledFromSidebarFallback) {
@@ -3027,7 +2978,7 @@ export class ChatView {
 		}
 	}
 
-	private async prepareComposerFiles(files: FileList | File[], insertionIndex?: number): Promise<void> {
+	private async prepareComposerFiles(files: FileList | File[]): Promise<void> {
 		const list = Array.from(files || []);
 		if (list.length === 0) return;
 		const imageFiles = list.filter((file) => this.isImageFile(file));
@@ -3038,17 +2989,17 @@ export class ChatView {
 				.filter(Boolean),
 		);
 		if (imageFiles.length > 0) {
-			await this.prepareImages(imageFiles, { insertionIndex });
+			await this.prepareImages(imageFiles);
 		}
 		if (filePaths.length > 0) {
-			this.appendDroppedPathReferences(filePaths, insertionIndex);
+			this.appendDroppedPathReferences(filePaths);
 		}
 		if (imageFiles.length === 0 && filePaths.length === 0) {
 			this.pushNotice("No readable files selected", "info");
 		}
 	}
 
-	private async prepareImages(files: FileList | File[], options: { insertionIndex?: number } = {}): Promise<void> {
+	private async prepareImages(files: FileList | File[]): Promise<void> {
 		const list = Array.from(files).filter((f) => this.isImageFile(f));
 		if (list.length === 0) {
 			this.pushNotice("Drop an image file (png, jpg, webp, gif…)", "info");
@@ -3058,13 +3009,11 @@ export class ChatView {
 		const next: PendingImage[] = [];
 		let failed = 0;
 
-		const insertAt = this.clampComposerInsertIndex(options.insertionIndex);
 		for (const file of list) {
 			const safeName = file.name || `image-${Date.now()}.png`;
 			const mime = file.type || this.mimeFromFileName(safeName);
 			const rawPathHint = this.pathFromDroppedFile(file);
 			const pathHint = rawPathHint && rawPathHint !== safeName ? rawPathHint : undefined;
-			const token = pathHint ? this.formatDroppedPathToken(pathHint) : "";
 			let base64 = "";
 
 			try {
@@ -3085,8 +3034,6 @@ export class ChatView {
 								data: base64,
 								previewUrl: `data:${parsedMime};base64,${base64}`,
 								size: file.size,
-								token: token || undefined,
-								insertAt,
 							});
 							continue;
 						}
@@ -3110,8 +3057,6 @@ export class ChatView {
 				data: base64,
 				previewUrl: `data:${mime};base64,${base64}`,
 				size: file.size,
-				token: token || undefined,
-				insertAt,
 			});
 		}
 
@@ -3152,46 +3097,11 @@ export class ChatView {
 	}
 
 	private composedPromptText(rawText: string): string {
-		const baseText = rawText;
-		const tokenEntries = [
-			...this.pendingFileReferences
-				.filter((entry) => entry.token.length > 0)
-				.map((entry, idx) => ({ token: entry.token, insertAt: entry.insertAt, order: idx })),
-			...this.pendingImages
-				.filter((image) => typeof image.token === "string" && image.token.trim().length > 0)
-				.map((image, idx) => ({
-					token: (image.token || "").trim(),
-					insertAt: image.insertAt,
-					order: this.pendingFileReferences.length + idx,
-				})),
-		];
-		if (tokenEntries.length === 0) return baseText.trim();
-
-		const sorted = tokenEntries
-			.map((entry) => ({
-				token: entry.token,
-				insertAt: this.clampComposerInsertIndex(entry.insertAt),
-				order: entry.order,
-			}))
-			.sort((a, b) => a.insertAt - b.insertAt || a.order - b.order);
-
-		let cursor = 0;
-		let output = "";
-		for (const entry of sorted) {
-			const index = this.clampComposerInsertIndex(entry.insertAt);
-			output += baseText.slice(cursor, index);
-			if (output.length > 0 && !/\s$/.test(output)) {
-				output += " ";
-			}
-			output += entry.token;
-			const nextChar = baseText.slice(index, index + 1);
-			if (nextChar && !/^\s$/.test(nextChar)) {
-				output += " ";
-			}
-			cursor = index;
-		}
-		output += baseText.slice(cursor);
-		return output.trim();
+		const baseText = rawText.trim();
+		const fileTokens = this.pendingFileReferences.map((entry) => entry.token).filter((token) => token.length > 0);
+		if (fileTokens.length === 0) return baseText;
+		const fileBlock = fileTokens.join("\n");
+		return baseText ? `${baseText}\n\n${fileBlock}` : fileBlock;
 	}
 
 	private currentIsStreaming(): boolean {
@@ -3406,7 +3316,6 @@ export class ChatView {
 		this.inputText = "";
 		this.pendingImages = [];
 		this.pendingFileReferences = [];
-		this.pendingAttachmentInsertIndex = null;
 		this.selectedSkillDraft = null;
 		this.resetComposerHistoryNavigation();
 		this.closeSlashPalette();
@@ -3464,7 +3373,6 @@ export class ChatView {
 	private editUserMessage(msg: UiMessage): void {
 		this.pendingImages = this.cloneImages(msg.attachments);
 		this.pendingFileReferences = [];
-		this.pendingAttachmentInsertIndex = null;
 		this.setInputText(msg.text || "");
 		this.pushNotice("Loaded message into composer", "info");
 	}
@@ -3479,7 +3387,6 @@ export class ChatView {
 
 		this.pendingImages = images;
 		this.pendingFileReferences = [];
-		this.pendingAttachmentInsertIndex = null;
 		this.setInputText(text);
 		this.pushNotice("Message loaded. Press send to resend", "info");
 	}
@@ -4408,8 +4315,6 @@ export class ChatView {
 
 	private async openComposerFilePicker(): Promise<void> {
 		if (this.isComposerInteractionLocked()) return;
-		const insertionIndex = this.getComposerInsertIndex();
-		this.pendingAttachmentInsertIndex = insertionIndex;
 		try {
 			const { open } = await import("@tauri-apps/plugin-dialog");
 			const selected = await open({
@@ -4417,39 +4322,28 @@ export class ChatView {
 				directory: false,
 				title: "Attach files",
 			});
-			if (selected === null) {
-				this.pendingAttachmentInsertIndex = null;
-				return;
-			}
+			if (selected === null) return;
 			const paths = this.dedupeDroppedPaths(
 				(Array.isArray(selected) ? selected : [selected])
 					.filter((value): value is string => typeof value === "string")
 					.map((value) => value.trim())
 					.filter(Boolean),
 			);
-			if (paths.length === 0) {
-				this.pendingAttachmentInsertIndex = null;
-				return;
-			}
+			if (paths.length === 0) return;
 			const imagePaths = paths.filter((path) => this.isImageName(this.fileNameFromPath(path)));
 			const filePaths = paths.filter((path) => !this.isImageName(this.fileNameFromPath(path)));
 			if (imagePaths.length > 0) {
-				await this.prepareImagesFromPaths(imagePaths, { quietIfNone: true, insertionIndex });
+				await this.prepareImagesFromPaths(imagePaths, { quietIfNone: true });
 			}
 			if (filePaths.length > 0) {
-				this.appendDroppedPathReferences(filePaths, insertionIndex);
+				this.appendDroppedPathReferences(filePaths);
 			}
-			this.pendingAttachmentInsertIndex = null;
 			return;
 		} catch {
 			// fallback to file input
 		}
 		const input = this.container.querySelector("#file-picker") as HTMLInputElement | null;
-		if (!input) {
-			this.pendingAttachmentInsertIndex = null;
-			return;
-		}
-		input.click();
+		input?.click();
 	}
 
 	private renderComposerControls(canSend: boolean, isStreaming: boolean, interactionLocked: boolean): TemplateResult {
@@ -4589,30 +4483,19 @@ export class ChatView {
 		handleComposerPasteEvent({
 			event,
 			interactionLocked,
-			onPrepareImages: (files) => this.prepareImages(files, { insertionIndex: this.getComposerInsertIndex() }),
+			onPrepareImages: (files) => this.prepareImages(files),
 		});
 	}
 
 	private handleComposerDragOver(event: DragEvent, interactionLocked: boolean): void {
-		const target = event.currentTarget instanceof HTMLTextAreaElement ? event.currentTarget : null;
-		if (target && document.activeElement !== target) {
-			target.focus({ preventScroll: true });
-		}
 		handleComposerDragOverEvent({ event, interactionLocked });
 	}
 
-	private handleComposerDragLeave(event: DragEvent): void {
-		handleComposerDragLeaveEvent({ event });
-	}
-
 	private handleComposerDrop(event: DragEvent, interactionLocked: boolean): void {
-		const target = event.currentTarget instanceof HTMLTextAreaElement ? event.currentTarget : this.getComposerTextarea();
-		const selectionStart = target && typeof target.selectionStart === "number" ? target.selectionStart : this.getComposerInsertIndex();
-		const insertionIndex = this.clampComposerInsertIndex(selectionStart);
 		handleComposerDropEvent({
 			event,
 			interactionLocked,
-			onHandleDroppedDataTransfer: (dataTransfer) => this.handleDroppedDataTransfer(dataTransfer, { insertionIndex }),
+			onHandleDroppedDataTransfer: (dataTransfer) => this.handleDroppedDataTransfer(dataTransfer),
 		});
 	}
 
@@ -4653,11 +4536,8 @@ export class ChatView {
 		handleComposerFilePickerChangeEvent({
 			event,
 			interactionLocked,
-			onPrepareFiles: (files) => this.prepareComposerFiles(files, this.consumePendingAttachmentInsertIndex()),
+			onPrepareFiles: (files) => this.prepareComposerFiles(files),
 		});
-		if (interactionLocked) {
-			this.pendingAttachmentInsertIndex = null;
-		}
 	}
 
 	private renderComposer(): TemplateResult {
@@ -4678,10 +4558,6 @@ export class ChatView {
 		const circumference = 2 * Math.PI * ringRadius;
 		const strokeOffset = circumference * (1 - ratio);
 		const statsLines = this.sessionStatsLines();
-		const pendingImages = [...this.pendingImages].sort((a, b) => (a.insertAt ?? Number.MAX_SAFE_INTEGER) - (b.insertAt ?? Number.MAX_SAFE_INTEGER));
-		const pendingFileReferences = [...this.pendingFileReferences].sort(
-			(a, b) => (a.insertAt ?? Number.MAX_SAFE_INTEGER) - (b.insertAt ?? Number.MAX_SAFE_INTEGER),
-		);
 
 		return html`
 			<div class="composer-shell">
@@ -4690,6 +4566,8 @@ export class ChatView {
 					<div class="composer-panel">
 						<div class="composer-row">
 							${renderComposerSkillDraftPillView(this.selectedSkillDraft, skillGlyphIcon(), () => this.removeComposerSkillDraft())}
+							${renderPendingImagesView(this.pendingImages, truncate, (id) => this.removePendingImage(id))}
+							${renderPendingFileReferencesView(this.pendingFileReferences, truncate, (id) => this.removePendingFileReference(id))}
 							<textarea
 								id="chat-input"
 								class="chat-input"
@@ -4702,12 +4580,9 @@ export class ChatView {
 								@paste=${(event: ClipboardEvent) => this.handleComposerPaste(event, interactionLocked)}
 								@dragstart=${(event: DragEvent) => event.preventDefault()}
 								@dragover=${(event: DragEvent) => this.handleComposerDragOver(event, interactionLocked)}
-								@dragleave=${(event: DragEvent) => this.handleComposerDragLeave(event)}
 								@drop=${(event: DragEvent) => this.handleComposerDrop(event, interactionLocked)}
 								@keydown=${(event: KeyboardEvent) => this.handleComposerKeyDown(event, interactionLocked, isStreaming)}
 							></textarea>
-							${renderPendingImagesView(pendingImages, truncate, (id) => this.removePendingImage(id))}
-							${renderPendingFileReferencesView(pendingFileReferences, truncate, (id) => this.removePendingFileReference(id))}
 						</div>
 						${this.renderSlashPalette(slashItems)}
 						${this.renderComposerControls(canSend, isStreaming, interactionLocked)}
@@ -4858,7 +4733,7 @@ export class ChatView {
 					if (e.defaultPrevented) return;
 					e.preventDefault();
 					if (!hasProject) return;
-					this.handleDroppedDataTransfer(e.dataTransfer ?? null, { insertionIndex: this.getComposerInsertIndex() });
+					this.handleDroppedDataTransfer(e.dataTransfer ?? null);
 				}}
 			>
 				<div class="chat-scroll ${hasProject ? "" : "welcome-scroll"}" id="chat-scroll" @scroll=${(e: Event) => this.handleChatScroll(e)}>
