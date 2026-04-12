@@ -2867,11 +2867,28 @@ export class PackagesView {
 		return this.skillResources.find((item) => item.name.trim().toLowerCase() === normalized) ?? null;
 	}
 
+	private isRecommendedSkillInstalled(
+		definition: RecommendedSkillDefinition,
+		resource: DiscoveredResourceItem | null,
+		packageInstalled: boolean,
+	): boolean {
+		if (packageInstalled) return true;
+		if (!resource) return false;
+
+		const normalizedPackageSource = normalizeRecommendedSource(definition.packageSource);
+		const isLocalRecommendedSkill = normalizedPackageSource.startsWith("local:");
+		if (isLocalRecommendedSkill) return true;
+
+		const resourceSource = (resource.packageSource || "").trim();
+		if (!resourceSource) return false;
+		return this.sourceMatchesInstalled(definition.packageSource, resourceSource);
+	}
+
 	private buildRecommendedSkillItems(): RecommendedSkillSurfaceItem[] {
 		return RECOMMENDED_SKILLS.map((definition) => {
 			const resource = this.findSkillResourceByName(definition.skillName);
 			const packageInstalled = this.isSourceInstalledForScope(definition.packageSource, "global");
-			const installed = Boolean(resource || packageInstalled);
+			const installed = this.isRecommendedSkillInstalled(definition, resource, packageInstalled);
 			return {
 				id: `recommended-skill:${definition.id}`,
 				definition,

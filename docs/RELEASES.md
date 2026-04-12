@@ -74,8 +74,15 @@ For production distribution, configure platform signing:
 - Linux: optional signature strategy depending on distro/channel
 
 Without macOS signing/notarization, some users may see Gatekeeper warnings (“app is damaged”).
-Include this workaround in release notes while unsigned builds are shipped:
+Include these workarounds in release notes while unsigned builds are shipped:
+
+1. Terminal workaround:
 
 ```bash
 xattr -cr /Applications/Pi\ Desktop.app
 ```
+
+2. System Settings workaround:
+   - Open **System Settings → Privacy & Security**
+   - Find the blocked Pi Desktop launch warning
+   - Click **Open Anyway** and confirm
