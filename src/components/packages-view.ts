@@ -2903,13 +2903,95 @@ export class PackagesView {
 		return new Set(items.map((item) => item.definition.skillName.toLowerCase()));
 	}
 
+	private shouldSkipPackagedSkillDir(name: string): boolean {
+		const normalized = name.trim().toLowerCase();
+		return normalized === ".git" || normalized === "node_modules";
+	}
+
+	private async copyDirectoryRecursive(fromPath: string, toPath: string): Promise<void> {
+		const { mkdir, readDir, copyFile } = await import("@tauri-apps/plugin-fs");
+		await mkdir(toPath, { recursive: true });
+		const entries = await readDir(fromPath);
+		for (const entry of entries) {
+			const sourcePath = joinFsPath(fromPath, entry.name);
+			const targetPath = joinFsPath(toPath, entry.name);
+			if (entry.isDirectory) {
+				if (this.shouldSkipPackagedSkillDir(entry.name)) continue;
+				await this.copyDirectoryRecursive(sourcePath, targetPath);
+				continue;
+			}
+			if (!entry.isFile) continue;
+			await copyFile(sourcePath, targetPath);
+		}
+	}
+
+	private async resolveSkillDirectoryFromPackage(basePath: string, skillName: string): Promise<string | null> {
+		const normalizedSkill = skillName.trim().toLowerCase();
+		if (!normalizedSkill) return null;
+		try {
+			const { exists, readDir } = await import("@tauri-apps/plugin-fs");
+			const directCandidates = [
+				joinFsPath(basePath, skillName),
+				joinFsPath(joinFsPath(basePath, "skills"), skillName),
+			];
+			for (const candidate of directCandidates) {
+				if (await exists(joinFsPath(candidate, "SKILL.md"))) return candidate;
+			}
+
+			const queue: Array<{ path: string; depth: number }> = [{ path: basePath, depth: 0 }];
+			while (queue.length > 0) {
+				const next = queue.shift()!;
+				if (next.depth > 3) continue;
+				const entries = await readDir(next.path).catch(() => []);
+				for (const entry of entries) {
+					if (!entry.isDirectory || this.shouldSkipPackagedSkillDir(entry.name)) continue;
+					const fullPath = joinFsPath(next.path, entry.name);
+					const normalizedName = entry.name.trim().toLowerCase();
+					if (normalizedName === normalizedSkill && await exists(joinFsPath(fullPath, "SKILL.md"))) {
+						return fullPath;
+					}
+					queue.push({ path: fullPath, depth: next.depth + 1 });
+				}
+			}
+		} catch {
+			// ignore
+		}
+		return null;
+	}
+
+	private async materializeRecommendedSkillFromPackage(item: RecommendedSkillSurfaceItem): Promise<string | null> {
+		if (item.definition.sourceKind === "local") return item.resource?.path || null;
+		await this.ensureHomePath();
+		const skillsRoot = this.resourceRootPath("skill", "global");
+		if (!skillsRoot) return null;
+
+		const targetDir = joinFsPath(skillsRoot, item.definition.skillName);
+		const targetSkillPath = joinFsPath(targetDir, "SKILL.md");
+		const { exists, mkdir } = await import("@tauri-apps/plugin-fs");
+		if (await exists(targetSkillPath)) return targetSkillPath;
+
+		const installedPackage = this.findInstalledItemForSource(item.definition.packageSource, "global");
+		const basePath = installedPackage?.location?.trim();
+		if (!basePath) return null;
+
+		const sourceDir = await this.resolveSkillDirectoryFromPackage(basePath, item.definition.skillName);
+		if (!sourceDir) return null;
+		await mkdir(skillsRoot, { recursive: true });
+		await this.copyDirectoryRecursive(sourceDir, targetDir);
+		return (await exists(targetSkillPath)) ? targetSkillPath : null;
+	}
+
 	private async resolvePackageSkillContentPath(skillName: string, packageSource: string | null): Promise<string | null> {
 		if (!packageSource) return null;
 		const installedPackage = this.findInstalledItemForSource(packageSource, "global");
 		const basePath = installedPackage?.location?.trim();
 		if (!basePath) return null;
+
+		const skillDir = await this.resolveSkillDirectoryFromPackage(basePath, skillName);
+		if (skillDir) return joinFsPath(skillDir, "SKILL.md");
+
 		const candidates = [
-			joinFsPath(joinFsPath(joinFsPath(basePath, "skills"), skillName), "SKILL.md"),
+			joinFsPath(basePath, `${skillName}.md`),
 			joinFsPath(joinFsPath(basePath, "skills"), `${skillName}.md`),
 		];
 		try {
@@ -3218,8 +3300,29 @@ export class PackagesView {
 		if (!item.installed) {
 			await this.installPackage(item.definition.packageSource, "global");
 		}
-		const commandText = `/skill:${item.definition.skillName}`;
-		await this.stageResourceCommandInChat(commandText, `Prepared ${commandText} in chat. Press Enter to run.`);
+
+		await this.refreshDiscoveredResources();
+		const packageInstalled = this.isSourceInstalledForScope(item.definition.packageSource, "global");
+		if (item.definition.sourceKind !== "local" && !packageInstalled) {
+			this.commandStatus = `Failed to install ${item.definition.name}.`;
+			this.render();
+			return;
+		}
+
+		let materializedSkillPath: string | null = null;
+		try {
+			materializedSkillPath = await this.materializeRecommendedSkillFromPackage(item);
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			this.commandStatus = `Installed ${item.definition.name}, but failed to prepare local skill files: ${message}`;
+		}
+
+		await this.refreshDiscoveredResources();
+		const resolvedSkill = this.findSkillResourceByName(item.definition.skillName);
+		const commandText = resolvedSkill?.commandText || `/skill:${item.definition.skillName}`;
+		const setupSuffix = item.definition.setupHint ? ` Setup: ${item.definition.setupHint}` : "";
+		const locationSuffix = materializedSkillPath ? ` Skill files copied to ${pathDirName(materializedSkillPath)}.` : "";
+		await this.stageResourceCommandInChat(commandText, `Prepared ${commandText} in chat. Press Enter to run.${locationSuffix}${setupSuffix}`);
 		if (this.activePackagesModal?.kind === "recommended-skill") {
 			this.closePackagesItemModal();
 		}
