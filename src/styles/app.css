@@ -4380,6 +4380,20 @@ body.file-split-resizing #file-split-resize-handle::after {
 	cursor: pointer;
 	color: var(--muted);
 	min-width: 0;
+	-webkit-user-select: none;
+	user-select: none;
+}
+
+.sidebar-file-row.is-draggable {
+	-webkit-user-drag: element;
+}
+
+.sidebar-file-row.is-draggable .sidebar-file-main {
+	cursor: grab;
+}
+
+.sidebar-file-row.is-draggable .sidebar-file-main:active {
+	cursor: grabbing;
 }
 
 .sidebar-file-main:hover {
@@ -4401,6 +4415,8 @@ body.file-split-resizing #file-split-resize-handle::after {
 	color: var(--muted);
 	flex-shrink: 0;
 	font-size: 10px;
+	-webkit-user-select: none;
+	user-select: none;
 }
 
 .sidebar-file-icon {
@@ -4410,6 +4426,8 @@ body.file-split-resizing #file-split-resize-handle::after {
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
+	-webkit-user-select: none;
+	user-select: none;
 }
 
 .sidebar-file-icon svg {
@@ -6497,40 +6515,79 @@ body.file-split-resizing #file-split-resize-handle::after {
 
 .composer-attachments {
 	display: flex;
-	gap: 8px;
+	align-items: center;
+	gap: 6px;
+	flex-wrap: wrap;
+	min-width: 0;
+}
+
+.composer-attachments.inline {
+	margin-top: 5px;
+	max-width: min(28%, 220px);
 	overflow-x: auto;
-	padding: 0 2px 6px;
+	padding: 0 0 2px;
 }
 
 .composer-attachment {
-	display: flex;
+	display: inline-flex;
 	align-items: center;
-	gap: 8px;
-	padding: 6px;
-	border-radius: 10px;
-	background: color-mix(in srgb, var(--bg-soft) 66%, var(--bg-elev));
-	border: 1px solid color-mix(in srgb, var(--border) 88%, transparent);
+	gap: 4px;
+	max-width: 100%;
+	padding: 2px 6px 2px 2px;
+	border-radius: 999px;
+	border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+	background: color-mix(in srgb, var(--bg-soft) 56%, transparent);
+	font-size: 10px;
+	line-height: 1.2;
+	color: var(--muted);
 	flex-shrink: 0;
 }
 
-.composer-attachment img {
-	width: 42px;
-	height: 42px;
+.composer-attachment-thumb {
+	width: 14px;
+	height: 14px;
+	border-radius: 4px;
 	object-fit: cover;
-	border-radius: 8px;
+	flex-shrink: 0;
 }
 
-.composer-attachment-meta {
-	font-size: 10px;
-	color: var(--muted);
-	line-height: 1.3;
+.composer-attachment-thumb.file {
+	display: inline-grid;
+	place-items: center;
+	font-size: 7px;
+	font-weight: 700;
+	letter-spacing: 0.02em;
+	color: var(--muted-2);
+	background: color-mix(in srgb, var(--bg) 82%, var(--bg-soft));
+	border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+	text-transform: uppercase;
 }
 
-.composer-attachment button {
+.composer-attachment-name {
+	max-width: 46px;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	color: var(--text);
+}
+
+.composer-attachment-remove {
+	width: 14px;
+	height: 14px;
 	border: none;
+	border-radius: 999px;
 	background: transparent;
 	color: var(--muted);
 	cursor: pointer;
+	display: inline-grid;
+	place-items: center;
+	line-height: 1;
+	padding: 0;
+}
+
+.composer-attachment-remove:hover {
+	background: color-mix(in srgb, var(--bg-soft) 70%, transparent);
+	color: var(--text);
 }
 
 

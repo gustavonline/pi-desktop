@@ -3,21 +3,14 @@
  */
 
 import { html, nothing, render } from "lit";
+import { normalizeRuntimeSlashCommands } from "../commands/slash-command-runtime.js";
 import { rpcBridge } from "../rpc/bridge.js";
-
-interface RpcCommand {
-	name: string;
-	description?: string;
-	source: "extension" | "prompt" | "skill";
-	location?: string;
-	path?: string;
-}
 
 interface PaletteCommand {
 	id: string;
 	name: string;
 	description: string;
-	source: "extension" | "prompt" | "skill" | "builtin";
+	source: string | "builtin";
 	commandText?: string;
 	action?: () => Promise<void> | void;
 }
@@ -32,18 +25,6 @@ function normalizeCommandName(name: string): string {
 	return name.trim().toLowerCase().replace(/^\/+/, "");
 }
 
-function normalizeRuntimeCommandDescription(name: string, description: string): string {
-	const normalizedName = normalizeCommandName(name);
-	const normalizedDescription = description.trim();
-	if (normalizedName === "voice-notify") {
-		return "Voice notifications: no arg opens extension settings, or use status/reload/on/off/test";
-	}
-	if (/^configure windows smart voice notifications$/i.test(normalizedDescription)) {
-		return "Voice notifications: no arg opens extension settings, or use status/reload/on/off/test";
-	}
-	return normalizedDescription || `Run /${normalizedName}`;
-}
-
 export class CommandPalette {
 	private container: HTMLElement;
 	private isOpen = false;
@@ -52,6 +33,7 @@ export class CommandPalette {
 	private searchQuery = "";
 	private selectedIndex = 0;
 	private onClose: (() => void) | null = null;
+	private onRunSlashCommand: ((commandText: string) => boolean | Promise<boolean>) | null = null;
 	private builtins: BuiltinAction[] = [];
 
 	constructor(container: HTMLElement) {
@@ -65,6 +47,10 @@ export class CommandPalette {
 
 	setOnClose(callback: () => void): void {
 		this.onClose = callback;
+	}
+
+	setOnRunSlashCommand(callback: ((commandText: string) => boolean | Promise<boolean>) | null): void {
+		this.onRunSlashCommand = callback;
 	}
 
 	async open(): Promise<void> {
@@ -89,10 +75,10 @@ export class CommandPalette {
 	}
 
 	private async loadCommands(): Promise<void> {
-		let rpcCommands: RpcCommand[] = [];
+		let rpcCommands: Array<Record<string, unknown>> = [];
 		try {
 			const result = await rpcBridge.getCommands();
-			rpcCommands = result as unknown as RpcCommand[];
+			rpcCommands = Array.isArray(result) ? (result as Array<Record<string, unknown>>) : [];
 		} catch (err) {
 			console.error("Failed to load commands:", err);
 		}
@@ -105,13 +91,17 @@ export class CommandPalette {
 			action: action.action,
 		}));
 
-		const slashCommands: PaletteCommand[] = rpcCommands.map((cmd) => ({
-			id: `${cmd.source}:${cmd.name}`,
-			name: cmd.name,
-			description: normalizeRuntimeCommandDescription(cmd.name, cmd.description || ""),
-			source: cmd.source,
-			commandText: `/${cmd.name}`,
-		}));
+		const slashCommands: PaletteCommand[] = normalizeRuntimeSlashCommands(rpcCommands).map((command) => {
+			const source = command.rawSource || command.source || "runtime";
+			const name = normalizeCommandName(command.name);
+			return {
+				id: `${source}:${name}`,
+				name,
+				description: command.description,
+				source,
+				commandText: `/${name}`,
+			};
+		});
 
 		this.commands = [...builtinCommands, ...slashCommands];
 	}
@@ -138,6 +128,13 @@ export class CommandPalette {
 				return;
 			}
 			const text = command.commandText || `/${command.name}`;
+			if (this.onRunSlashCommand) {
+				const handled = await this.onRunSlashCommand(text);
+				if (handled) {
+					this.close();
+					return;
+				}
+			}
 			await rpcBridge.prompt(text);
 			this.close();
 		} catch (err) {

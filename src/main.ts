@@ -2,7 +2,7 @@
  * Pi Desktop - app bootstrap
  */
 
-import { html, render } from "lit";
+import { html, nothing, render } from "lit";
 import { ChatView } from "./components/chat-view.js";
 import { CommandPalette } from "./components/command-palette.js";
 import { ContentTabs } from "./components/content-tabs.js";
@@ -26,6 +26,7 @@ import { syncDesktopThemeWithPiTheme } from "./theme/pi-theme-bridge.js";
 import { DESKTOP_THEME_CHANGED_EVENT, getResolvedDesktopTheme, initializeDesktopTheme, toggleDesktopTheme } from "./theme/theme-manager.js";
 import { ensureBundledThemesInstalled } from "./theme/bundled-themes.js";
 import { ensureDesktopNotifyBridgeExtensionInstalled } from "./extensions/desktop-notify-bridge-extension.js";
+import { isExtensionConfigIntent, normalizeExtensionCommandName } from "./extensions/extension-command-intent.js";
 import { ensureDesktopSdkCompatExtensionInstalled } from "./extensions/sdk-compat-extension.js";
 import { ensureSmartVoiceNotifyDesktopHostMode } from "./extensions/smart-voice-notify-config.js";
 import "./styles/app.css";
@@ -113,6 +114,7 @@ const CLI_UPDATE_NOTICE_STORAGE_KEY = "pi-desktop.cli-update-notice-at.v1";
 const DESKTOP_UPDATE_NOTICE_STORAGE_KEY = "pi-desktop.desktop-update-notice-at.v1";
 const UPDATE_NOTICE_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const CLI_INSTALL_COMMAND = "npm install -g @mariozechner/pi-coding-agent";
+const WINDOWS_NODE_INSTALL_COMMAND = "winget install --id OpenJS.NodeJS.LTS";
 const SESSION_ATTENTION_MESSAGES = [
 	"I’m waiting for you — Pi",
 	"Ready when you are — Pi",
@@ -395,18 +397,45 @@ function isCliMissingError(message: string | null | undefined): boolean {
 	if (text.includes("could not find the pi cli") || text.includes("npm install -g @mariozechner/pi-coding-agent")) {
 		return true;
 	}
+
+	const referencesPiBinary = /\bpi(?:\.cmd|\.exe|\.bat)?\b/.test(text) || text.includes("pi process");
 	if (text.includes("'pi' is not recognized as an internal or external command")) {
 		return true;
 	}
-	return text.includes("enoent") && text.includes("pi");
+	if (referencesPiBinary && text.includes("enoent")) {
+		return true;
+	}
+	if (referencesPiBinary && (text.includes("createprocess") || text.includes("os error 2") || text.includes("os error 3"))) {
+		return true;
+	}
+	if (referencesPiBinary && text.includes("the system cannot find the file specified")) {
+		return true;
+	}
+	if (text.includes("failed to spawn pi process") && text.includes("cannot find")) {
+		return true;
+	}
+	return false;
+}
+
+function isLikelyWindowsHost(): boolean {
+	const platform = `${navigator.platform || ""} ${navigator.userAgent || ""}`.toLowerCase();
+	return platform.includes("win32") || platform.includes("win64") || platform.includes("windows");
+}
+
+async function copyCommandToClipboard(command: string): Promise<void> {
+	try {
+		await navigator.clipboard.writeText(command);
+	} catch {
+		window.prompt("Copy and run this command in Terminal", command);
+	}
 }
 
 async function copyCliInstallCommand(): Promise<void> {
-	try {
-		await navigator.clipboard.writeText(CLI_INSTALL_COMMAND);
-	} catch {
-		window.prompt("Copy and run this command in Terminal", CLI_INSTALL_COMMAND);
-	}
+	await copyCommandToClipboard(CLI_INSTALL_COMMAND);
+}
+
+async function copyWindowsNodeInstallCommand(): Promise<void> {
+	await copyCommandToClipboard(WINDOWS_NODE_INSTALL_COMMAND);
 }
 
 function readLastUpdateNoticeAt(storageKey: string): number {
@@ -2947,15 +2976,8 @@ async function initialize(): Promise<void> {
 			void applyWorkspacePane(workspace);
 		});
 		chatView.setOnOpenExtensionConfig(async (commandName, args) => {
-			const normalizedName = commandName.trim().toLowerCase().replace(/^\/+/, "");
-			const normalizedArgs = args.trim().toLowerCase();
-			const defaultSettingsIntent = normalizedName === "voice-notify" && normalizedArgs.length === 0;
-			const configIntent =
-				defaultSettingsIntent ||
-				normalizedName.endsWith("config") ||
-				normalizedArgs === "config" ||
-				normalizedArgs.startsWith("config ");
-			if (!configIntent) return false;
+			const normalizedName = normalizeExtensionCommandName(commandName);
+			if (!isExtensionConfigIntent(normalizedName, args)) return false;
 			openPackagesPane();
 			if (!packagesView) return false;
 			await packagesView.refreshPackages(false);
@@ -3070,6 +3092,10 @@ async function initialize(): Promise<void> {
 
 		extensionUiHandler?.setEditorTextHandler((text) => chatView?.setInputText(text));
 		wireCommandPaletteBuiltins();
+		commandPalette?.setOnRunSlashCommand(async (commandText) => {
+			if (!chatView) return false;
+			return await chatView.runSlashCommandText(commandText);
+		});
 
 		const startupWorkspace = getActiveWorkspace();
 		if (startupWorkspace) {
@@ -3634,6 +3660,7 @@ function renderApp(): void {
 		removeSidebarResizeHandlers?.();
 		removeSidebarResizeHandlers = null;
 		const cliMissing = isCliMissingError(connectionError);
+		const windowsHost = isLikelyWindowsHost();
 		render(
 			html`
 				<div class="error-shell">
@@ -3646,14 +3673,32 @@ function renderApp(): void {
 									<div class="onboarding-command-label">Run this in Terminal</div>
 									<code>${CLI_INSTALL_COMMAND}</code>
 								</div>
+								${windowsHost
+									? html`
+										<div class="onboarding-command-block">
+											<div class="onboarding-command-label">If npm is missing, install Node.js first</div>
+											<code>${WINDOWS_NODE_INSTALL_COMMAND}</code>
+										</div>
+									`
+									: nothing}
 								<div class="onboarding-actions">
 									<button class="ghost-btn" @click=${() => void copyCliInstallCommand()}>Copy install command</button>
+									${windowsHost
+										? html`<button class="ghost-btn" @click=${() => void copyWindowsNodeInstallCommand()}>Copy Node.js command</button>`
+										: nothing}
 									<button @click=${() => {
 										connectionError = null;
 										void initialize();
 									}}>I installed it · Retry</button>
 								</div>
 								<p class="onboarding-footnote">Need npm first? Install Node.js, then run the command above.</p>
+								${windowsHost
+									? html`
+										<p class="onboarding-footnote">
+											Using WSL? Pi Desktop v1 starts a Windows-native agent. Install <code>pi</code> in Windows too (not only inside WSL).
+										</p>
+									`
+									: nothing}
 							`
 							: html`
 								<p>${connectionError}</p>

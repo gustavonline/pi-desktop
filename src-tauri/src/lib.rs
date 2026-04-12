@@ -209,6 +209,12 @@ fn discover_pi_from_common_locations() -> Option<PathBuf> {
             candidates.push(PathBuf::from(program_files_x86).join("nodejs").join("pi.cmd"));
         }
 
+        if let Ok(program_data) = std::env::var("ProgramData") {
+            let program_data_dir = PathBuf::from(program_data);
+            candidates.push(program_data_dir.join("npm").join("pi.cmd"));
+            candidates.push(program_data_dir.join("npm").join("pi.exe"));
+        }
+
         if let Ok(nvm_home) = std::env::var("NVM_HOME") {
             candidates.push(PathBuf::from(nvm_home).join("pi.cmd"));
         }
@@ -441,6 +447,20 @@ fn discover_pi_from_env_override() -> Option<PathBuf> {
     None
 }
 
+fn missing_pi_cli_error(additional: Option<String>) -> String {
+    let mut message = String::from(
+        "Could not find the pi CLI.\n\nInstall it with:\n  npm install -g @mariozechner/pi-coding-agent\n\nThen restart the app.",
+    );
+    if let Some(extra) = additional {
+        let trimmed = extra.trim();
+        if !trimmed.is_empty() {
+            message.push_str("\n\n");
+            message.push_str(trimmed);
+        }
+    }
+    message
+}
+
 /// Discover the pi binary. Strategy:
 /// 1. If cli_path is provided (dev mode), use node + script
 /// 2. Try explicit env override (PI_DESKTOP_PI_PATH / PI_CLI_PATH)
@@ -488,10 +508,7 @@ fn discover_pi(app: &AppHandle, options: &RpcStartOptions) -> Result<PiProcess, 
         return Ok(PiProcess::PathBinary { path });
     }
 
-    Err("Could not find the pi CLI.\n\n\
-         Install it with:\n  npm install -g @mariozechner/pi-coding-agent\n\n\
-         Then restart the app."
-        .to_string())
+    Err(missing_pi_cli_error(None))
 }
 
 /// Build a Command for the discovered pi process
@@ -589,9 +606,19 @@ async fn rpc_start(
     let discovery_label = format!("{:?}", pi);
 
     let mut cmd = build_command(&pi, &options);
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("Failed to spawn pi process ({:?}): {}", pi, e))?;
+    let mut child = cmd.spawn().map_err(|e| {
+        let lower = e.to_string().to_lowercase();
+        let missing_executable = matches!(e.raw_os_error(), Some(2) | Some(3))
+            || e.kind() == std::io::ErrorKind::NotFound
+            || (lower.contains("createprocess") && lower.contains("cannot find"));
+        if missing_executable {
+            return missing_pi_cli_error(Some(format!(
+                "Discovery details: {:?}\nSpawn error: {}",
+                pi, e
+            )));
+        }
+        format!("Failed to spawn pi process ({:?}): {}", pi, e)
+    })?;
 
     let stdin = child.stdin.take().ok_or("Failed to get stdin")?;
     let stdout = child.stdout.take().ok_or("Failed to get stdout")?;

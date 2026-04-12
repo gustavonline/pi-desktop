@@ -544,6 +544,20 @@ export class TerminalPanel {
 		return /^cd(?:\s+.*)?$/i.test(command.trim());
 	}
 
+	private withPosixPathPrelude(command: string): string {
+		const prelude = [
+			"if [ -n \"$HOME\" ]; then",
+			"if [ -d \"$HOME/.nvm/versions/node/current/bin\" ]; then PATH=\"$HOME/.nvm/versions/node/current/bin:$PATH\"; fi",
+			"for d in \"$HOME\"/.nvm/versions/node/*/bin; do if [ -d \"$d\" ]; then PATH=\"$d:$PATH\"; fi; done",
+			"if [ -d \"$HOME/.volta/bin\" ]; then PATH=\"$HOME/.volta/bin:$PATH\"; fi",
+			"if [ -d \"$HOME/.local/bin\" ]; then PATH=\"$HOME/.local/bin:$PATH\"; fi",
+			"fi",
+			"PATH=\"/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH\"",
+			"export PATH",
+		].join("; ");
+		return `${prelude}; ${command}`;
+	}
+
 	private buildShellArgs(profile: ShellProfile, command: string): string[] {
 		switch (profile.kind) {
 			case "powershell":
@@ -551,7 +565,7 @@ export class TerminalPanel {
 			case "cmd":
 				return ["/C", command];
 			default:
-				return ["-lc", command];
+				return ["-lc", this.withPosixPathPrelude(command)];
 		}
 	}
 
@@ -562,7 +576,7 @@ export class TerminalPanel {
 			case "cmd":
 				return ["/C", "echo __PI_SHELL_OK__"];
 			default:
-				return ["-lc", "printf __PI_SHELL_OK__"];
+				return ["-lc", this.withPosixPathPrelude("printf __PI_SHELL_OK__")];
 		}
 	}
 

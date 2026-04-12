@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.pi.desktop</id>
+  <name>Pi Desktop</name>
+  <summary>Minimalist coding agent desktop app</summary>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <developer_name>Pi Desktop Contributors</developer_name>
+  <launchable type="desktop-id">com.pi.desktop.desktop</launchable>
+  <description>
+    <p>
+      Pi Desktop is a minimalist coding agent desktop app with a native UI, integrated terminal,
+      project/workspace management, and Pi CLI-backed chat workflows.
+    </p>
+  </description>
+  <url type="homepage">https://github.com/gustavonline/pi-desktop</url>
+  <url type="bugtracker">https://github.com/gustavonline/pi-desktop/issues</url>
+  <releases>
+    <release version="0.1.8" />
+  </releases>
+</component>

@@ -6,6 +6,9 @@ import { html, nothing, render, type TemplateResult } from "lit";
 import { normalizeRecommendedSource, RECOMMENDED_PACKAGES, type RecommendedPackageDefinition } from "../recommended-packages.js";
 import { RECOMMENDED_SKILLS, type RecommendedSkillDefinition } from "../recommended-skills.js";
 import { rpcBridge } from "../rpc/bridge.js";
+import { collectBuiltInOAuthProviderIds } from "../auth/provider-auth.js";
+import { isExtensionConfigIntent } from "../extensions/extension-command-intent.js";
+import { extensionCommandUsageHint, withExtensionCommandUsageHint } from "../extensions/extension-command-hints.js";
 import { getBundledThemesStatus, isBundledThemeId, removeBundledThemes, restoreBundledThemes } from "../theme/bundled-themes.js";
 
 interface CatalogPackageItem {
@@ -134,7 +137,6 @@ const SMART_NOTIFY_COMMAND_NAMES = new Set(["voice-notify"]);
 const SMART_NOTIFY_PRIMARY_SOURCE = normalizeRecommendedSource("npm:pi-smart-voice-notify");
 const SMART_NOTIFY_LEGACY_SOURCE = normalizeRecommendedSource("npm:pi-desktop-notify");
 const SMART_NOTIFY_INSTALL_SOURCE = "npm:pi-smart-voice-notify";
-const BUILTIN_OAUTH_PROVIDER_IDS = new Set(["anthropic", "github-copilot", "google-gemini-cli", "google-antigravity", "openai-codex"]);
 const PROVIDER_AUTH_CLEANUP_HINTS = new Map<string, string[]>([
 	["pi-cursor-agent", ["cursor-agent"]],
 	["cursor-agent", ["cursor-agent"]],
@@ -258,33 +260,6 @@ function commandLikelyNeedsModelArg(command: PackageConfigCommand): boolean {
 	if (AUTO_RENAME_COMMAND_NAMES.has(normalizedName)) return true;
 	const haystack = `${command.name} ${command.description}`.toLowerCase();
 	return /(^|\b)(model|provider)(\b|$)/.test(haystack) || haystack.includes("provider/model");
-}
-
-function extensionCommandUsageHint(name: string): string | null {
-	const normalizedName = normalizeCommandNameForMatch(name);
-	if (AUTO_RENAME_COMMAND_NAMES.has(normalizedName)) {
-		return "Args: config, test, init, regen, <name>";
-	}
-	if (SMART_NOTIFY_COMMAND_NAMES.has(normalizedName)) {
-		return "No args opens settings; args: status, reload, on, off, test <idle|permission|question|error>";
-	}
-	return null;
-}
-
-function withExtensionCommandUsageHint(name: string, description: string): string {
-	const hint = extensionCommandUsageHint(name);
-	if (!hint) return description;
-	const normalized = description.trim();
-	if (!normalized) return hint;
-	const lower = normalized.toLowerCase();
-	const normalizedName = normalizeCommandNameForMatch(name);
-	if (normalizedName === "voice-notify" && lower.includes("status") && lower.includes("reload") && lower.includes("test")) {
-		return normalized;
-	}
-	if (normalizedName !== "voice-notify" && lower.includes("config") && lower.includes("test")) {
-		return normalized;
-	}
-	return `${normalized} · ${hint}`;
 }
 
 function normalizeAutoRenameConfigDraft(raw: Record<string, unknown>): AutoRenameConfigDraft {
@@ -1920,14 +1895,7 @@ export class PackagesView {
 		const normalizedCommand = normalizeCommandNameForMatch(commandName);
 		if (!normalizedCommand) return false;
 
-		const normalizedArgs = args.trim().toLowerCase();
-		const defaultSettingsIntent = normalizedCommand === "voice-notify" && normalizedArgs.length === 0;
-		const configIntent =
-			defaultSettingsIntent ||
-			normalizedCommand.endsWith("config") ||
-			normalizedArgs === "config" ||
-			normalizedArgs.startsWith("config ");
-		if (!configIntent) return false;
+		if (!isExtensionConfigIntent(normalizedCommand, args)) return false;
 
 		await this.refreshPackageConfigCommands();
 
@@ -2899,11 +2867,28 @@ export class PackagesView {
 		return this.skillResources.find((item) => item.name.trim().toLowerCase() === normalized) ?? null;
 	}
 
+	private isRecommendedSkillInstalled(
+		definition: RecommendedSkillDefinition,
+		resource: DiscoveredResourceItem | null,
+		packageInstalled: boolean,
+	): boolean {
+		if (packageInstalled) return true;
+		if (!resource) return false;
+
+		const normalizedPackageSource = normalizeRecommendedSource(definition.packageSource);
+		const isLocalRecommendedSkill = normalizedPackageSource.startsWith("local:");
+		if (isLocalRecommendedSkill) return true;
+
+		const resourceSource = (resource.packageSource || "").trim();
+		if (!resourceSource) return false;
+		return this.sourceMatchesInstalled(definition.packageSource, resourceSource);
+	}
+
 	private buildRecommendedSkillItems(): RecommendedSkillSurfaceItem[] {
 		return RECOMMENDED_SKILLS.map((definition) => {
 			const resource = this.findSkillResourceByName(definition.skillName);
 			const packageInstalled = this.isSourceInstalledForScope(definition.packageSource, "global");
-			const installed = Boolean(resource || packageInstalled);
+			const installed = this.isRecommendedSkillInstalled(definition, resource, packageInstalled);
 			return {
 				id: `recommended-skill:${definition.id}`,
 				definition,
@@ -3090,11 +3075,19 @@ export class PackagesView {
 			.map((token) => token.trim().toLowerCase())
 			.filter((token) => token.length >= 4 && token !== "provider" && token !== "package");
 
+		let builtInOAuthProviders = collectBuiltInOAuthProviderIds([]);
+		try {
+			const oauthProviders = await rpcBridge.getPiOAuthProviders();
+			builtInOAuthProviders = collectBuiltInOAuthProviderIds(oauthProviders);
+		} catch {
+			// keep fallback built-in IDs only
+		}
+
 		const targets = new Set<string>();
 		for (const auth of authProviders) {
 			if (auth.source === "environment") continue;
 			if (auth.kind !== "oauth") continue;
-			if (BUILTIN_OAUTH_PROVIDER_IDS.has(auth.provider)) continue;
+			if (builtInOAuthProviders.has(auth.provider)) continue;
 			const directMatch = candidates.some((candidate) => auth.provider === candidate || auth.provider.includes(candidate) || candidate.includes(auth.provider));
 			const tokenMatch = packageTokens.some((token) => auth.provider.includes(token));
 			if (directMatch || tokenMatch) {

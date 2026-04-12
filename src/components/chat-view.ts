@@ -7,25 +7,153 @@ import "@mariozechner/mini-lit/dist/MarkdownBlock.js";
 import { html, nothing, render, type TemplateResult } from "lit";
 import {
 	type PiAuthProviderStatus,
-	type PiOAuthProviderInfo,
 	type RpcImageInput,
 	type RpcSessionState,
 	type ThinkingLevel,
 	rpcBridge,
 } from "../rpc/bridge.js";
 import { buildGitBranchIndex, findGitBranchEntryByQuery, type GitBranchEntry } from "../git/branches.js";
+import {
+	createSlashPaletteItems,
+	filterSlashPaletteItemsByQuery,
+	findSlashPaletteItemByName,
+	getSlashQueryFromInput,
+	normalizeRuntimeSlashCommands,
+	parseSlashInputText,
+	type RuntimeSlashCommand,
+	type SlashCommandSource,
+	type SlashPaletteItem,
+} from "../commands/slash-command-runtime.js";
+import {
+	formatModelDisplayName,
+	parseListModelsCatalog,
+	type ModelOption,
+} from "../models/model-options.js";
+import {
+	buildModelPickerProviderGroups,
+	resolveActiveModelPickerProvider,
+} from "../models/model-picker-provider-groups.js";
+import {
+	resolveModelCandidateFromArg,
+	resolvePreferredModelPickerProvider,
+	resolveProviderHintFromModelArg,
+} from "../models/model-selection.js";
+import { isExtensionConfigIntent, normalizeExtensionCommandName } from "../extensions/extension-command-intent.js";
+import { renderComposerControlsView } from "./chat-view/composer-controls-view.js";
+import {
+	renderComposerSkillDraftPillView,
+	renderPendingFileReferencesView,
+	renderPendingImagesView,
+	renderQueuedComposerMessagesView,
+} from "./chat-view/composer-fragments-view.js";
+import {
+	handleComposerDragOverEvent,
+	handleComposerDropEvent,
+	handleComposerFilePickerChangeEvent,
+	handleComposerInputEvent,
+	handleComposerKeyDownEvent,
+	handleComposerPasteEvent,
+} from "./chat-view/composer-input-events.js";
+import { renderSlashPaletteView } from "./chat-view/composer-slash-palette-view.js";
+import { renderComposerStatsView } from "./chat-view/composer-stats-view.js";
+import { deriveForkSessionName, buildForkEntryIdByMessageId, resolveForkEntryId } from "./chat-view/history-fork-utils.js";
+import { compactTreeLinePrefix, parseSessionTreeRows } from "./chat-view/history-tree-utils.js";
+import { renderHistoryViewerView } from "./chat-view/history-viewer-view.js";
+import type { ForkOption, HistoryTreeRow, HistoryViewerRole } from "./chat-view/history-viewer-types.js";
+import { loadWelcomeDashboardInventory } from "./chat-view/welcome-dashboard-data.js";
+import { renderCenteredWelcomeView } from "./chat-view/welcome-dashboard-view.js";
+import { renderAssistantWorkflowView } from "./chat-view/assistant-workflow-view.js";
+import { mapBackendMessages as mapBackendMessagesView } from "./chat-view/backend-message-mapper.js";
+import {
+	handleCompactionAndRetryEvent,
+	handleMessageStreamEvent,
+} from "./chat-view/event-stream-handlers.js";
+import { handleRuntimeStatusEvent } from "./chat-view/event-runtime-status-handlers.js";
+import {
+	createAndCheckoutBranchAction,
+	fetchGitRemotesAction,
+	switchGitBranchAction,
+	switchRemoteTrackingBranchAction,
+} from "./chat-view/git-branch-actions.js";
+import {
+	extractAssistantPartialContent as extractAssistantPartialContentValue,
+	extractImagesFromContent,
+	extractTextContent,
+	extractToolOutputText,
+	mergeStreamingText as mergeStreamingTextValue,
+} from "./chat-view/message-content-utils.js";
+import { renderGitRepoControlView } from "./chat-view/git-repo-control-view.js";
+import {
+	clearActiveDraggedFilePaths,
+	peekActiveDraggedFilePaths,
+} from "./file-drag-transfer.js";
+import {
+	createDropSignature,
+	extractFilePathsFromDropPayload as extractFilePathsFromDropPayloadValue,
+	fileNameFromPath as fileNameFromPathValue,
+	isImageFile as isImageFileValue,
+	isImageName as isImageNameValue,
+	mimeFromFileName as mimeFromFileNameValue,
+	toBase64Bytes,
+} from "./chat-view/image-file-utils.js";
+import { mapAvailableModelsFromRpc } from "./chat-view/models-load-utils.js";
+import {
+	computeSessionStatsFallback,
+	computeSessionStatsFromRaw,
+} from "./chat-view/session-stats-refresh.js";
+import { sendMessageFlow } from "./chat-view/send-message-flow.js";
+import { deriveLatestAssistantContextTokens as deriveLatestAssistantContextTokensFromMessages } from "./chat-view/session-stats-utils.js";
+import {
+	renderAssistantMessageRow,
+	renderChangelogMessageRow,
+	renderCompactionCycleRow,
+	renderMessageTimelineRows,
+	renderSystemMessageRow,
+} from "./chat-view/message-timeline-view.js";
+import {
+	executeBuiltinSlashCommand as executeBuiltinSlashCommandView,
+	formatSessionInfoBlock as formatSessionInfoBlockView,
+} from "./chat-view/slash-builtin-command.js";
+import {
+	collectAssistantWorkflow,
+	isStandaloneCodeBlockMarkdown,
+	normalizeThinkingText,
+	resolveWorkflowExpansionState,
+	summarizeToolCall,
+	type AssistantWorkflow,
+	type AssistantWorkflowCandidate,
+} from "./chat-view/workflow-utils.js";
+import {
+	displayProviderLabel as displayProviderLabelFromCatalog,
+	isOAuthProviderId as isOAuthProviderIdInCatalog,
+	normalizeAuthProviderArg as normalizeAuthProviderArgValue,
+	normalizeConfiguredProviderAuth as normalizeConfiguredProviderAuthEntries,
+	normalizeOAuthProviderCatalog as normalizeOAuthProviderCatalogEntries,
+	normalizeProviderKey as normalizeProviderKeyValue,
+	resolveProviderSetupCommand as resolveProviderSetupCommandForProvider,
+	unwrapQuotedValue as unwrapQuotedArgValue,
+	type OAuthProviderCatalogEntry,
+} from "../auth/provider-auth.js";
 
 type DeliveryMode = "prompt" | "steer" | "followUp";
 
-type UiRole = "user" | "assistant" | "system" | "custom";
+type UiRole = HistoryViewerRole;
 
 interface PendingImage {
 	id: string;
 	name: string;
+	path?: string;
 	mimeType: string;
 	data: string;
 	previewUrl: string;
 	size: number;
+}
+
+interface PendingFileReference {
+	id: string;
+	name: string;
+	path: string;
+	token: string;
 }
 
 interface QueuedComposerMessage {
@@ -75,50 +203,6 @@ interface Notice {
 	kind: "info" | "success" | "error";
 }
 
-interface ModelOption {
-	provider: string;
-	id: string;
-	label: string;
-	reasoning: boolean;
-	contextWindow?: number;
-}
-
-interface ForkOption {
-	entryId: string;
-	text: string;
-}
-
-interface ForkTimelineRow {
-	main: UiMessage;
-	sourceIndex: number;
-	thinkingSnippets: string[];
-	tools: ToolCallBlock[];
-}
-
-interface SessionTreeEntryRecord {
-	id: string;
-	parentId: string | null;
-	type: string;
-	index: number;
-	role: UiRole;
-	entryLabel: string;
-	preview: string;
-	displayText: string;
-	canFork: boolean;
-}
-
-interface HistoryTreeRow {
-	entryId: string;
-	depth: number;
-	role: UiRole;
-	entryLabel: string;
-	preview: string;
-	displayText: string;
-	linePrefix: string;
-	onActivePath: boolean;
-	canFork: boolean;
-}
-
 interface SessionStatsSummary {
 	tokens: number | null;
 	lifetimeTokens: number | null;
@@ -166,31 +250,6 @@ interface ComposerSkillDraft {
 	scope: string | null;
 }
 
-type SlashPaletteSection = "CLI" | "Extensions" | "Prompts" | "Skills";
-type SlashCommandSource = "builtin" | "extension" | "prompt" | "skill";
-
-interface RuntimeSlashCommand {
-	name: string;
-	description: string;
-	source: "extension" | "prompt" | "skill";
-}
-
-interface SlashPaletteItem {
-	id: string;
-	section: SlashPaletteSection;
-	label: string;
-	hint: string;
-	commandName: string;
-	source: SlashCommandSource;
-}
-
-interface ToolCallGroup {
-	id: string;
-	toolName: string;
-	preview: string;
-	calls: ToolCallBlock[];
-}
-
 interface CompactionCycleState {
 	id: string;
 	status: "running" | "done" | "aborted" | "error";
@@ -202,95 +261,8 @@ interface CompactionCycleState {
 	expanded: boolean;
 }
 
-function runtimeCommandUsageHint(name: string): string | null {
-	const normalized = normalizeText(name).toLowerCase().replace(/^\/+/, "");
-	if (normalized === "auto-rename" || normalized === "name-ai-config") {
-		return "Args: config, test, init, regen, <name>";
-	}
-	if (normalized === "voice-notify") {
-		return "No arg opens extension settings; args: status, reload, on, off, test <idle|permission|question|error>";
-	}
-	return null;
-}
-
-function runtimeCommandDescriptionOverride(name: string, description: string): string | null {
-	const normalizedName = normalizeText(name).toLowerCase().replace(/^\/+/, "");
-	if (normalizedName === "voice-notify") {
-		return "Voice notifications: no arg opens extension settings, or use status/reload/on/off/test";
-	}
-	const normalizedDescription = normalizeText(description);
-	if (/^configure windows smart voice notifications$/i.test(normalizedDescription)) {
-		return "Voice notifications: no arg opens extension settings, or use status/reload/on/off/test";
-	}
-	return null;
-}
-
-function withRuntimeCommandUsageHint(name: string, description: string): string {
-	const override = runtimeCommandDescriptionOverride(name, description);
-	if (override) return override;
-	const normalizedDescription = normalizeText(description);
-	const hint = runtimeCommandUsageHint(name);
-	if (!hint) return normalizedDescription;
-	if (!normalizedDescription) return hint;
-	const lower = normalizedDescription.toLowerCase();
-	const normalizedName = normalizeText(name).toLowerCase().replace(/^\/+/, "");
-	if (normalizedName === "auto-rename" && lower.includes("config") && lower.includes("test")) {
-		return normalizedDescription;
-	}
-	if (
-		normalizedName === "voice-notify" &&
-		lower.includes("status") &&
-		lower.includes("reload") &&
-		lower.includes("test")
-	) {
-		return normalizedDescription;
-	}
-	return `${normalizedDescription} · ${hint}`;
-}
-
-const BUILTIN_SLASH_COMMANDS: Array<{ name: string; description: string }> = [
-	{ name: "settings", description: "Open Desktop settings" },
-	{ name: "model", description: "No arg opens picker; exact arg sets model, otherwise opens picker near matches" },
-	{ name: "scoped-models", description: "Open Settings scoped-models editor (Ctrl+P model cycle scope)" },
-	{ name: "export", description: "No arg opens save dialog, /export <path> writes HTML directly" },
-	{ name: "import", description: "No arg opens file picker, /import <path> imports a session file" },
-	{ name: "share", description: "Create secret gist and post minimal links to pi.dev + GitHub gist" },
-	{ name: "copy", description: "Copy last assistant message" },
-	{ name: "name", description: "No arg opens inline rename, /name <text> sets name directly" },
-	{ name: "session", description: "Append detailed session info + token stats" },
-	{ name: "changelog", description: "Show latest changelog in collapsible row (/changelog all, /changelog refresh)" },
-	{ name: "hotkeys", description: "Open keyboard shortcuts" },
-	{ name: "terminal", description: "Toggle docked terminal" },
-	{ name: "fork", description: "Open fork flow, /fork <query> pre-fills message search" },
-	{ name: "tree", description: "Open full session tree across branches, /tree <query> pre-fills search" },
-	{ name: "login", description: "No arg opens model picker auth actions; /login <provider> opens provider login guidance/setup" },
-	{ name: "logout", description: "No arg opens model picker auth actions; /logout <provider> clears auth.json credentials" },
-	{ name: "new", description: "Start fresh session tab" },
-	{ name: "compact", description: "Manually compact context, /compact <instructions> optional" },
-	{ name: "resume", description: "Open session browser, /resume <query> pre-fills search" },
-	{ name: "reload", description: "Reload runtime (bridge restart + state/models/commands refresh)" },
-	{ name: "quit", description: "Quit Desktop app" },
-];
-
 const MODEL_PICKER_AUTH_CACHE_MS = 15_000;
 const MODEL_PICKER_CATALOG_CACHE_MS = 60_000;
-
-// Mirrors built-in OAuth providers from @mariozechner/pi-ai/oauth.
-const DEFAULT_OAUTH_PROVIDER_IDS = [
-	"anthropic",
-	"github-copilot",
-	"google-gemini-cli",
-	"google-antigravity",
-	"openai-codex",
-] as const;
-const DEFAULT_OAUTH_PROVIDER_SET = new Set<string>(DEFAULT_OAUTH_PROVIDER_IDS);
-const DEFAULT_OAUTH_PROVIDER_NAME_BY_ID = new Map<string, string>([
-	["anthropic", "Anthropic"],
-	["github-copilot", "GitHub Copilot"],
-	["google-gemini-cli", "Google Gemini CLI"],
-	["google-antigravity", "Google Antigravity"],
-	["openai-codex", "OpenAI Codex"],
-]);
 
 function uid(prefix = "id"): string {
 	return `${prefix}_${Math.random().toString(36).slice(2, 8)}_${Date.now().toString(36)}`;
@@ -299,12 +271,6 @@ function uid(prefix = "id"): string {
 function truncate(value: string, len: number): string {
 	if (value.length <= len) return value;
 	return `${value.slice(0, len - 1)}…`;
-}
-
-function joinFsPath(base: string, child: string): string {
-	const sep = base.includes("\\") ? "\\" : "/";
-	const cleanBase = base.replace(/[\\/]+$/, "");
-	return `${cleanBase}${sep}${child}`;
 }
 
 function normalizeComparablePath(value: string | null | undefined): string {
@@ -410,122 +376,6 @@ function normalizeText(value: unknown): string {
 		}
 	}
 	return "";
-}
-
-function formatProviderDisplayName(provider: string): string {
-	const normalized = normalizeText(provider).toLowerCase();
-	switch (normalized) {
-		case "openai":
-			return "OpenAI";
-		case "openai-codex":
-			return "OpenAI Codex";
-		case "anthropic":
-			return "Anthropic";
-		case "google":
-		case "googleai":
-		case "gemini":
-			return "Google";
-		case "google-gemini-cli":
-			return "Google Gemini CLI";
-		case "google-antigravity":
-			return "Google Antigravity";
-		case "github-copilot":
-			return "GitHub Copilot";
-		case "xai":
-			return "xAI";
-		case "openrouter":
-			return "OpenRouter";
-		case "ollama":
-			return "Ollama";
-		case "lmstudio":
-			return "LM Studio";
-		case "cursor-agent":
-		case "cursor":
-			return "Cursor";
-		case "kilo":
-		case "kilocode":
-			return "Kilo Code";
-		default:
-			return normalized
-				.split(/[-_\s]+/)
-				.filter(Boolean)
-				.map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-				.join(" ");
-	}
-}
-
-function formatModelDisplayName(modelId: string): string {
-	const raw = normalizeText(modelId);
-	if (!raw) return "Model";
-	let value = raw.replace(/^models\//i, "").trim();
-	value = value.replace(/^(openai|anthropic|google|xai|openrouter|ollama|lmstudio)[:/]/i, "");
-	if (!value) return "Model";
-	if (/^gpt/i.test(value)) return value.replace(/^gpt/i, "GPT");
-	if (/^claude/i.test(value)) {
-		const tail = value.slice("claude".length).replace(/^[-_\s]+/, "");
-		if (!tail) return "Claude";
-		const humanTail = tail
-			.replace(/[-_]+/g, " ")
-			.split(/\s+/)
-			.filter(Boolean)
-			.map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-			.join(" ");
-		return `Claude ${humanTail}`;
-	}
-	if (/^gemini/i.test(value)) return value.replace(/^gemini/i, "Gemini");
-	return value
-		.replace(/[-_]+/g, " ")
-		.split(/\s+/)
-		.filter(Boolean)
-		.map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-		.join(" ");
-}
-
-function parseListModelsContextWindow(raw: string): number | undefined {
-	const token = normalizeText(raw).toLowerCase();
-	if (!token) return undefined;
-	const match = token.match(/^(\d+(?:\.\d+)?)([km])?$/i);
-	if (!match) return undefined;
-	const base = Number(match[1]);
-	if (!Number.isFinite(base) || base <= 0) return undefined;
-	const unit = match[2]?.toLowerCase();
-	if (unit === "k") return Math.round(base * 1_000);
-	if (unit === "m") return Math.round(base * 1_000_000);
-	return Math.round(base);
-}
-
-function parseListModelsCatalog(output: string): ModelOption[] {
-	const mapped: ModelOption[] = [];
-	const seen = new Set<string>();
-	for (const rawLine of output.split(/\r?\n/)) {
-		const trimmed = rawLine.trim();
-		if (!trimmed) continue;
-		if (/^provider\s+/i.test(trimmed)) continue;
-		if (/^[\-=]{3,}/.test(trimmed)) continue;
-		const cols = trimmed.split(/\s+/);
-		if (cols.length < 2) continue;
-		const provider = cols[0]?.trim();
-		const id = cols[1]?.trim();
-		if (!provider || !id) continue;
-		const key = `${provider.toLowerCase()}::${id.toLowerCase()}`;
-		if (seen.has(key)) continue;
-		seen.add(key);
-		mapped.push({
-			provider,
-			id,
-			label: `${provider}/${id}`,
-			reasoning: (cols[4] || "").toLowerCase() === "yes",
-			contextWindow: parseListModelsContextWindow(cols[2] || ""),
-		});
-	}
-	mapped.sort((a, b) => {
-		const providerCompare = formatProviderDisplayName(a.provider).localeCompare(formatProviderDisplayName(b.provider), undefined, {
-			sensitivity: "base",
-		});
-		if (providerCompare !== 0) return providerCompare;
-		return formatModelDisplayName(a.id).localeCompare(formatModelDisplayName(b.id), undefined, { sensitivity: "base" });
-	});
-	return mapped;
 }
 
 function formatThinkingDisplayName(level: ThinkingLevel): string {
@@ -634,7 +484,7 @@ export class ChatView {
 	private providerAuthForcedLoggedOut = new Set<string>();
 	private oauthProviderCatalogLoadedAt = 0;
 	private oauthProviderCatalogLoading = false;
-	private oauthProviderCatalog = new Map<string, { name: string; source: "built_in" | "package" }>();
+	private oauthProviderCatalog = new Map<string, OAuthProviderCatalogEntry>();
 	private lastBackendRefreshError: string | null = null;
 	private lastModelLoadError: string | null = null;
 	private lastBackendSessionFile: string | null = null;
@@ -647,6 +497,7 @@ export class ChatView {
 	private runningProviderAuthAction: { provider: string; action: "login" | "logout" } | null = null;
 	private sendingPrompt = false;
 	private pendingImages: PendingImage[] = [];
+	private pendingFileReferences: PendingFileReference[] = [];
 	private notices: Notice[] = [];
 	private changelogCacheMarkdown: string | null = null;
 	private changelogCacheAt = 0;
@@ -660,8 +511,6 @@ export class ChatView {
 	private extensionCompatibilityHintsShown = new Set<string>();
 	private pendingDeliveryMode: DeliveryMode = "prompt";
 	private queuedComposerMessages: QueuedComposerMessage[] = [];
-	private openingForkPicker = false;
-	private forkPickerOpen = false;
 	private forkOptions: ForkOption[] = [];
 	private historyViewerOpen = false;
 	private historyViewerMode: "browse" | "fork" = "browse";
@@ -671,8 +520,6 @@ export class ChatView {
 	private historyTreeRequestSeq = 0;
 	private forkEntryIdByMessageId = new Map<string, string>();
 	private forkTargetsRequestSeq = 0;
-	private forkExpandedMessageRows = new Set<string>();
-	private forkExpandedToolRows = new Set<string>();
 	private historyQuery = "";
 	private historyRoleFilter: UiRole | "all" = "all";
 	private autoFollowChat = true;
@@ -851,18 +698,10 @@ export class ChatView {
 		this.onRunStateChange = cb;
 	}
 
-	setProjectPath(path: string | null): void {
-		if (this.projectPath === path) return;
-		const previous = this.projectPath;
-		this.projectPath = path;
-		const push = (window as typeof window & {
-			__PI_DESKTOP_PUSH_TRACE__?: (message: string) => void;
-		}).__PI_DESKTOP_PUSH_TRACE__;
-		push?.(`chat:setProjectPath ${previous ?? "-"} -> ${path ?? "-"}`);
-		this.gitMenuOpen = false;
-		this.welcomeProjectMenuOpen = false;
+	private resetSessionUiTransientState(): void {
 		this.modelPickerOpen = false;
 		this.selectedSkillDraft = null;
+		this.pendingFileReferences = [];
 		this.slashPaletteOpen = false;
 		this.slashPaletteQuery = "";
 		this.slashPaletteIndex = 0;
@@ -874,8 +713,39 @@ export class ChatView {
 		this.collapsedAutoWorkflowIds.clear();
 		this.compactionCycle = null;
 		this.compactionInsertIndex = null;
-		this.keepWorkflowExpandedUntilAssistantText = false;
 		this.runningProviderAuthAction = null;
+		this.keepWorkflowExpandedUntilAssistantText = false;
+	}
+
+	private resetRunActivityState(): void {
+		this.runHasAssistantText = false;
+		this.runSawToolActivity = false;
+		this.clearWorkingStatusTimer(true);
+	}
+
+	private markAssistantTextObserved(): void {
+		this.runHasAssistantText = true;
+		if (this.runSawToolActivity) {
+			this.keepWorkflowExpandedUntilAssistantText = false;
+		}
+	}
+
+	private markToolActivityObserved(): void {
+		this.runSawToolActivity = true;
+		this.keepWorkflowExpandedUntilAssistantText = true;
+	}
+
+	setProjectPath(path: string | null): void {
+		if (this.projectPath === path) return;
+		const previous = this.projectPath;
+		this.projectPath = path;
+		const push = (window as typeof window & {
+			__PI_DESKTOP_PUSH_TRACE__?: (message: string) => void;
+		}).__PI_DESKTOP_PUSH_TRACE__;
+		push?.(`chat:setProjectPath ${previous ?? "-"} -> ${path ?? "-"}`);
+		this.gitMenuOpen = false;
+		this.welcomeProjectMenuOpen = false;
+		this.resetSessionUiTransientState();
 		this.modelCatalogLoadedAt = 0;
 		if (!path) {
 			this.bindingStatusText = null;
@@ -889,9 +759,7 @@ export class ChatView {
 			this.providerAuthConfigured.clear();
 			this.providerAuthForcedLoggedOut.clear();
 			this.providerAuthLoadedAt = 0;
-			this.runHasAssistantText = false;
-			this.runSawToolActivity = false;
-			this.clearWorkingStatusTimer(true);
+			this.resetRunActivityState();
 			void this.refreshWelcomeDashboard(true);
 		}
 		void this.refreshGitSummary(true);
@@ -908,25 +776,9 @@ export class ChatView {
 		this.lastBackendSessionFile = null;
 		this.lastBackendRefreshError = null;
 		this.pendingDeliveryMode = "prompt";
-		this.modelPickerOpen = false;
-		this.selectedSkillDraft = null;
-		this.slashPaletteOpen = false;
-		this.slashPaletteQuery = "";
-		this.slashPaletteIndex = 0;
-		this.slashCommandsUpdatedAt = 0;
-		this.slashRuntimeCommands = [];
-		this.expandedToolWorkflowIds.clear();
-		this.expandedToolGroupByWorkflowId.clear();
-		this.expandedWorkflowThinkingIds.clear();
-		this.collapsedAutoWorkflowIds.clear();
-		this.compactionCycle = null;
-		this.compactionInsertIndex = null;
-		this.runningProviderAuthAction = null;
+		this.resetSessionUiTransientState();
 		this.providerAuthForcedLoggedOut.clear();
-		this.runHasAssistantText = false;
-		this.runSawToolActivity = false;
-		this.keepWorkflowExpandedUntilAssistantText = false;
-		this.clearWorkingStatusTimer(true);
+		this.resetRunActivityState();
 		this.bindingStatusText = projectPath ? (statusText ?? "Loading session…") : null;
 		this.render();
 	}
@@ -935,19 +787,41 @@ export class ChatView {
 		return this.state;
 	}
 
+	private getComposerTextarea(): HTMLTextAreaElement | null {
+		return this.container.querySelector("#chat-input") as HTMLTextAreaElement | null;
+	}
+
+	private syncComposerTextarea(
+		text: string,
+		options: { maxHeight?: number; focus?: boolean; moveCaretToEnd?: boolean } = {},
+	): void {
+		const textarea = this.getComposerTextarea();
+		if (!textarea) return;
+		textarea.value = text;
+		textarea.style.height = "auto";
+		if (typeof options.maxHeight === "number" && options.maxHeight > 0) {
+			textarea.style.height = `${Math.min(textarea.scrollHeight, options.maxHeight)}px`;
+		}
+		if (options.moveCaretToEnd) {
+			const end = text.length;
+			textarea.setSelectionRange(end, end);
+		}
+		if (options.focus) textarea.focus();
+	}
+
+	private syncComposerTextareaDeferred(
+		text: string,
+		options: { maxHeight?: number; focus?: boolean; moveCaretToEnd?: boolean } = {},
+	): void {
+		requestAnimationFrame(() => this.syncComposerTextarea(text, options));
+	}
+
 	setInputText(text: string): void {
 		this.inputText = text;
 		this.resetComposerHistoryNavigation();
 		this.updateSlashPaletteStateFromInput();
 		this.render();
-		requestAnimationFrame(() => {
-			const textarea = this.container.querySelector("#chat-input") as HTMLTextAreaElement | null;
-			if (!textarea) return;
-			textarea.value = text;
-			textarea.style.height = "auto";
-			textarea.style.height = `${Math.min(textarea.scrollHeight, 200)}px`;
-			textarea.focus();
-		});
+		this.syncComposerTextareaDeferred(text, { maxHeight: 200, focus: true });
 	}
 
 	stageComposerCommand(commandText: string): void {
@@ -958,10 +832,7 @@ export class ChatView {
 			this.resetComposerHistoryNavigation();
 			this.updateSlashPaletteStateFromInput();
 			this.render();
-			requestAnimationFrame(() => {
-				const textarea = this.container.querySelector("#chat-input") as HTMLTextAreaElement | null;
-				textarea?.focus();
-			});
+			this.syncComposerTextareaDeferred(this.inputText, { focus: true });
 			return;
 		}
 		this.selectedSkillDraft = null;
@@ -969,14 +840,7 @@ export class ChatView {
 		this.resetComposerHistoryNavigation();
 		this.closeSlashPalette();
 		this.render();
-		requestAnimationFrame(() => {
-			const textarea = this.container.querySelector("#chat-input") as HTMLTextAreaElement | null;
-			if (!textarea) return;
-			textarea.value = commandText;
-			textarea.style.height = "auto";
-			textarea.style.height = `${Math.min(textarea.scrollHeight, 200)}px`;
-			textarea.focus();
-		});
+		this.syncComposerTextareaDeferred(commandText, { maxHeight: 200, focus: true });
 	}
 
 	private parseComposerSkillDraftFromCommand(commandText: string): ComposerSkillDraft | null {
@@ -1006,17 +870,11 @@ export class ChatView {
 	private removeComposerSkillDraft(): void {
 		this.selectedSkillDraft = null;
 		this.render();
-		requestAnimationFrame(() => {
-			const textarea = this.container.querySelector("#chat-input") as HTMLTextAreaElement | null;
-			textarea?.focus();
-		});
+		this.syncComposerTextareaDeferred(this.inputText, { focus: true });
 	}
 
 	private slashQueryFromInput(): string | null {
-		const raw = this.inputText;
-		if (!raw.startsWith("/")) return null;
-		if (raw.includes("\n")) return null;
-		return raw.slice(1).trimStart();
+		return getSlashQueryFromInput(this.inputText);
 	}
 
 	private updateSlashPaletteStateFromInput(): void {
@@ -1048,42 +906,7 @@ export class ChatView {
 	}
 
 	private parseSlashInput(value: string): { commandText: string; commandName: string; args: string } | null {
-		const raw = value.trim();
-		if (!raw.startsWith("/")) return null;
-		if (raw.includes("\n")) return null;
-		const body = raw.slice(1).trim();
-		if (!body) return null;
-		const splitIndex = body.search(/\s/);
-		if (splitIndex < 0) {
-			const commandToken = body.trim();
-			const commandName = commandToken.toLowerCase();
-			return {
-				commandName,
-				args: "",
-				commandText: `/${commandToken}`,
-			};
-		}
-		const commandToken = body.slice(0, splitIndex).trim();
-		const commandName = commandToken.toLowerCase();
-		const args = body.slice(splitIndex + 1).trim();
-		return {
-			commandName,
-			args,
-			commandText: `/${commandToken}${args ? ` ${args}` : ""}`,
-		};
-	}
-
-	private normalizeRuntimeSlashCommand(raw: Record<string, unknown>): RuntimeSlashCommand | null {
-		const source = normalizeText(raw.source).toLowerCase();
-		if (source !== "extension" && source !== "prompt" && source !== "skill") return null;
-		const name = normalizeText(raw.name).replace(/^\/+/, "").trim().toLowerCase();
-		if (!name) return null;
-		const description = withRuntimeCommandUsageHint(name, normalizeText(raw.description) || `Run /${name}`);
-		return {
-			name,
-			description,
-			source,
-		};
+		return parseSlashInputText(value);
 	}
 
 	private async ensureSlashCommandsLoaded(force = false): Promise<void> {
@@ -1093,27 +916,7 @@ export class ChatView {
 		if (this.slashPaletteOpen) this.render();
 		try {
 			const runtimeCommands = await rpcBridge.getCommands().catch(() => []);
-			const normalized: RuntimeSlashCommand[] = [];
-			const seen = new Set<string>();
-			for (const raw of runtimeCommands as Array<Record<string, unknown>>) {
-				const parsed = this.normalizeRuntimeSlashCommand(raw);
-				if (!parsed) continue;
-				const key = `${parsed.source}:${parsed.name}`;
-				if (seen.has(key)) continue;
-				seen.add(key);
-				normalized.push(parsed);
-			}
-			const sourceOrder: Record<RuntimeSlashCommand["source"], number> = {
-				extension: 0,
-				prompt: 1,
-				skill: 2,
-			};
-			normalized.sort((a, b) => {
-				const sourceDiff = sourceOrder[a.source] - sourceOrder[b.source];
-				if (sourceDiff !== 0) return sourceDiff;
-				return a.name.localeCompare(b.name);
-			});
-			this.slashRuntimeCommands = normalized;
+			this.slashRuntimeCommands = normalizeRuntimeSlashCommands(runtimeCommands as Array<Record<string, unknown>>);
 			this.slashCommandsUpdatedAt = Date.now();
 		} catch {
 			this.slashRuntimeCommands = this.slashRuntimeCommands.slice();
@@ -1124,112 +927,37 @@ export class ChatView {
 		}
 	}
 
-	private slashSectionForSource(source: SlashCommandSource): SlashPaletteSection {
-		switch (source) {
-			case "builtin":
-				return "CLI";
-			case "extension":
-				return "Extensions";
-			case "prompt":
-				return "Prompts";
-			case "skill":
-			default:
-				return "Skills";
-		}
-	}
-
 	private buildAllSlashPaletteItems(): SlashPaletteItem[] {
-		const builtinItems: SlashPaletteItem[] = BUILTIN_SLASH_COMMANDS.map((command) => ({
-			id: `builtin:${command.name}`,
-			section: "CLI",
-			label: `/${command.name}`,
-			hint: command.description,
-			commandName: command.name,
-			source: "builtin",
-		}));
-		const builtinNames = new Set(builtinItems.map((item) => item.commandName));
-		const runtimeItems: SlashPaletteItem[] = this.slashRuntimeCommands
-			.filter((command) => !builtinNames.has(command.name))
-			.map((command) => ({
-				id: `${command.source}:${command.name}`,
-				section: this.slashSectionForSource(command.source),
-				label: `/${command.name}`,
-				hint: command.description,
-				commandName: command.name,
-				source: command.source,
-			}));
-		return [...builtinItems, ...runtimeItems];
-	}
-
-	private slashQueryToken(): string {
-		const raw = this.slashPaletteQuery.trim();
-		if (!raw) return "";
-		const [token] = raw.split(/\s+/, 1);
-		return (token || "").toLowerCase();
-	}
-
-	private matchesSlashQuery(query: string, ...values: string[]): boolean {
-		if (!query) return true;
-		const haystack = values.join(" ").toLowerCase();
-		return haystack.includes(query);
+		return createSlashPaletteItems(this.slashRuntimeCommands);
 	}
 
 	private getSlashPaletteItems(): SlashPaletteItem[] {
 		if (!this.slashPaletteOpen) return [];
-		const query = this.slashQueryToken();
-		const allItems = this.buildAllSlashPaletteItems();
-		if (!query) return allItems;
-		const startsWith: SlashPaletteItem[] = [];
-		const contains: SlashPaletteItem[] = [];
-		for (const item of allItems) {
-			if (!this.matchesSlashQuery(query, item.commandName, item.label, item.hint, item.section)) continue;
-			if (item.commandName.startsWith(query) || item.label.toLowerCase().startsWith(`/${query}`)) {
-				startsWith.push(item);
-			} else {
-				contains.push(item);
-			}
-		}
-		return [...startsWith, ...contains];
+		return filterSlashPaletteItemsByQuery(this.buildAllSlashPaletteItems(), this.slashPaletteQuery);
 	}
 
 	private findSlashPaletteItemByName(commandName: string): SlashPaletteItem | null {
-		const normalized = commandName.trim().toLowerCase();
-		if (!normalized) return null;
-		return this.buildAllSlashPaletteItems().find((item) => item.commandName === normalized) ?? null;
+		return findSlashPaletteItemByName(this.buildAllSlashPaletteItems(), commandName);
 	}
 
 	private unwrapQuotedArg(value: string): string {
-		const trimmed = value.trim();
-		if (!trimmed) return "";
-		if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
-			return trimmed.slice(1, -1).trim();
-		}
-		return trimmed;
+		return unwrapQuotedArgValue(value);
 	}
 
 	private normalizedAuthProviderArg(rawArgs: string): string {
-		const provider = this.unwrapQuotedArg(rawArgs).toLowerCase();
-		if (!provider) return "";
-		if (!/^[a-z0-9._-]+$/.test(provider)) return "";
-		return provider;
+		return normalizeAuthProviderArgValue(rawArgs);
 	}
 
 	private providerKey(provider: string): string {
-		return normalizeText(provider).toLowerCase();
+		return normalizeProviderKeyValue(provider);
 	}
 
 	private isOAuthProviderId(provider: string): boolean {
-		const key = this.providerKey(provider);
-		return DEFAULT_OAUTH_PROVIDER_SET.has(key) || this.oauthProviderCatalog.has(key);
+		return isOAuthProviderIdInCatalog(provider, this.oauthProviderCatalog);
 	}
 
 	private displayProviderLabel(provider: string): string {
-		const key = this.providerKey(provider);
-		const catalogName = this.oauthProviderCatalog.get(key)?.name;
-		if (catalogName) return catalogName;
-		const defaultName = DEFAULT_OAUTH_PROVIDER_NAME_BY_ID.get(key);
-		if (defaultName) return defaultName;
-		return formatProviderDisplayName(key);
+		return displayProviderLabelFromCatalog(provider, this.oauthProviderCatalog);
 	}
 
 	private async loadOAuthProviderCatalog(force = false): Promise<void> {
@@ -1239,38 +967,12 @@ export class ChatView {
 		this.oauthProviderCatalogLoading = true;
 		try {
 			const raw = await rpcBridge.getPiOAuthProviders();
-			const next = new Map<string, { name: string; source: "built_in" | "package" }>();
-			const entries = Array.isArray(raw) ? raw : [];
-			for (const entry of entries) {
-				const providerId = this.providerKey(typeof entry?.id === "string" ? entry.id : "");
-				if (!providerId) continue;
-				const nameRaw = typeof entry?.name === "string" ? entry.name.trim() : "";
-				const sourceRaw = entry?.source;
-				next.set(providerId, {
-					name: nameRaw || this.displayProviderLabel(providerId),
-					source: sourceRaw === "package" ? "package" : "built_in",
-				});
-			}
-			for (const providerId of DEFAULT_OAUTH_PROVIDER_IDS) {
-				if (next.has(providerId)) continue;
-				next.set(providerId, {
-					name: DEFAULT_OAUTH_PROVIDER_NAME_BY_ID.get(providerId) ?? formatProviderDisplayName(providerId),
-					source: "built_in",
-				});
-			}
-			this.oauthProviderCatalog = next;
+			this.oauthProviderCatalog = normalizeOAuthProviderCatalogEntries(raw);
 			this.oauthProviderCatalogLoadedAt = Date.now();
 		} catch (err) {
 			console.error("Failed to load OAuth provider catalog:", err);
 			if (this.oauthProviderCatalogLoadedAt === 0) {
-				const defaults = new Map<string, { name: string; source: "built_in" | "package" }>();
-				for (const providerId of DEFAULT_OAUTH_PROVIDER_IDS) {
-					defaults.set(providerId, {
-						name: DEFAULT_OAUTH_PROVIDER_NAME_BY_ID.get(providerId) ?? formatProviderDisplayName(providerId),
-						source: "built_in",
-					});
-				}
-				this.oauthProviderCatalog = defaults;
+				this.oauthProviderCatalog = normalizeOAuthProviderCatalogEntries([]);
 			}
 		} finally {
 			this.oauthProviderCatalogLoading = false;
@@ -1294,21 +996,7 @@ export class ChatView {
 		this.loadingProviderAuth = true;
 		try {
 			const raw = await rpcBridge.getPiAuthStatus();
-			const next = new Map<string, Pick<PiAuthProviderStatus, "source" | "kind">>();
-			const providers = Array.isArray(raw?.configured_providers) ? raw.configured_providers : [];
-			for (const entry of providers) {
-				const provider = this.providerKey(typeof entry?.provider === "string" ? entry.provider : "");
-				if (!provider) continue;
-				const source = entry?.source;
-				const kind = entry?.kind;
-				next.set(provider, {
-					source:
-						source === "environment" || source === "auth_file_api_key" || source === "auth_file_oauth"
-							? source
-							: "auth_file_api_key",
-					kind: kind === "api_key" || kind === "oauth" || kind === "unknown" ? kind : "unknown",
-				});
-			}
+			const next = normalizeConfiguredProviderAuthEntries(raw?.configured_providers);
 			this.providerAuthById = next;
 			this.providerAuthLoadedAt = Date.now();
 			for (const provider of next.keys()) {
@@ -1351,29 +1039,7 @@ export class ChatView {
 	}
 
 	private resolveProviderSetupCommand(provider: string): string | null {
-		const providerKey = this.providerKey(provider);
-		if (!providerKey) return null;
-		const providerTokens = providerKey.split(/[-_.]+/).filter((token) => token.length > 2);
-		let best: { name: string; score: number } | null = null;
-		for (const command of this.slashRuntimeCommands) {
-			if (command.source !== "extension") continue;
-			const name = normalizeText(command.name).toLowerCase().replace(/^\/+/, "");
-			if (!name) continue;
-			const description = normalizeText(command.description).toLowerCase();
-			const haystack = `${name} ${description}`;
-			const tokenHits = providerTokens.filter((token) => haystack.includes(token)).length;
-			const hasProviderMatch = haystack.includes(providerKey) || tokenHits > 0;
-			if (!hasProviderMatch) continue;
-			let score = 0;
-			if (haystack.includes(providerKey)) score += 8;
-			score += tokenHits * 3;
-			if (/\b(config|setup|settings|auth|login)\b/.test(haystack)) score += 2;
-			if (/config/.test(name)) score += 1;
-			if (!best || score > best.score) {
-				best = { name, score };
-			}
-		}
-		return best?.name ?? null;
+		return resolveProviderSetupCommandForProvider(provider, this.slashRuntimeCommands);
 	}
 
 	private async openProviderSetup(provider: string): Promise<boolean> {
@@ -1535,8 +1201,8 @@ export class ChatView {
 		const slashQuery = this.slashQueryFromInput();
 		const parsed = this.parseSlashInput(this.inputText);
 		if (!parsed && slashQuery === null) return;
-		if (this.pendingImages.length > 0) {
-			this.pushNotice("Slash commands cannot be sent with image attachments", "info");
+		if (this.pendingImages.length > 0 || this.pendingFileReferences.length > 0) {
+			this.pushNotice("Slash commands cannot be sent with pending attachments", "info");
 			return;
 		}
 		await this.ensureSlashCommandsLoaded();
@@ -1556,10 +1222,39 @@ export class ChatView {
 			return;
 		}
 		if (parsed) {
-			this.pushNotice(`Unknown slash command: /${parsed.commandName}`, "error");
+			const adhocRuntimeItem: SlashPaletteItem = {
+				id: `adhoc:${parsed.commandName}`,
+				section: "Commands",
+				label: `/${parsed.commandName}`,
+				hint: "Run runtime slash command",
+				commandName: parsed.commandName,
+				source: "other",
+			};
+			await this.runSlashCommand(parsed.commandText, adhocRuntimeItem, parsed.args);
 			return;
 		}
 		this.pushNotice("Select a slash command from the menu", "info");
+	}
+
+	async runSlashCommandText(commandText: string): Promise<boolean> {
+		const parsed = this.parseSlashInput(commandText);
+		if (!parsed) return false;
+		await this.ensureSlashCommandsLoaded();
+		const exact = this.findSlashPaletteItemByName(parsed.commandName);
+		if (exact) {
+			await this.runSlashCommand(parsed.commandText, exact, parsed.args);
+			return true;
+		}
+		const fallbackItem: SlashPaletteItem = {
+			id: `adhoc:${parsed.commandName}`,
+			section: "Commands",
+			label: `/${parsed.commandName}`,
+			hint: "Run runtime slash command",
+			commandName: parsed.commandName,
+			source: "other",
+		};
+		await this.runSlashCommand(parsed.commandText, fallbackItem, parsed.args);
+		return true;
 	}
 
 	private async runSlashCommand(commandText: string, item: SlashPaletteItem, args: string): Promise<void> {
@@ -1587,21 +1282,13 @@ export class ChatView {
 
 	private async executeRuntimeSlashCommand(
 		commandText: string,
-		source: SlashCommandSource,
+		source: Exclude<SlashCommandSource, "builtin">,
 		commandName: string,
 		args: string,
 	): Promise<void> {
-		if (source === "builtin") return;
 		if (source === "extension" && this.onOpenExtensionConfig) {
-			const normalizedName = commandName.trim().toLowerCase();
-			const normalizedArgs = args.trim().toLowerCase();
-			const defaultSettingsIntent = normalizedName === "voice-notify" && normalizedArgs.length === 0;
-			const configIntent =
-				defaultSettingsIntent ||
-				normalizedName.endsWith("config") ||
-				normalizedArgs === "config" ||
-				normalizedArgs.startsWith("config ");
-			if (configIntent) {
+			const normalizedName = normalizeExtensionCommandName(commandName);
+			if (isExtensionConfigIntent(normalizedName, args)) {
 				const handled = await this.onOpenExtensionConfig(normalizedName, args);
 				if (handled) return;
 			}
@@ -1611,7 +1298,7 @@ export class ChatView {
 		this.onPromptSubmitted?.();
 	}
 
-	private openModelPicker(options: { preferredProvider?: string } = {}): void {
+	private ensureModelPickerDataLoaded(): void {
 		if (!this.loadingModels && this.availableModels.length === 0) {
 			void this.loadAvailableModels();
 		}
@@ -1624,16 +1311,30 @@ export class ChatView {
 		if (!this.loadingModelCatalog && this.modelCatalog.length === 0) {
 			void this.loadModelCatalog();
 		}
-		const preferred = normalizeText(options.preferredProvider).toLowerCase();
+	}
+
+	private setModelPickerActiveProvider(provider: string): void {
+		const normalized = normalizeText(provider);
+		if (!normalized || this.modelPickerActiveProvider === normalized) return;
+		this.modelPickerActiveProvider = normalized;
+		this.render();
+	}
+
+	private closeModelPicker(options: { focusComposer?: boolean } = {}): void {
+		if (!this.modelPickerOpen) return;
+		this.modelPickerOpen = false;
+		this.render();
+		if (options.focusComposer) {
+			requestAnimationFrame(() => this.focusInput());
+		}
+	}
+
+	private openModelPicker(options: { preferredProvider?: string } = {}): void {
+		this.ensureModelPickerDataLoaded();
+		const providerPool = [...this.availableModels, ...this.modelCatalog];
+		const preferred = resolvePreferredModelPickerProvider(normalizeText(options.preferredProvider), providerPool);
 		if (preferred) {
-			const providerPool = [...this.availableModels, ...this.modelCatalog];
-			const exact = providerPool.find((model) => model.provider.toLowerCase() === preferred)?.provider;
-			if (exact) {
-				this.modelPickerActiveProvider = exact;
-			} else {
-				const partial = providerPool.find((model) => model.provider.toLowerCase().includes(preferred))?.provider;
-				if (partial) this.modelPickerActiveProvider = partial;
-			}
+			this.modelPickerActiveProvider = preferred;
 		}
 		if (!this.modelPickerActiveProvider) {
 			const currentProvider = normalizeText(this.state?.model?.provider);
@@ -1645,339 +1346,72 @@ export class ChatView {
 		this.render();
 	}
 
-	private resolveProviderHintFromModelArg(rawArg: string): string | null {
-		const arg = rawArg.trim().replace(/^\/+/, "");
-		if (!arg) return null;
-
-		const byDelim = arg.includes("/") ? arg.split("/")[0] : arg.includes("::") ? arg.split("::")[0] : arg;
-		const token = byDelim.trim().toLowerCase();
-		if (!token) return null;
-
-		const providerPool = [...this.availableModels, ...this.modelCatalog];
-		const providers = [...new Set(providerPool.map((model) => model.provider))];
-		const exact = providers.find((provider) => provider.toLowerCase() === token);
-		if (exact) return exact;
-		const partial = providers.find((provider) => provider.toLowerCase().includes(token));
-		if (partial) return partial;
-
-		const fuzzy = providerPool.filter((model) => `${model.provider}/${model.id}`.toLowerCase().includes(token));
-		if (fuzzy.length > 0) {
-			const uniqueProviders = [...new Set(fuzzy.map((model) => model.provider))];
-			if (uniqueProviders.length === 1) return uniqueProviders[0];
+	private toggleModelPicker(preferredProvider = ""): void {
+		if (this.modelPickerOpen) {
+			this.closeModelPicker();
+			return;
 		}
+		this.openModelPicker({ preferredProvider });
+	}
 
-		return null;
+	private resolveProviderHintFromModelArg(rawArg: string): string | null {
+		return resolveProviderHintFromModelArg(rawArg, [...this.availableModels, ...this.modelCatalog]);
 	}
 
 	private resolveModelCandidateFromArg(rawArg: string): ModelOption | null {
-		const arg = rawArg.trim();
-		if (!arg) return null;
-		const normalizedArg = arg.replace(/^\/+/, "").trim();
-		const viaDoubleColon = normalizedArg.split("::");
-		if (viaDoubleColon.length === 2) {
-			const provider = viaDoubleColon[0]?.trim().toLowerCase();
-			const id = viaDoubleColon[1]?.trim().toLowerCase();
-			if (provider && id) {
-				return this.availableModels.find((model) => model.provider.toLowerCase() === provider && model.id.toLowerCase() === id) ?? null;
-			}
-		}
-		const slashIndex = normalizedArg.indexOf("/");
-		if (slashIndex > 0) {
-			const provider = normalizedArg.slice(0, slashIndex).trim().toLowerCase();
-			const id = normalizedArg.slice(slashIndex + 1).trim().toLowerCase();
-			if (provider && id) {
-				const exact = this.availableModels.find((model) => model.provider.toLowerCase() === provider && model.id.toLowerCase() === id);
-				if (exact) return exact;
-			}
-		}
-		const lower = normalizedArg.toLowerCase();
-		const exactById = this.availableModels.find((model) => model.id.toLowerCase() === lower);
-		if (exactById) return exactById;
-		const fuzzy = this.availableModels.filter((model) => `${model.provider}/${model.id}`.toLowerCase().includes(lower));
-		if (fuzzy.length === 1) return fuzzy[0];
-		return null;
-	}
-
-	private getSessionMessageBreakdown(): {
-		user: number;
-		assistant: number;
-		toolCalls: number;
-		toolResults: number;
-	} {
-		let user = 0;
-		let assistant = 0;
-		let toolCalls = 0;
-		let toolResults = 0;
-		for (const message of this.messages) {
-			if (message.role === "user") {
-				user += 1;
-				continue;
-			}
-			if (message.role !== "assistant") continue;
-			assistant += 1;
-			toolCalls += message.toolCalls.length;
-			toolResults += message.toolCalls.filter((call) => typeof call.result === "string" && call.result.trim().length > 0).length;
-		}
-		return { user, assistant, toolCalls, toolResults };
-	}
-
-	private formatSessionInfoBlock(): string {
-		const lines: string[] = [];
-		const sessionName = normalizeText(this.state?.sessionName);
-		const sessionFile = normalizeText(this.state?.sessionFile);
-		const sessionId = normalizeText(this.state?.sessionId);
-		const modelProvider = normalizeText(this.state?.model?.provider);
-		const modelId = normalizeText(this.state?.model?.id);
-		const modelLabel = modelProvider && modelId ? `${modelProvider}/${modelId}` : "—";
-		const { user, assistant, toolCalls, toolResults } = this.getSessionMessageBreakdown();
-		const totalMessages = this.state?.messageCount ?? this.sessionStats.messageCount;
-		const pendingMessages = this.state?.pendingMessageCount ?? this.sessionStats.pendingCount;
-
-		lines.push("Session info");
-		lines.push("");
-		lines.push(`Name: ${sessionName || "(unnamed)"}`);
-		lines.push(`File: ${sessionFile || "In-memory"}`);
-		lines.push(`ID: ${sessionId || "—"}`);
-		lines.push(`Model: ${modelLabel}`);
-		lines.push(`Thinking: ${this.state?.thinkingLevel ?? "—"}`);
-		lines.push("");
-		lines.push("Messages");
-		lines.push(`User: ${user}`);
-		lines.push(`Assistant: ${assistant}`);
-		lines.push(`Tool calls: ${toolCalls}`);
-		lines.push(`Tool results: ${toolResults}`);
-		lines.push(`Total: ${Math.max(0, totalMessages)}`);
-		lines.push(`Pending: ${Math.max(0, pendingMessages)}`);
-		lines.push("");
-		lines.push("Tokens");
-		lines.push(
-			`Context: ${this.sessionStats.tokens !== null ? Math.round(this.sessionStats.tokens).toLocaleString() : "—"}`,
-		);
-		lines.push(
-			`Context window: ${this.sessionStats.contextWindow !== null ? Math.round(this.sessionStats.contextWindow).toLocaleString() : "—"}`,
-		);
-		lines.push(`Usage: ${this.sessionStats.usageRatio !== null ? `${(this.sessionStats.usageRatio * 100).toFixed(1)}%` : "—"}`);
-		lines.push(
-			`Session tokens total: ${this.sessionStats.lifetimeTokens !== null ? Math.round(this.sessionStats.lifetimeTokens).toLocaleString() : "—"}`,
-		);
-		lines.push(`Cost: ${this.sessionStats.costUsd !== null ? formatUsd(this.sessionStats.costUsd) : "—"}`);
-		return lines.join("\n");
+		return resolveModelCandidateFromArg(rawArg, this.availableModels);
 	}
 
 	private async executeBuiltinSlashCommand(commandName: string, args: string): Promise<void> {
-		switch (commandName) {
-			case "settings": {
-				if (!this.onOpenSettings) {
-					this.pushNotice("Settings panel is unavailable", "error");
-					return;
-				}
-				this.onOpenSettings();
-				return;
-			}
-			case "model": {
-				const rawArg = args.trim();
-				if (!rawArg) {
-					this.openModelPicker();
-					return;
-				}
-				if (this.availableModels.length === 0) {
-					await this.loadAvailableModels();
-				}
-				const candidate = this.resolveModelCandidateFromArg(rawArg);
-				if (!candidate) {
-					const providerHint = this.resolveProviderHintFromModelArg(rawArg) ?? undefined;
-					this.openModelPicker({ preferredProvider: providerHint });
-					return;
-				}
-				await this.setModel(candidate.provider, candidate.id);
-				return;
-			}
-			case "scoped-models": {
-				if (this.onOpenSettings) {
-					this.onOpenSettings("general");
-				} else {
-					this.pushNotice("Settings panel is unavailable", "error");
-				}
-				return;
-			}
-			case "export": {
-				let outputPath = this.unwrapQuotedArg(args);
-				if (!outputPath) {
-					outputPath = (await this.pickSessionExportPathFromDialog()) || "";
-				}
-				if (!outputPath) {
-					this.pushNotice("Export cancelled", "info");
-					return;
-				}
-				const result = await rpcBridge.exportHtml(outputPath);
-				this.pushNotice(`Exported session to ${truncate(result.path, 70)}`, "success");
-				return;
-			}
-			case "import": {
-				let target = this.unwrapQuotedArg(args);
-				if (!target) {
-					target = (await this.pickSessionImportPathFromDialog()) || "";
-				}
-				if (!target) {
-					this.pushNotice("Import cancelled", "info");
-					return;
-				}
-				const result = await rpcBridge.switchSession(target);
-				if (!result.cancelled) {
-					await this.refreshFromBackend();
-					this.pushNotice(`Session imported from ${truncate(target, 56)}`, "success");
-				} else {
-					this.pushNotice("Import cancelled", "info");
-				}
-				return;
-			}
-			case "share": {
-				await this.shareAsGist();
-				return;
-			}
-			case "copy": {
-				await this.copyLastMessage();
-				return;
-			}
-			case "name": {
-				const nextName = args.trim();
-				if (!nextName) {
-					if (this.onBeginRenameCurrentSession) {
-						const handled = await this.onBeginRenameCurrentSession();
-						if (handled) return;
-					}
-					await this.renameSession();
-					return;
-				}
-				await this.renameSessionTo(nextName);
-				return;
-			}
-			case "session": {
-				await this.refreshSessionStats(true);
-				this.appendSystemMessage(this.formatSessionInfoBlock(), { label: "session" });
-				return;
-			}
-			case "changelog": {
-				const tokens = args
-					.split(/\s+/)
-					.map((token) => token.trim().toLowerCase())
-					.filter(Boolean);
-				const forceRefresh = tokens.includes("refresh");
-				const showAll = tokens.includes("all") || tokens.includes("full");
-				const markdownFull = await this.loadPiAgentChangelogMarkdown(forceRefresh);
-				const markdown = showAll ? markdownFull : this.extractLatestChangelogSections(markdownFull, 2);
-				this.appendSystemMessage(markdown, {
-					label: "changelog",
-					markdown: true,
-					collapsibleTitle: showAll ? "Changelog · all" : "Changelog · latest",
-					collapsedByDefault: true,
-				});
-				return;
-			}
-			case "hotkeys": {
-				if (this.onOpenShortcuts) {
-					this.onOpenShortcuts();
-				} else {
-					this.pushNotice("Keyboard shortcuts panel is unavailable", "info");
-				}
-				return;
-			}
-			case "terminal": {
-				if (this.onOpenTerminal) {
-					await this.onOpenTerminal();
-				} else {
-					this.pushNotice("Terminal panel is unavailable", "info");
-				}
-				return;
-			}
-			case "fork": {
-				this.openHistoryViewerForFork({
-					loading: false,
-					sessionName: this.state?.sessionName ?? null,
-					query: args.trim() || undefined,
-				});
-				return;
-			}
-			case "tree": {
-				this.openHistoryViewer({ query: args.trim() || undefined });
-				return;
-			}
-			case "login": {
-				const provider = this.normalizedAuthProviderArg(args);
-				if (!provider) {
-					this.openModelPicker();
-					return;
-				}
-				await this.handleProviderAuthAction(provider, "login");
-				return;
-			}
-			case "logout": {
-				const provider = this.normalizedAuthProviderArg(args);
-				if (!provider) {
-					this.openModelPicker();
-					return;
-				}
-				await this.handleProviderAuthAction(provider, "logout");
-				return;
-			}
-			case "new": {
-				if (this.onCreateFreshSession) {
-					const handled = await this.onCreateFreshSession();
-					if (handled) return;
-				}
-				await this.newSession();
-				return;
-			}
-			case "compact": {
-				await this.compactNow(args.trim() || undefined);
-				return;
-			}
-			case "resume": {
-				if (this.onOpenSessionBrowser) {
-					this.onOpenSessionBrowser(args.trim() || undefined);
-				} else {
-					this.pushNotice("Session browser is unavailable", "info");
-				}
-				return;
-			}
-			case "reload": {
-				if (this.onReloadRuntime) {
-					const handled = await this.onReloadRuntime();
-					if (handled) {
-						await this.ensureSlashCommandsLoaded(true);
-						await Promise.all([
-							this.loadProviderAuthStatus(true),
-							this.loadOAuthProviderCatalog(true),
-							this.loadModelCatalog(true),
-						]);
-						this.pushNotice("Reloaded runtime state", "success");
-						return;
-					}
-				}
-				await this.ensureSlashCommandsLoaded(true);
-				await this.refreshFromBackend();
-				await Promise.all([
-					this.loadAvailableModels(),
-					this.loadProviderAuthStatus(true),
-					this.loadOAuthProviderCatalog(true),
-					this.loadModelCatalog(true),
-				]);
-				this.pushNotice("Reloaded runtime state", "success");
-				return;
-			}
-			case "quit": {
-				if (this.onQuitApp) {
-					this.onQuitApp();
-				} else {
-					this.pushNotice("Quit is unavailable in this context", "info");
-				}
-				return;
-			}
-			default: {
-				this.pushNotice(`Unknown slash command: /${commandName}`, "error");
-				return;
-			}
-		}
+		await executeBuiltinSlashCommandView({
+			commandName,
+			args,
+			availableModelsCount: this.availableModels.length,
+			onOpenSettings: this.onOpenSettings,
+			pushNotice: this.pushNotice.bind(this),
+			truncate,
+			openModelPicker: this.openModelPicker.bind(this),
+			loadAvailableModels: this.loadAvailableModels.bind(this),
+			resolveModelCandidateFromArg: this.resolveModelCandidateFromArg.bind(this),
+			resolveProviderHintFromModelArg: this.resolveProviderHintFromModelArg.bind(this),
+			setModel: this.setModel.bind(this),
+			unwrapQuotedArg: this.unwrapQuotedArg.bind(this),
+			pickSessionExportPathFromDialog: this.pickSessionExportPathFromDialog.bind(this),
+			pickSessionImportPathFromDialog: this.pickSessionImportPathFromDialog.bind(this),
+			refreshFromBackend: this.refreshFromBackend.bind(this),
+			shareAsGist: this.shareAsGist.bind(this),
+			copyLastMessage: this.copyLastMessage.bind(this),
+			onBeginRenameCurrentSession: this.onBeginRenameCurrentSession,
+			renameSession: this.renameSession.bind(this),
+			renameSessionTo: this.renameSessionTo.bind(this),
+			refreshSessionStats: this.refreshSessionStats.bind(this),
+			buildSessionInfoBlock: () =>
+				formatSessionInfoBlockView({
+					state: this.state,
+					sessionStats: this.sessionStats,
+					messages: this.messages,
+				}),
+			appendSystemMessage: this.appendSystemMessage.bind(this),
+			loadPiAgentChangelogMarkdown: this.loadPiAgentChangelogMarkdown.bind(this),
+			extractLatestChangelogSections: this.extractLatestChangelogSections.bind(this),
+			onOpenShortcuts: this.onOpenShortcuts,
+			onOpenTerminal: this.onOpenTerminal,
+			sessionName: this.state?.sessionName ?? null,
+			openHistoryViewerForFork: this.openHistoryViewerForFork.bind(this),
+			openHistoryViewer: this.openHistoryViewer.bind(this),
+			normalizedAuthProviderArg: this.normalizedAuthProviderArg.bind(this),
+			handleProviderAuthAction: this.handleProviderAuthAction.bind(this),
+			onCreateFreshSession: this.onCreateFreshSession,
+			newSession: this.newSession.bind(this),
+			compactNow: this.compactNow.bind(this),
+			onOpenSessionBrowser: this.onOpenSessionBrowser,
+			onReloadRuntime: this.onReloadRuntime,
+			ensureSlashCommandsLoaded: this.ensureSlashCommandsLoaded.bind(this),
+			loadProviderAuthStatus: this.loadProviderAuthStatus.bind(this),
+			loadOAuthProviderCatalog: this.loadOAuthProviderCatalog.bind(this),
+			loadModelCatalog: this.loadModelCatalog.bind(this),
+			onQuitApp: this.onQuitApp,
+		});
 	}
 
 	private previewSlashPaletteItem(item: SlashPaletteItem): void {
@@ -1986,14 +1420,9 @@ export class ChatView {
 		const commandText = `/${item.commandName}${args ? ` ${args}` : ""}`;
 		if (this.inputText === commandText) return;
 		this.inputText = commandText;
-		requestAnimationFrame(() => {
-			const textarea = this.container.querySelector("#chat-input") as HTMLTextAreaElement | null;
-			if (!textarea) return;
-			textarea.value = commandText;
-			textarea.style.height = "auto";
-			textarea.style.height = `${Math.min(textarea.scrollHeight, 220)}px`;
-			const end = commandText.length;
-			textarea.setSelectionRange(end, end);
+		this.syncComposerTextareaDeferred(commandText, {
+			maxHeight: 220,
+			moveCaretToEnd: true,
 		});
 	}
 
@@ -2011,15 +1440,27 @@ export class ChatView {
 			const payload = event.payload as { type?: string; paths?: string[] };
 			if (payload?.type !== "drop") return;
 			if (!this.projectPath) return;
-			const paths = Array.isArray(payload.paths) ? payload.paths : [];
-			if (paths.length === 0) {
+
+			const nativePaths = Array.isArray(payload.paths) ? payload.paths : [];
+			if (this.handleDroppedPathCandidates(nativePaths, { quietImageReadFailure: true })) {
+				if (nativePaths.length > 0) {
+					clearActiveDraggedFilePaths();
+				}
+				return;
+			}
+
+			const sidebarFallbackPaths = peekActiveDraggedFilePaths();
+			if (sidebarFallbackPaths.length > 0) {
+				const handledFromSidebarFallback = this.handleDroppedPathCandidates(sidebarFallbackPaths, {
+					quietImageReadFailure: true,
+				});
+				clearActiveDraggedFilePaths();
+				if (handledFromSidebarFallback) return;
+			}
+
+			if (nativePaths.length > 0) {
 				this.pushNotice("No readable files found in drop payload", "info");
-				return;
 			}
-			if (this.shouldIgnoreDuplicateDrop(paths.map((path) => this.fileNameFromPath(path)))) {
-				return;
-			}
-			void this.prepareImagesFromPaths(paths);
 		};
 
 		try {
@@ -2059,15 +1500,13 @@ export class ChatView {
 		if (!this.modelPickerOpen) return;
 		const target = event.target;
 		if (target instanceof Element && target.closest(".model-picker-root")) return;
-		this.modelPickerOpen = false;
-		this.render();
+		this.closeModelPicker();
 	};
 
 	private onGlobalEscapeForModelPicker = (event: KeyboardEvent): void => {
 		if (!this.modelPickerOpen || event.key !== "Escape") return;
 		event.preventDefault();
-		this.modelPickerOpen = false;
-		this.render();
+		this.closeModelPicker();
 	};
 
 	private bindModelPickerGlobalListeners(): void {
@@ -2246,310 +1685,34 @@ export class ChatView {
 	}
 
 	private mapBackendMessages(backendMessages: Array<Record<string, unknown>>): UiMessage[] {
-		const mapped: UiMessage[] = [];
-		const toolCallMap = new Map<string, ToolCallBlock>();
-
-		for (const raw of backendMessages) {
-			const role = raw.role as string | undefined;
-			if (!role) continue;
-			const sessionEntryId = typeof raw.id === "string" && raw.id.trim().length > 0 ? raw.id.trim() : undefined;
-
-			switch (role) {
-				case "user": {
-					const text = this.extractText(raw.content);
-					const attachments = this.extractImages(raw.content);
-					mapped.push({
-						id: uid("user"),
-						sessionEntryId,
-						role: "user",
-						text,
-						attachments,
-						toolCalls: [],
-					});
-					break;
-				}
-				case "assistant": {
-					const content = Array.isArray(raw.content) ? raw.content : [];
-					let text = "";
-					let thinking = "";
-					const toolCalls: ToolCallBlock[] = [];
-
-					for (const part of content) {
-						if (!part || typeof part !== "object") continue;
-						const p = part as Record<string, unknown>;
-						const type = p.type as string | undefined;
-
-						if (type === "text" && typeof p.text === "string") {
-							text += p.text;
-						}
-						const typeLower = (type ?? "").toLowerCase();
-						if (typeLower === "thinking" || typeLower === "reasoning" || typeLower.includes("thinking") || typeLower.includes("reason")) {
-							if (typeof p.thinking === "string") thinking += p.thinking;
-							else if (typeof p.reasoning === "string") thinking += p.reasoning;
-							else if (typeof p.text === "string") thinking += p.text;
-						}
-						if (type === "toolCall") {
-							const id = typeof p.id === "string" && p.id.trim().length > 0 ? p.id.trim() : uid("tc");
-							const existing = toolCalls.find((entry) => entry.id === id);
-							if (existing) {
-								existing.name = typeof p.name === "string" ? p.name : existing.name;
-								existing.args = (p.arguments as Record<string, unknown>) ?? existing.args;
-								existing.isRunning = false;
-								existing.isExpanded = false;
-								toolCallMap.set(existing.id, existing);
-								continue;
-							}
-							const tc: ToolCallBlock = {
-								id,
-								name: typeof p.name === "string" ? p.name : "tool",
-								args: (p.arguments as Record<string, unknown>) ?? {},
-								isRunning: false,
-								isExpanded: false,
-								startedAt: pickNumber(p, ["startedAt", "startTime", "timestamp", "ts"]) ?? undefined,
-								endedAt: pickNumber(p, ["endedAt", "endTime"]) ?? undefined,
-							};
-							toolCalls.push(tc);
-							toolCallMap.set(tc.id, tc);
-						}
-					}
-
-					const normalizedThinking = thinking.trim();
-					if (text.trim().length === 0 && normalizedThinking.length === 0 && toolCalls.length === 0) {
-						break;
-					}
-					mapped.push({
-						id: uid("assistant"),
-						sessionEntryId,
-						role: "assistant",
-						text,
-						thinking: normalizedThinking || undefined,
-						thinkingExpanded: this.allThinkingExpanded,
-						isThinkingStreaming: false,
-						toolCalls,
-					});
-					break;
-				}
-				case "toolResult": {
-					const toolCallId = raw.toolCallId as string | undefined;
-					const content = this.extractToolOutput(raw.content ?? raw.result ?? raw);
-					const isError = Boolean(raw.isError);
-					if (toolCallId && toolCallMap.has(toolCallId)) {
-						const tool = toolCallMap.get(toolCallId)!;
-						tool.result = content || "(no output)";
-						tool.isError = isError;
-						tool.isRunning = false;
-						tool.isExpanded = false;
-						tool.endedAt = Date.now();
-						if (!tool.startedAt) tool.startedAt = tool.endedAt;
-					} else {
-						const target = [...mapped].reverse().find((entry) => entry.role === "assistant");
-						if (target) {
-							target.toolCalls.push({
-								id: toolCallId || uid("tc"),
-								name: (typeof raw.toolName === "string" && raw.toolName.trim().length > 0 ? raw.toolName : "tool") as string,
-								args: {},
-								result: content || "(no output)",
-								isError,
-								isRunning: false,
-								isExpanded: false,
-								startedAt: Date.now(),
-								endedAt: Date.now(),
-							});
-						} else {
-							mapped.push({
-								id: uid("toolResult"),
-								sessionEntryId,
-								role: "system",
-								text: `Tool result${isError ? " (error)" : ""}:\n${content || "(no output)"}`,
-								label: "tool-result",
-								toolCalls: [],
-							});
-						}
-					}
-					break;
-				}
-				case "bashExecution": {
-					const command = typeof raw.command === "string" ? raw.command : "bash";
-					const output = typeof raw.output === "string" ? raw.output : "";
-					mapped.push({
-						id: uid("bash"),
-						sessionEntryId,
-						role: "system",
-						text: `!${command}\n${output}`,
-						label: "bash",
-						toolCalls: [],
-					});
-					break;
-				}
-				case "branchSummary":
-				case "compactionSummary": {
-					const summary = typeof raw.summary === "string" ? raw.summary : this.extractText(raw.content);
-					mapped.push({
-						id: uid(role),
-						sessionEntryId,
-						role: "system",
-						text: summary,
-						label: role === "branchSummary" ? "branch summary" : "compaction summary",
-						toolCalls: [],
-					});
-					break;
-				}
-				case "custom": {
-					const customType = typeof raw.customType === "string" ? raw.customType : "custom";
-					const content = this.extractText(raw.content);
-					mapped.push({
-						id: uid("custom"),
-						sessionEntryId,
-						role: "custom",
-						text: content,
-						label: customType,
-						toolCalls: [],
-					});
-					break;
-				}
-				default:
-					break;
-			}
-		}
-
-		return mapped;
+		return mapBackendMessagesView({
+			backendMessages,
+			allThinkingExpanded: this.allThinkingExpanded,
+			createId: uid,
+			extractText: this.extractText.bind(this),
+			extractImages: this.extractImages.bind(this),
+			extractToolOutput: this.extractToolOutput.bind(this),
+		}) as UiMessage[];
 	}
 
 	private extractText(content: unknown): string {
-		if (!content) return "";
-		if (typeof content === "string") return content;
-		if (Array.isArray(content)) {
-			const parts: string[] = [];
-			for (const part of content) {
-				if (typeof part === "string") {
-					parts.push(part);
-					continue;
-				}
-				if (!part || typeof part !== "object") continue;
-				const p = part as Record<string, unknown>;
-				const type = p.type as string | undefined;
-				if (type === "text" && typeof p.text === "string") parts.push(p.text);
-			}
-			return parts.join("\n\n").trim();
-		}
-		if (typeof content === "object") {
-			const c = content as Record<string, unknown>;
-			if (typeof c.text === "string") return c.text;
-		}
-		return "";
-	}
-
-	private stringifyData(value: unknown): string {
-		try {
-			return JSON.stringify(value, null, 2);
-		} catch {
-			return String(value);
-		}
+		return extractTextContent(content);
 	}
 
 	private extractToolOutput(payload: unknown, depth = 0): string {
-		if (depth > 6 || payload === null || typeof payload === "undefined") return "";
-		if (typeof payload === "string") return payload;
-		if (typeof payload === "number" || typeof payload === "boolean") return String(payload);
-		if (Array.isArray(payload)) {
-			const parts = payload
-				.map((item) => this.extractToolOutput(item, depth + 1).trim())
-				.filter(Boolean);
-			return parts.join("\n").trim();
-		}
-		if (typeof payload !== "object") return "";
-
-		const source = payload as Record<string, unknown>;
-		const textFirst = this.extractText(source.content ?? payload).trim();
-		const chunks: string[] = textFirst ? [textFirst] : [];
-		const append = (value: unknown): void => {
-			const text = this.extractToolOutput(value, depth + 1).trim();
-			if (!text) return;
-			if (!chunks.includes(text)) chunks.push(text);
-		};
-
-		for (const key of ["output", "stdout", "stderr", "result", "message", "error", "text", "delta", "reasoning", "thinking"]) {
-			if (key in source) append(source[key]);
-		}
-		if ("content" in source) append(source.content);
-		if ("parts" in source) append(source.parts);
-		if ("messages" in source) append(source.messages);
-
-		if (chunks.length > 0) return chunks.join("\n").trim();
-		return this.stringifyData(source);
+		return extractToolOutputText(payload, depth);
 	}
 
 	private mergeStreamingText(current: string, partial: string | null, deltaCandidate: unknown): string {
-		const delta = typeof deltaCandidate === "string" ? deltaCandidate : "";
-		if (partial !== null) {
-			if (!current) return partial;
-			if (partial === current) return current;
-			if (partial.startsWith(current)) return partial;
-			if (current.startsWith(partial) && delta) return current + delta;
-			if (partial.length > current.length + 24) {
-				const overlap = current.slice(Math.max(0, current.length - 24));
-				if (!overlap || partial.includes(overlap)) return partial;
-			}
-		}
-		if (delta) return current + delta;
-		if (partial !== null) {
-			if (current.endsWith(partial)) return current;
-			return current + partial;
-		}
-		return current;
+		return mergeStreamingTextValue(current, partial, deltaCandidate);
 	}
 
 	private extractImages(content: unknown): PendingImage[] {
-		if (!Array.isArray(content)) return [];
-		const images: PendingImage[] = [];
-		for (const part of content) {
-			if (!part || typeof part !== "object") continue;
-			const p = part as Record<string, unknown>;
-			if (p.type !== "image" || typeof p.data !== "string" || typeof p.mimeType !== "string") continue;
-			images.push({
-				id: uid("img"),
-				name: "image",
-				mimeType: p.mimeType,
-				data: p.data,
-				previewUrl: `data:${p.mimeType};base64,${p.data}`,
-				size: Math.floor((p.data.length * 3) / 4),
-			});
-		}
-		return images;
+		return extractImagesFromContent(content, uid) as PendingImage[];
 	}
 
 	private extractAssistantPartialContent(assistantEvent: Record<string, unknown>, mode: "text" | "thinking"): string | null {
-		const partial = assistantEvent.partial;
-		if (!partial || typeof partial !== "object") return null;
-		const content = (partial as Record<string, unknown>).content;
-		if (!Array.isArray(content)) return null;
-
-		const fromPart = (part: unknown): string | null => {
-			if (!part || typeof part !== "object") return null;
-			const p = part as Record<string, unknown>;
-			const type = typeof p.type === "string" ? p.type : "";
-			const typeLower = type.toLowerCase();
-			if (mode === "text" && typeLower === "text" && typeof p.text === "string") return p.text;
-			if (mode === "thinking" && (typeLower.includes("thinking") || typeLower.includes("reason"))) {
-				if (typeof p.thinking === "string") return p.thinking;
-				if (typeof p.reasoning === "string") return p.reasoning;
-				if (typeof p.text === "string") return p.text;
-			}
-			return null;
-		};
-
-		const contentIndex = assistantEvent.contentIndex;
-		if (typeof contentIndex === "number" && Number.isInteger(contentIndex) && contentIndex >= 0 && contentIndex < content.length) {
-			const indexed = fromPart(content[contentIndex]);
-			if (indexed !== null) return indexed;
-		}
-
-		for (let i = content.length - 1; i >= 0; i -= 1) {
-			const fallback = fromPart(content[i]);
-			if (fallback !== null) return fallback;
-		}
-
-		return null;
+		return extractAssistantPartialContentValue(assistantEvent, mode);
 	}
 
 	private async loadAvailableModels(): Promise<void> {
@@ -2579,38 +1742,7 @@ export class ChatView {
 				push?.(`chat:loadModels stale instance=${requestInstanceId} active=${rpcBridge.getInstanceId()}`);
 				return;
 			}
-			const mapped: ModelOption[] = [];
-			const seen = new Set<string>();
-			for (const m of models) {
-				const provider = pickString(m, ["provider", "providerId", "provider_id", "vendor", "source.provider"]) ?? "";
-				const id = pickString(m, ["id", "modelId", "model_id", "model", "target.id", "target.modelId"]) ?? "";
-				if (!provider || !id) continue;
-				const key = `${provider}::${id}`;
-				if (seen.has(key)) continue;
-				seen.add(key);
-				const contextWindow = pickNumber(m, [
-					"contextWindow",
-					"context_window",
-					"maxInputTokens",
-					"max_input_tokens",
-					"limits.contextWindow",
-					"limits.context_window",
-				]);
-				mapped.push({
-					provider,
-					id,
-					contextWindow: typeof contextWindow === "number" ? contextWindow : undefined,
-					reasoning: Boolean((m as Record<string, unknown>).reasoning),
-					label: `${provider}/${id}`,
-				});
-			}
-			mapped.sort((a, b) => {
-				const providerCompare = formatProviderDisplayName(a.provider).localeCompare(formatProviderDisplayName(b.provider), undefined, {
-					sensitivity: "base",
-				});
-				if (providerCompare !== 0) return providerCompare;
-				return formatModelDisplayName(a.id).localeCompare(formatModelDisplayName(b.id), undefined, { sensitivity: "base" });
-			});
+			const mapped = mapAvailableModelsFromRpc(models);
 			this.availableModels = mapped;
 			this.recomputeProviderAuthConfigured();
 			this.lastModelLoadError = null;
@@ -2782,83 +1914,7 @@ export class ChatView {
 	}
 
 	private deriveLatestAssistantContextTokens(messages: Array<Record<string, unknown>>): number | null {
-		const estimateMessageTokens = (message: Record<string, unknown>): number => {
-			const role = typeof message.role === "string" ? message.role : "";
-			let chars = 0;
-			const content = (message as Record<string, unknown>).content;
-			if (typeof content === "string") {
-				chars += content.length;
-			} else if (Array.isArray(content)) {
-				for (const part of content) {
-					if (!part || typeof part !== "object") continue;
-					const block = part as Record<string, unknown>;
-					const type = typeof block.type === "string" ? block.type : "";
-					if (type === "text" && typeof block.text === "string") {
-						chars += block.text.length;
-					} else if (type === "thinking" || type === "reasoning") {
-						if (typeof block.thinking === "string") chars += block.thinking.length;
-						else if (typeof block.reasoning === "string") chars += block.reasoning.length;
-						else if (typeof block.text === "string") chars += block.text.length;
-					} else if (type === "toolCall") {
-						const name = typeof block.name === "string" ? block.name : "";
-						const args = JSON.stringify(block.arguments ?? {});
-						chars += name.length + args.length;
-					} else if (type === "image") {
-						chars += 4800;
-					}
-				}
-			}
-			if (role === "bashExecution") {
-				const command = typeof message.command === "string" ? message.command : "";
-				const output = typeof message.output === "string" ? message.output : "";
-				chars += command.length + output.length;
-			}
-			return Math.ceil(chars / 4);
-		};
-
-		for (let i = messages.length - 1; i >= 0; i -= 1) {
-			const message = messages[i];
-			if (!message || typeof message !== "object") continue;
-			const role = typeof message.role === "string" ? message.role : "";
-			if (role !== "assistant") continue;
-			const stopReason = typeof message.stopReason === "string" ? message.stopReason : "";
-			if (stopReason === "aborted" || stopReason === "error") continue;
-
-			const usageTotal = pickNumber(message, [
-				"usage.totalTokens",
-				"usage.total_tokens",
-				"usage.total",
-				"usage.tokens.total",
-				"usage.contextTokens",
-				"usage.context_tokens",
-			]);
-			const usageInput = pickNumber(message, ["usage.input", "usage.inputTokens", "usage.input_tokens"]);
-			const usageOutput = pickNumber(message, ["usage.output", "usage.outputTokens", "usage.output_tokens"]);
-			const usageCacheRead = pickNumber(message, ["usage.cacheRead", "usage.cache_read"]);
-			const usageCacheWrite = pickNumber(message, ["usage.cacheWrite", "usage.cache_write"]);
-			const components = [usageInput, usageOutput, usageCacheRead, usageCacheWrite].filter(
-				(value): value is number => value !== null && Number.isFinite(value) && value >= 0,
-			);
-
-			let usageTokens: number | null = null;
-			if (usageTotal !== null && usageTotal > 0) {
-				usageTokens = usageTotal;
-			} else if (components.length > 0) {
-				const sum = components.reduce((acc, value) => acc + value, 0);
-				if (sum > 0) usageTokens = sum;
-			}
-			if (usageTokens === null) continue;
-
-			let trailingTokens = 0;
-			for (let j = i + 1; j < messages.length; j += 1) {
-				const trailing = messages[j];
-				if (!trailing || typeof trailing !== "object") continue;
-				trailingTokens += estimateMessageTokens(trailing);
-			}
-
-			return usageTokens + trailingTokens;
-		}
-		return null;
+		return deriveLatestAssistantContextTokensFromMessages(messages);
 	}
 
 	private markContextUsageUnknown(): void {
@@ -2886,103 +1942,25 @@ export class ChatView {
 		if (this.refreshingSessionStats) return;
 		if (!force && Date.now() - this.sessionStats.updatedAt < 1800) return;
 		this.refreshingSessionStats = true;
+		const stateMessageCount = this.state?.messageCount ?? 0;
+		const statePendingCount = this.state?.pendingMessageCount ?? 0;
 		try {
 			const raw = (await rpcBridge.getSessionStats()) as Record<string, unknown>;
-			const lifetimeTokens = pickNumber(raw, [
-				"totalTokens",
-				"tokens.total",
-				"tokens",
-				"total_tokens",
-				"usage.totalTokens",
-				"usage.tokens",
-				"usage.tokens.total",
-				"session.totalTokens",
-			]);
-			const contextUsageRecord =
-				raw.contextUsage && typeof raw.contextUsage === "object" ? (raw.contextUsage as Record<string, unknown>) : null;
-			const contextUsageHasTokensKey = Boolean(contextUsageRecord && Object.prototype.hasOwnProperty.call(contextUsageRecord, "tokens"));
-			const contextUsageHasPercentKey = Boolean(contextUsageRecord && Object.prototype.hasOwnProperty.call(contextUsageRecord, "percent"));
-			const contextUsageTokensExplicitNull = contextUsageHasTokensKey && contextUsageRecord?.tokens === null;
-			const contextUsagePercentExplicitNull = contextUsageHasPercentKey && contextUsageRecord?.percent === null;
-			const contextTokensFromStats = pickNumber(raw, [
-				"contextTokens",
-				"context_tokens",
-				"context.tokens",
-				"contextUsage.tokens",
-				"usage.contextTokens",
-				"usage.context_tokens",
-				"usage.tokens.context",
-				"session.contextTokens",
-			]);
-			const costUsd = pickNumber(raw, [
-				"costUsd",
-				"estimatedCostUsd",
-				"cost.total",
-				"usage.cost.total",
-				"cost",
-			]);
-			const stateMessageCount = this.state?.messageCount ?? 0;
-			const statePendingCount = this.state?.pendingMessageCount ?? 0;
-			const messageCount =
-				stateMessageCount ||
-				Math.round(
-					pickNumber(raw, ["messageCount", "messages", "totalMessages", "usage.messageCount", "session.messageCount"]) ?? 0,
-				);
-			const pendingCount =
-				statePendingCount || Math.round(pickNumber(raw, ["pendingCount", "pendingMessages", "usage.pendingCount"]) ?? 0);
-			const contextWindow = this.resolveContextWindow(raw);
-			const rawUsageRatio = this.normalizeUsageRatio(
-				pickNumber(raw, [
-					"usageRatio",
-					"usage.ratio",
-					"tokenUsageRatio",
-					"usagePercent",
-					"usage.percent",
-					"contextUsage.percent",
-					"context.percent",
-					"contextUsagePercent",
-					"context_usage.percent",
-					"context_usage_percent",
-				]),
-			);
-			const contextUsageExplicitlyUnknown =
-				(contextUsageTokensExplicitNull || contextUsagePercentExplicitNull) &&
-				contextTokensFromStats === null &&
-				rawUsageRatio === null;
-			const contextTokens = contextTokensFromStats ?? (contextUsageExplicitlyUnknown ? null : this.lastAssistantContextTokens);
-			const usageRatio =
-				rawUsageRatio ??
-				(contextTokens !== null && contextWindow && contextWindow > 0
-					? Math.min(1, Math.max(0, contextTokens / contextWindow))
-					: null);
-			const normalizedContextTokens =
-				contextTokens ??
-				(usageRatio !== null && contextWindow && contextWindow > 0 ? usageRatio * contextWindow : null);
-
-			this.sessionStats = {
-				tokens: normalizedContextTokens,
-				lifetimeTokens,
-				costUsd,
-				messageCount,
-				pendingCount,
-				contextWindow,
-				usageRatio,
-				updatedAt: Date.now(),
-			};
+			this.sessionStats = computeSessionStatsFromRaw({
+				raw,
+				stateMessageCount,
+				statePendingCount,
+				lastAssistantContextTokens: this.lastAssistantContextTokens,
+				resolveContextWindow: (inputRaw) => this.resolveContextWindow(inputRaw),
+				normalizeUsageRatio: (value) => this.normalizeUsageRatio(value),
+			});
 		} catch {
-			const contextWindow = this.resolveContextWindow() ?? this.sessionStats.contextWindow;
-			const usageRatio =
-				this.sessionStats.tokens !== null && contextWindow && contextWindow > 0
-					? Math.min(1, Math.max(0, this.sessionStats.tokens / contextWindow))
-					: this.sessionStats.usageRatio;
-			this.sessionStats = {
-				...this.sessionStats,
-				messageCount: this.state?.messageCount ?? this.sessionStats.messageCount,
-				pendingCount: this.state?.pendingMessageCount ?? this.sessionStats.pendingCount,
-				contextWindow,
-				usageRatio,
-				updatedAt: Date.now(),
-			};
+			this.sessionStats = computeSessionStatsFallback({
+				stateMessageCount,
+				statePendingCount,
+				previous: this.sessionStats,
+				resolveContextWindow: (inputRaw) => this.resolveContextWindow(inputRaw),
+			});
 		} finally {
 			this.refreshingSessionStats = false;
 			this.render();
@@ -3274,344 +2252,111 @@ export class ChatView {
 	}
 
 	private async switchRemoteTrackingBranch(entry: GitBranchEntry): Promise<void> {
-		if (this.switchingGitBranch) return;
-		const localBranch = entry.name.trim();
-		const remoteRef = entry.fullName.trim();
-		if (!localBranch || !remoteRef) return;
-		if (this.gitSummary.branches.includes(localBranch)) {
-			await this.switchGitBranch(localBranch);
-			return;
-		}
-
-		this.switchingGitBranch = true;
-		this.render();
-		try {
-			let result = await this.runGit(["switch", "--track", "-c", localBranch, remoteRef]);
-			if (result.exitCode !== 0) {
-				result = await this.runGit(["checkout", "--track", "-b", localBranch, remoteRef]);
-			}
-			if (result.exitCode !== 0) {
-				const message = `${result.stderr}\n${result.stdout}`.toLowerCase();
-				if (message.includes("already exists")) {
-					await this.switchGitBranch(localBranch);
-					return;
-				}
-				let fallback = await this.runGit(["switch", "--track", remoteRef]);
-				if (fallback.exitCode !== 0) {
-					fallback = await this.runGit(["checkout", "--track", remoteRef]);
-				}
-				if (fallback.exitCode === 0) {
-					this.gitMenuOpen = false;
-					this.gitBranchQuery = "";
-					this.pushNotice(`Switched to ${localBranch} (tracking ${remoteRef})`, "success");
-					await this.refreshGitSummary(true);
-					return;
-				}
-				this.pushNotice(result.stderr.trim() || result.stdout.trim() || `Failed to switch branch: ${remoteRef}`, "error");
-				return;
-			}
-			this.gitMenuOpen = false;
-			this.gitBranchQuery = "";
-			this.pushNotice(`Switched to ${localBranch} (tracking ${remoteRef})`, "success");
-			await this.refreshGitSummary(true);
-		} catch (err) {
-			console.error("Failed to switch remote branch:", err);
-			this.pushNotice("Failed to switch remote branch", "error");
-		} finally {
-			this.switchingGitBranch = false;
-			this.render();
-		}
+		await switchRemoteTrackingBranchAction({
+			entry,
+			branches: this.gitSummary.branches,
+			switchGitBranch: this.switchGitBranch.bind(this),
+			isSwitchingGitBranch: () => this.switchingGitBranch,
+			setSwitchingGitBranch: (next) => {
+				this.switchingGitBranch = next;
+			},
+			render: this.render.bind(this),
+			closeGitMenu: () => {
+				this.gitMenuOpen = false;
+				this.gitBranchQuery = "";
+			},
+			pushNotice: this.pushNotice.bind(this),
+			runGit: this.runGit.bind(this),
+			hasGitHeadCommit: this.hasGitHeadCommit.bind(this),
+			switchUnbornHeadBranch: this.switchUnbornHeadBranch.bind(this),
+			refreshGitSummary: this.refreshGitSummary.bind(this),
+		});
 	}
 
 	private async fetchGitRemotes(): Promise<void> {
-		if (!this.gitSummary.isRepo || this.fetchingGitRemotes || this.switchingGitBranch) return;
-		this.fetchingGitRemotes = true;
-		this.render();
-		try {
-			const result = await this.runGit(["fetch", "--all", "--prune"]);
-			if (result.exitCode !== 0) {
-				this.pushNotice(result.stderr.trim() || result.stdout.trim() || "Failed to fetch remotes", "error");
-				return;
-			}
-			this.pushNotice("Fetched remote branches", "success");
-			await this.refreshGitSummary(true);
-		} catch (err) {
-			console.error("Failed to fetch remotes:", err);
-			this.pushNotice("Failed to fetch remotes", "error");
-		} finally {
-			this.fetchingGitRemotes = false;
-			this.render();
-		}
+		await fetchGitRemotesAction({
+			isRepo: this.gitSummary.isRepo,
+			fetchingGitRemotes: this.fetchingGitRemotes,
+			isSwitchingGitBranch: () => this.switchingGitBranch,
+			setFetchingGitRemotes: (next) => {
+				this.fetchingGitRemotes = next;
+			},
+			render: this.render.bind(this),
+			pushNotice: this.pushNotice.bind(this),
+			runGit: this.runGit.bind(this),
+			refreshGitSummary: this.refreshGitSummary.bind(this),
+		});
 	}
 
 	private async switchGitBranch(branch: string): Promise<void> {
-		if (!branch || this.switchingGitBranch) return;
-		const currentBranch = this.gitSummary.branch || "";
-		if (branch === currentBranch) {
-			this.gitMenuOpen = false;
-			this.gitBranchQuery = "";
-			this.render();
-			return;
-		}
-
-		this.switchingGitBranch = true;
-		this.render();
-		try {
-			const hasCommit = await this.hasGitHeadCommit();
-			if (!hasCommit) {
-				const switched = await this.switchUnbornHeadBranch(branch);
-				if (!switched.ok) {
-					this.pushNotice(switched.error || `Failed to switch branch: ${branch}`, "error");
-					return;
-				}
+		await switchGitBranchAction({
+			branch,
+			currentBranch: this.gitSummary.branch || "",
+			isSwitchingGitBranch: () => this.switchingGitBranch,
+			setSwitchingGitBranch: (next) => {
+				this.switchingGitBranch = next;
+			},
+			render: this.render.bind(this),
+			closeGitMenu: () => {
 				this.gitMenuOpen = false;
 				this.gitBranchQuery = "";
-				this.pushNotice(`Switched to ${branch}`, "success");
-				await this.refreshGitSummary(true);
-				return;
-			}
-
-			let result = await this.runGit(["switch", branch]);
-			if (result.exitCode !== 0) {
-				result = await this.runGit(["checkout", branch]);
-			}
-			if (result.exitCode !== 0) {
-				this.pushNotice(result.stderr.trim() || result.stdout.trim() || `Failed to switch branch: ${branch}`, "error");
-				return;
-			}
-			this.gitMenuOpen = false;
-			this.gitBranchQuery = "";
-			this.pushNotice(`Switched to ${branch}`, "success");
-			await this.refreshGitSummary(true);
-		} catch (err) {
-			console.error("Failed to switch branch:", err);
-			this.pushNotice("Failed to switch branch", "error");
-		} finally {
-			this.switchingGitBranch = false;
-			this.render();
-		}
+			},
+			pushNotice: this.pushNotice.bind(this),
+			runGit: this.runGit.bind(this),
+			hasGitHeadCommit: this.hasGitHeadCommit.bind(this),
+			switchUnbornHeadBranch: this.switchUnbornHeadBranch.bind(this),
+			refreshGitSummary: this.refreshGitSummary.bind(this),
+		});
 	}
 
 	private async createAndCheckoutBranch(rawName = ""): Promise<void> {
-		if (this.switchingGitBranch) return;
-
-		let proposed = rawName.trim();
-		if (!proposed) {
-			const prompted = window.prompt("Branch name", this.gitBranchQuery.trim()) ?? "";
-			proposed = prompted.trim();
-		}
-		if (!proposed) {
-			this.pushNotice("Enter a branch name first", "info");
-			return;
-		}
-		const existingBranch = this.resolveGitBranchSelection(proposed);
-		if (existingBranch) {
-			await this.switchGitBranchEntry(existingBranch);
-			return;
-		}
-
-		if (!/^[A-Za-z0-9._\/-]+$/.test(proposed)) {
-			this.pushNotice("Use letters, numbers, ., _, -, / for branch names", "error");
-			return;
-		}
-
-		const refCheck = await this.runGit(["check-ref-format", "--branch", proposed]);
-		if (refCheck.exitCode !== 0) {
-			this.pushNotice(refCheck.stderr.trim() || refCheck.stdout.trim() || "Invalid branch name", "error");
-			return;
-		}
-
-		this.switchingGitBranch = true;
-		this.render();
-		try {
-			const hasCommit = await this.hasGitHeadCommit();
-			if (!hasCommit) {
-				const switched = await this.switchUnbornHeadBranch(proposed);
-				if (!switched.ok) {
-					this.pushNotice(switched.error || "Failed to create branch", "error");
-					return;
-				}
+		await createAndCheckoutBranchAction({
+			rawName,
+			gitBranchQuery: this.gitBranchQuery,
+			resolveGitBranchSelection: this.resolveGitBranchSelection.bind(this),
+			switchGitBranchEntry: this.switchGitBranchEntry.bind(this),
+			isSwitchingGitBranch: () => this.switchingGitBranch,
+			setSwitchingGitBranch: (next) => {
+				this.switchingGitBranch = next;
+			},
+			render: this.render.bind(this),
+			closeGitMenu: () => {
 				this.gitMenuOpen = false;
 				this.gitBranchQuery = "";
-				this.pushNotice(`Created and switched to ${proposed}`, "success");
-				await this.refreshGitSummary(true);
-				return;
-			}
-
-			let result = await this.runGit(["switch", "-c", proposed]);
-			if (result.exitCode !== 0) {
-				result = await this.runGit(["checkout", "-b", proposed]);
-			}
-			if (result.exitCode !== 0) {
-				const message = `${result.stderr}\n${result.stdout}`.toLowerCase();
-				if (message.includes("already exists")) {
-					let switchExisting = await this.runGit(["switch", proposed]);
-					if (switchExisting.exitCode !== 0) {
-						switchExisting = await this.runGit(["checkout", proposed]);
-					}
-					if (switchExisting.exitCode === 0) {
-						this.gitMenuOpen = false;
-						this.gitBranchQuery = "";
-						this.pushNotice(`Switched to ${proposed}`, "success");
-						await this.refreshGitSummary(true);
-						return;
-					}
-				}
-
-				const branchOnly = await this.runGit(["branch", proposed]);
-				if (branchOnly.exitCode === 0) {
-					let switchToCreated = await this.runGit(["switch", proposed]);
-					if (switchToCreated.exitCode !== 0) {
-						switchToCreated = await this.runGit(["checkout", proposed]);
-					}
-					if (switchToCreated.exitCode === 0) {
-						this.gitMenuOpen = false;
-						this.gitBranchQuery = "";
-						this.pushNotice(`Created and switched to ${proposed}`, "success");
-						await this.refreshGitSummary(true);
-						return;
-					}
-				}
-
-				this.pushNotice(result.stderr.trim() || result.stdout.trim() || "Failed to create branch", "error");
-				return;
-			}
-			this.gitMenuOpen = false;
-			this.gitBranchQuery = "";
-			this.pushNotice(`Created and switched to ${proposed}`, "success");
-			await this.refreshGitSummary(true);
-		} catch (err) {
-			console.error("Failed to create branch:", err);
-			this.pushNotice("Failed to create branch", "error");
-		} finally {
-			this.switchingGitBranch = false;
-			this.render();
-		}
+			},
+			pushNotice: this.pushNotice.bind(this),
+			runGit: this.runGit.bind(this),
+			hasGitHeadCommit: this.hasGitHeadCommit.bind(this),
+			switchUnbornHeadBranch: this.switchUnbornHeadBranch.bind(this),
+			refreshGitSummary: this.refreshGitSummary.bind(this),
+		});
 	}
 
 	private renderGitRepoControl(): TemplateResult {
-		if (!this.gitSummary.isRepo) {
-			return html`
-				<button class="composer-repo-btn" ?disabled=${this.creatingGitRepo || this.refreshingGitSummary} @click=${() => void this.createGitRepository()}>
-					${uiIcon("git")}
-					<span>${this.creatingGitRepo ? "Creating git repository…" : "Create git repository"}</span>
-				</button>
-			`;
-		}
-
-		const currentBranch = this.gitSummary.branch || "detached";
-		const query = this.gitBranchQuery.trim().toLowerCase();
-		const branchEntries = this.gitSummary.branchEntries.filter((entry) => {
-			if (!query) return true;
-			const haystack = `${entry.name} ${entry.fullName} ${entry.remote ?? ""} ${entry.scope}`.toLowerCase();
-			return haystack.includes(query);
+		return renderGitRepoControlView({
+			summary: this.gitSummary,
+			creatingGitRepo: this.creatingGitRepo,
+			refreshingGitSummary: this.refreshingGitSummary,
+			switchingGitBranch: this.switchingGitBranch,
+			fetchingGitRemotes: this.fetchingGitRemotes,
+			gitMenuOpen: this.gitMenuOpen,
+			gitBranchQuery: this.gitBranchQuery,
+			resolveGitBranchSelection: this.resolveGitBranchSelection.bind(this),
+			gitIcon: () => uiIcon("git"),
+			onCreateRepo: this.createGitRepository.bind(this),
+			onToggleMenu: () => {
+				this.gitMenuOpen = !this.gitMenuOpen;
+				if (!this.gitMenuOpen) this.gitBranchQuery = "";
+				this.render();
+			},
+			onSetBranchQuery: (value) => {
+				this.gitBranchQuery = value;
+				this.render();
+			},
+			onCreateAndCheckoutBranch: this.createAndCheckoutBranch.bind(this),
+			onFetchRemotes: this.fetchGitRemotes.bind(this),
+			onSwitchGitBranchEntry: this.switchGitBranchEntry.bind(this),
 		});
-		const filesLabel = this.gitSummary.dirtyFiles === 1 ? "file" : "files";
-		const matchingEntry = this.gitBranchQuery.trim().length > 0 ? this.resolveGitBranchSelection(this.gitBranchQuery) : null;
-		const branchActionLabel = matchingEntry
-			? matchingEntry.scope === "remote"
-				? `Checkout ${matchingEntry.fullName}`
-				: `Switch to ${matchingEntry.name}`
-			: "Create and checkout new branch…";
-
-		return html`
-			<div class="git-branch-wrap">
-				<button
-					class="git-branch-pill ${this.gitMenuOpen ? "open" : ""}"
-					title="Switch branch"
-					?disabled=${this.switchingGitBranch || this.refreshingGitSummary || this.fetchingGitRemotes}
-					@click=${(e: Event) => {
-						e.stopPropagation();
-						this.gitMenuOpen = !this.gitMenuOpen;
-						if (!this.gitMenuOpen) this.gitBranchQuery = "";
-						this.render();
-					}}
-				>
-					${uiIcon("git")}
-					<span class="git-branch-pill-name">${currentBranch}</span>
-					<span class="git-branch-pill-caret">▾</span>
-				</button>
-
-				${this.gitMenuOpen
-					? html`
-						<div class="git-branch-menu" @click=${(e: Event) => e.stopPropagation()}>
-							<label class="git-branch-search">
-								<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.2"></circle><path d="M10.2 10.2l3 3"></path></svg>
-								<input
-									type="text"
-									placeholder="Search branches or type a new name"
-									.value=${this.gitBranchQuery}
-									@input=${(e: Event) => {
-										this.gitBranchQuery = (e.target as HTMLInputElement).value;
-										this.render();
-									}}
-									@keydown=${(e: KeyboardEvent) => {
-										if (e.key === "Enter") {
-											e.preventDefault();
-											void this.createAndCheckoutBranch(this.gitBranchQuery);
-										}
-									}}
-								/>
-							</label>
-							<div class="git-branch-menu-head">
-								<div class="git-branch-menu-title">Branches</div>
-								<button
-									class="git-branch-fetch"
-									?disabled=${this.fetchingGitRemotes || this.switchingGitBranch}
-									@click=${() => void this.fetchGitRemotes()}
-								>
-									${this.fetchingGitRemotes ? "Fetching…" : "Fetch"}
-								</button>
-							</div>
-							<div class="git-branch-list">
-								${branchEntries.length === 0
-									? html`<div class="git-branch-empty">No branches found.</div>`
-									: branchEntries.map((entry) => {
-											const active = entry.scope === "local" && entry.name === currentBranch;
-											const disabled = active || this.switchingGitBranch || this.fetchingGitRemotes;
-											const label = entry.scope === "remote" ? entry.fullName : entry.name;
-											return html`
-												<button
-													class="git-branch-item ${active ? "active" : ""}"
-													?disabled=${disabled}
-													@click=${() => void this.switchGitBranchEntry(entry)}
-												>
-													<div class="git-branch-item-top">
-														<span class="git-branch-item-icon">${uiIcon("git")}</span>
-														<span class="git-branch-item-name">${label}</span>
-														<span class="git-branch-item-trailing">
-															${entry.scope === "remote" ? html`<span class="git-branch-item-badge">remote</span>` : nothing}
-															${active ? html`<span class="git-branch-item-check">✓</span>` : nothing}
-														</span>
-													</div>
-													${entry.scope === "remote"
-														? html`<div class="git-branch-item-meta">Checkout tracking branch from ${entry.fullName}</div>`
-														: active && this.gitSummary.dirtyFiles > 0
-															? html`
-																<div class="git-branch-item-meta">
-																	Uncommitted: ${this.gitSummary.dirtyFiles.toLocaleString()} ${filesLabel}
-																	<span class="git-delta plus">+${this.gitSummary.additions.toLocaleString()}</span>
-																	<span class="git-delta minus">-${this.gitSummary.deletions.toLocaleString()}</span>
-																</div>
-															`
-															: nothing}
-												</button>
-											`;
-										})}
-							</div>
-							<button
-								class="git-branch-create"
-								?disabled=${this.switchingGitBranch || this.fetchingGitRemotes}
-								@click=${() => void this.createAndCheckoutBranch(this.gitBranchQuery)}
-							>
-								<span class="git-branch-create-plus">${matchingEntry ? "↩" : "＋"}</span>
-								<span>${branchActionLabel}</span>
-							</button>
-						</div>
-					`
-					: nothing}
-			</div>
-		`;
 	}
 
 	private extractRuntimeErrorMessage(event: Record<string, unknown> | null | undefined): string {
@@ -3739,447 +2484,142 @@ export class ChatView {
 		const type = event.type as string;
 		if (type === "response") return;
 
-		switch (type) {
-			case "agent_start": {
-				this.pendingDeliveryMode = "steer";
-				this.runHasAssistantText = false;
-				this.runSawToolActivity = false;
-				this.keepWorkflowExpandedUntilAssistantText = true;
-				this.collapsedAutoWorkflowIds.clear();
-				if (this.state) {
-					this.state = { ...this.state, isStreaming: true };
-					this.onStateChange?.(this.state);
-				}
-				this.autoFollowChat = true;
-				this.onRunStateChange?.(true);
-				this.scheduleStreamingUiReconcile(2400);
-				this.render();
-				this.scrollToBottom();
-				break;
-			}
+		if (
+			handleMessageStreamEvent(type, event, {
+				promoteQueuedMessageFromUserEvent: this.promoteQueuedMessageFromUserEvent.bind(this),
+				getLastMessage: () => this.messages[this.messages.length - 1] ?? null,
+				ensureStreamingAssistantMessage: this.ensureStreamingAssistantMessage.bind(this),
+				extractText: this.extractText.bind(this),
+				extractAssistantMessageError: this.extractAssistantMessageError.bind(this),
+				markAssistantTextObserved: this.markAssistantTextObserved.bind(this),
+				markToolActivityObserved: this.markToolActivityObserved.bind(this),
+				extractToolOutput: this.extractToolOutput.bind(this),
+				findToolCall: this.findToolCall.bind(this),
+				findMostRecentRunningToolByName: this.findMostRecentRunningToolByName.bind(this),
+				attachOrphanToolResult: this.attachOrphanToolResult.bind(this),
+				render: this.render.bind(this),
+				scrollToBottom: this.scrollToBottom.bind(this),
+				extractRuntimeErrorMessage: this.extractRuntimeErrorMessage.bind(this),
+				extractAssistantPartialContent: this.extractAssistantPartialContent.bind(this),
+				mergeStreamingText: this.mergeStreamingText.bind(this),
+				scheduleStreamingUiReconcile: this.scheduleStreamingUiReconcile.bind(this),
+				createId: uid,
+			})
+		) {
+			return;
+		}
 
-			case "agent_end": {
-				this.cancelStreamingUiReconcile();
-				if (this.state) {
-					this.state = { ...this.state, isStreaming: false };
-					this.onStateChange?.(this.state);
-				}
-				const last = this.messages[this.messages.length - 1];
-				if (last && last.role === "assistant") {
-					last.isStreaming = false;
-					last.isThinkingStreaming = false;
-				}
-				this.retryStatus = "";
-				const runError = this.extractRuntimeErrorMessage(event);
-				if (runError && !(last?.role === "assistant" && last.errorText)) {
-					this.pushRuntimeNotice(`Run failed: ${truncate(runError, 180)}`, "error", 2600);
-				}
-				this.runHasAssistantText = false;
-				this.runSawToolActivity = false;
-				this.keepWorkflowExpandedUntilAssistantText = false;
-				this.onRunStateChange?.(false);
-				rpcBridge
-					.getState()
-					.then((s) => {
-						this.state = s;
-						this.syncComposerQueueFromState(s);
-						this.pendingDeliveryMode = s.isStreaming ? "steer" : "prompt";
-						this.onStateChange?.(s);
-						void this.refreshSessionStats(true);
-						void this.refreshGitSummary(true);
-						this.render();
-					})
-					.catch(() => {
-						/* ignore */
-					});
-				this.render();
-				break;
-			}
+		if (
+			handleCompactionAndRetryEvent(type, event, {
+				messagesLength: () => this.messages.length,
+				getCompactionCycle: () => this.compactionCycle,
+				setCompactionCycle: (cycle) => {
+					this.compactionCycle = cycle;
+				},
+				setCompactionInsertIndex: (index) => {
+					this.compactionInsertIndex = index;
+				},
+				createId: uid,
+				extractToolOutput: this.extractToolOutput.bind(this),
+				extractRuntimeErrorMessage: this.extractRuntimeErrorMessage.bind(this),
+				truncate,
+				pushNotice: this.pushNotice.bind(this),
+				pushRuntimeNotice: this.pushRuntimeNotice.bind(this),
+				markContextUsageUnknown: this.markContextUsageUnknown.bind(this),
+				refreshAfterCompaction: this.refreshAfterCompaction.bind(this),
+				setRetryStatus: (status) => {
+					this.retryStatus = status;
+				},
+				appendSystemMessage: this.appendSystemMessage.bind(this),
+				render: this.render.bind(this),
+			})
+		) {
+			return;
+		}
 
-			case "message_start": {
-				const msg = event.message as Record<string, unknown>;
-				const role = typeof msg.role === "string" ? msg.role : "";
-				if (role === "user") {
-					this.promoteQueuedMessageFromUserEvent(msg);
-					break;
-				}
-				if (role === "assistant") {
-					const last = this.messages[this.messages.length - 1];
-					if (last?.role === "assistant" && last.isStreaming) {
-						break;
-					}
-					const initialText = this.extractText(msg.content);
-					const assistantError = this.extractAssistantMessageError(msg);
-					if (initialText.trim().length === 0 && !assistantError) {
-						break;
-					}
-					this.ensureStreamingAssistantMessage({
-						text: initialText,
-						errorText: assistantError || undefined,
-					});
-					if (initialText.trim().length > 0) {
-						this.runHasAssistantText = true;
-						if (this.runSawToolActivity) {
-							this.keepWorkflowExpandedUntilAssistantText = false;
-						}
-					}
-					this.render();
-					this.scrollToBottom();
-					break;
-				}
-
-				if (role === "toolResult") {
-					this.runSawToolActivity = true;
-					this.keepWorkflowExpandedUntilAssistantText = true;
-					const toolCallId = typeof msg.toolCallId === "string" ? msg.toolCallId : "";
-					const output = this.extractToolOutput(msg.content ?? msg.result ?? msg);
-					const isError = Boolean(msg.isError);
-					const toolName = typeof msg.toolName === "string" ? msg.toolName : "";
-					let tool = toolCallId ? this.findToolCall(toolCallId) : null;
-					if (!tool && toolName) {
-						tool = this.findMostRecentRunningToolByName(toolName);
-					}
-					if (tool) {
-						tool.result = output || "(no output)";
-						tool.isError = isError;
-						tool.isRunning = false;
-						tool.streamingOutput = undefined;
-						tool.isExpanded = false;
-						tool.endedAt = Date.now();
-						if (!tool.startedAt) tool.startedAt = tool.endedAt;
-					} else {
-						this.attachOrphanToolResult(toolName, output, isError);
-					}
-					this.render();
-					this.scrollToBottom();
-				}
-				break;
-			}
-
-			case "message_update": {
-				const assistantEvent = event.assistantMessageEvent as Record<string, unknown>;
-				if (!assistantEvent) break;
-				const subtype = typeof assistantEvent.type === "string" ? assistantEvent.type : "";
-
-				if (subtype === "error") {
-					const streamError = this.extractRuntimeErrorMessage(assistantEvent) || this.extractRuntimeErrorMessage(event);
-					const assistant = this.ensureStreamingAssistantMessage(streamError ? { errorText: streamError } : undefined);
-					assistant.isStreaming = false;
-					assistant.isThinkingStreaming = false;
-					if (streamError) {
-						assistant.errorText = streamError;
-					}
-					this.render();
-					break;
-				}
-
-				if (subtype === "text_delta") {
-					const assistant = this.ensureStreamingAssistantMessage();
-					const partialText = this.extractAssistantPartialContent(assistantEvent, "text");
-					assistant.text = this.mergeStreamingText(assistant.text, partialText, assistantEvent.delta);
-					assistant.isThinkingStreaming = false;
-					if (assistant.text.trim().length > 0) {
-						this.runHasAssistantText = true;
-						if (this.runSawToolActivity) {
-							this.keepWorkflowExpandedUntilAssistantText = false;
-						}
-					}
-					this.scheduleStreamingUiReconcile(1800);
-					this.render();
-					this.scrollToBottom();
-				} else if (subtype === "thinking_delta" || subtype === "reasoning_delta" || subtype.includes("thinking") || subtype.includes("reason")) {
-					const assistant = this.ensureStreamingAssistantMessage();
-					const partialThinking = this.extractAssistantPartialContent(assistantEvent, "thinking");
-					const currentThinking = assistant.thinking || "";
-					assistant.thinking = this.mergeStreamingText(currentThinking, partialThinking, assistantEvent.delta);
-					assistant.isThinkingStreaming = true;
-					this.scheduleStreamingUiReconcile(1800);
-					if ((assistant.thinking?.length || 0) % 100 === 0) this.render();
-				} else if (subtype === "toolcall_end") {
-					this.runSawToolActivity = true;
-					this.keepWorkflowExpandedUntilAssistantText = true;
-					const assistant = this.ensureStreamingAssistantMessage();
-					assistant.isThinkingStreaming = false;
-					const tc = assistantEvent.toolCall as Record<string, unknown>;
-					if (tc) {
-						const rawId = typeof tc.id === "string" ? tc.id.trim() : "";
-						const id = rawId || uid("tc");
-						const existing = assistant.toolCalls.find((entry) => entry.id === id);
-						if (existing) {
-							existing.name = typeof tc.name === "string" && tc.name.trim().length > 0 ? tc.name : existing.name;
-							existing.args = ((tc.arguments ?? existing.args) as Record<string, unknown>) || existing.args;
-							existing.isRunning = true;
-							existing.isExpanded = false;
-							existing.startedAt = existing.startedAt ?? Date.now();
-							existing.endedAt = undefined;
-						} else {
-							assistant.toolCalls.push({
-								id,
-								name: (tc.name as string) || "tool",
-								args: ((tc.arguments ?? {}) as Record<string, unknown>) || {},
-								isRunning: true,
-								isExpanded: false,
-								startedAt: Date.now(),
-							});
-						}
-						this.render();
-					}
-				}
-				break;
-			}
-
-			case "turn_end": {
-				const turnMessage = event.message as Record<string, unknown> | undefined;
-				const turnRole = typeof turnMessage?.role === "string" ? turnMessage.role : "";
-				if (turnRole === "assistant") {
-					const last = this.messages[this.messages.length - 1];
-					if (last?.role === "assistant") {
-						last.isStreaming = false;
-						last.isThinkingStreaming = false;
-						const turnError = this.extractAssistantMessageError(turnMessage);
-						if (turnError) {
-							last.errorText = turnError;
-						}
-					}
-					this.render();
-				}
-				break;
-			}
-
-			case "message_end": {
-				const last = this.messages[this.messages.length - 1];
-				if (last?.role === "assistant") {
-					last.isStreaming = false;
-					last.isThinkingStreaming = false;
-					const completed = event.message as Record<string, unknown> | undefined;
-					const completedError = this.extractAssistantMessageError(completed);
-					if (completedError) {
-						last.errorText = completedError;
-					}
-				}
-				this.scheduleStreamingUiReconcile(350);
-				this.render();
-				break;
-			}
-
-			case "tool_execution_start": {
-				const id = event.toolCallId as string | undefined;
-				if (!id) break;
-				const tool = this.findToolCall(id);
-				if (tool) {
-					tool.isRunning = true;
-					tool.isExpanded = false;
-					tool.startedAt = tool.startedAt ?? Date.now();
-					tool.endedAt = undefined;
-					this.render();
-				}
-				break;
-			}
-
-			case "tool_execution_update": {
-				const toolCallId = event.toolCallId as string | undefined;
-				const partialResult = event.partialResult as Record<string, unknown> | undefined;
-				if (!toolCallId || !partialResult) break;
-				const tool = this.findToolCall(toolCallId);
-				if (!tool) break;
-				const partialText = this.extractToolOutput(partialResult);
-				if (partialText) {
-					const currentOutput = tool.streamingOutput ?? tool.result ?? "";
-					tool.streamingOutput = this.mergeStreamingText(currentOutput, partialText, partialResult.delta);
-				}
-				tool.isRunning = true;
-				this.render();
-				this.scrollToBottom();
-				break;
-			}
-
-			case "tool_execution_end": {
-				const toolCallId = event.toolCallId as string | undefined;
-				if (!toolCallId) break;
-				const result = event.result as Record<string, unknown> | string | undefined;
-				const isError = Boolean(event.isError);
-				const tool = this.findToolCall(toolCallId);
-				if (!tool) break;
-				tool.isRunning = false;
-				tool.streamingOutput = undefined;
-				tool.isError = isError;
-				if (typeof result === "string") {
-					tool.result = result;
-				} else if (result && typeof result === "object") {
-					const content = this.extractToolOutput(result);
-					tool.result = content || "(no output)";
-				} else {
-					tool.result = tool.result || "(no output)";
-				}
-				tool.isExpanded = false;
-				tool.endedAt = Date.now();
-				if (!tool.startedAt) tool.startedAt = tool.endedAt;
-				this.render();
-				this.scrollToBottom();
-				break;
-			}
-
-			case "auto_compaction_start": {
-				this.compactionInsertIndex = this.messages.length;
-				this.compactionCycle = {
-					id: uid("compaction"),
-					status: "running",
-					startedAt: Date.now(),
-					endedAt: null,
-					summary: "Compacting context…",
-					errorMessage: null,
-					details: ["Compaction started"],
-					expanded: false,
-				};
-				this.render();
-				break;
-			}
-
-			case "auto_compaction_update":
-			case "auto_compaction_progress": {
-				if (!this.compactionCycle) break;
-				const detail =
-					pickString(event, ["message", "status", "phase", "step", "detail"]) ||
-					this.extractToolOutput(event.detail ?? event.payload ?? event).trim();
-				if (detail) {
-					const cleaned = truncate(detail.replace(/\s+/g, " ").trim(), 220);
-					if (cleaned && this.compactionCycle.details[this.compactionCycle.details.length - 1] !== cleaned) {
-						this.compactionCycle.details.push(cleaned);
-					}
-				}
-				this.render();
-				break;
-			}
-
-			case "auto_compaction_end": {
-				const aborted = Boolean(event.aborted);
-				const errorMessage = this.extractRuntimeErrorMessage(event);
-				if (!this.compactionCycle) {
-					this.compactionInsertIndex = this.messages.length;
-					this.compactionCycle = {
-						id: uid("compaction"),
-						status: "running",
-						startedAt: Date.now(),
-						endedAt: null,
-						summary: "Compacting context…",
-						errorMessage: null,
-						details: [],
-						expanded: false,
-					};
-				}
-				this.compactionCycle.endedAt = Date.now();
-				if (aborted) {
-					this.compactionCycle.status = "aborted";
-					this.compactionCycle.summary = "Compaction aborted";
-					this.compactionCycle.details.push("Compaction was aborted before completion.");
-					this.pushNotice("Auto-compaction aborted", "info");
-				} else if (errorMessage) {
-					this.compactionCycle.status = "error";
-					this.compactionCycle.summary = "Compaction failed";
-					this.compactionCycle.errorMessage = truncate(errorMessage, 220);
-					this.compactionCycle.details.push(`Failure: ${truncate(errorMessage, 220)}`);
-					this.pushRuntimeNotice(`Auto-compaction failed: ${truncate(errorMessage, 180)}`, "error", 2600);
-				} else {
-					this.compactionCycle.status = "done";
-					this.compactionCycle.summary = "Compaction complete";
-					const tokensBefore = pickNumber(event, ["result.tokensBefore", "tokensBefore", "tokens_before"]);
-					if (typeof tokensBefore === "number" && Number.isFinite(tokensBefore)) {
-						this.compactionCycle.details.push(`Context before compaction: ${Math.round(tokensBefore).toLocaleString()} tokens`);
-					}
-					this.compactionCycle.details.push("Compaction completed successfully.");
-					this.markContextUsageUnknown();
-					this.pushNotice("Auto-compaction complete", "success");
-					this.refreshAfterCompaction();
-				}
-				this.render();
-				break;
-			}
-
-			case "auto_retry_start": {
-				const attempt = typeof event.attempt === "number" ? event.attempt : 1;
-				const maxAttempts = typeof event.maxAttempts === "number" ? event.maxAttempts : 1;
-				const delayMs = typeof event.delayMs === "number" ? event.delayMs : 0;
-				const errorMessage = this.extractRuntimeErrorMessage(event);
-				this.retryStatus = `Retry ${attempt}/${maxAttempts} in ${(delayMs / 1000).toFixed(1)}s`;
-				const retryLine = errorMessage
-					? `Retry ${attempt}/${maxAttempts} in ${(delayMs / 1000).toFixed(1)}s · ${truncate(errorMessage, 150)}`
-					: `Retry ${attempt}/${maxAttempts} in ${(delayMs / 1000).toFixed(1)}s`;
-				this.appendSystemMessage(retryLine, { idPrefix: "runtime" });
-				this.render();
-				break;
-			}
-
-			case "auto_retry_end": {
-				const success = Boolean(event.success);
-				const attempt = typeof event.attempt === "number" ? event.attempt : null;
-				this.retryStatus = "";
-				if (!success) {
-					const finalError = this.extractRuntimeErrorMessage(event) || "Unknown retry failure";
-					this.pushRuntimeNotice(`Retry failed: ${truncate(finalError, 180)}`, "error", 2600);
-				} else {
-					this.appendSystemMessage(attempt ? `Retry succeeded on attempt ${attempt}` : "Retry succeeded", { idPrefix: "runtime" });
-				}
-				this.render();
-				break;
-			}
-
-			case "error": {
-				const errorMessage = this.extractRuntimeErrorMessage(event) || "Unknown runtime error";
-				const source = pickString(event, ["source", "phase", "stage", "provider", "code"]);
-				if (source === "stderr" || source === "stdout_text") {
-					const line = /^error\b[:\s-]*/i.test(errorMessage) ? errorMessage : `Error: ${errorMessage}`;
-					this.pushRuntimeNotice(truncate(line, 220), "error", 2600);
-				} else {
-					const prefix = source ? `Runtime error (${source})` : "Runtime error";
-					this.pushRuntimeNotice(`${prefix}: ${truncate(errorMessage, 180)}`, "error", 2600);
-				}
-				break;
-			}
-
-			case "extension_error": {
-				const error = this.extractRuntimeErrorMessage(event) || "Unknown extension error";
-				const extensionPath = pickString(event, ["extensionPath", "extension"]);
-				const extensionLabel = this.extensionLabelFromPath(extensionPath);
-				const source = pickString(event, ["event", "source", "callback", "method", "provider"]);
-				const prefix = source ? `Extension error (${extensionLabel}:${source})` : `Extension error (${extensionLabel})`;
-				this.pushRuntimeNotice(`${prefix}: ${truncate(error, 180)}`, "error", 2600);
-				this.maybePushExtensionCompatibilityHint(event, error);
-				break;
-			}
-
-			case "rpc_connected":
-				this.isConnected = true;
-				this.bindingStatusText = this.projectPath ? "Loading session…" : null;
-				if (this.disconnectNoticeTimer) {
+		if (
+			handleRuntimeStatusEvent(type, event, {
+				projectPath: this.projectPath,
+				isLoadingModels: () => this.loadingModels,
+				isRpcConnected: () => rpcBridge.isConnected,
+				getLastMessage: () => this.messages[this.messages.length - 1] ?? null,
+				setConnected: (connected) => {
+					this.isConnected = connected;
+				},
+				setBindingStatusText: (text) => {
+					this.bindingStatusText = text;
+				},
+				clearDisconnectNoticeTimer: () => {
+					if (!this.disconnectNoticeTimer) return;
 					clearTimeout(this.disconnectNoticeTimer);
 					this.disconnectNoticeTimer = null;
-				}
-				this.render();
-				if (this.projectPath) {
-					void this.refreshFromBackend();
-					if (!this.loadingModels) {
-						void this.loadAvailableModels();
-					}
-				}
-				break;
-
-			case "rpc_disconnected":
-				this.isConnected = false;
-				this.cancelStreamingUiReconcile();
-				this.bindingStatusText = this.projectPath ? "Reconnecting session…" : null;
-				this.modelLoadRequestSeq += 1;
-				this.loadingModels = false;
-				if (this.disconnectNoticeTimer) {
-					clearTimeout(this.disconnectNoticeTimer);
-				}
-				this.disconnectNoticeTimer = setTimeout(() => {
-					this.disconnectNoticeTimer = null;
-					if (!rpcBridge.isConnected) {
-						this.pushNotice("Disconnected from pi process", "error");
-						this.render();
-					}
-				}, 900);
-				break;
+				},
+				scheduleDisconnectNoticeTimer: (callback, delayMs) => {
+					this.disconnectNoticeTimer = setTimeout(() => {
+						this.disconnectNoticeTimer = null;
+						callback();
+					}, delayMs);
+				},
+				setLoadingModels: (loading) => {
+					this.loadingModels = loading;
+				},
+				bumpModelLoadRequestSeq: () => {
+					this.modelLoadRequestSeq += 1;
+				},
+				cancelStreamingUiReconcile: this.cancelStreamingUiReconcile.bind(this),
+				scheduleStreamingUiReconcile: this.scheduleStreamingUiReconcile.bind(this),
+				setPendingDeliveryMode: (mode) => {
+					this.pendingDeliveryMode = mode;
+				},
+				setRunFlags: ({ hasAssistantText, sawToolActivity, keepWorkflowExpanded }) => {
+					this.runHasAssistantText = hasAssistantText;
+					this.runSawToolActivity = sawToolActivity;
+					this.keepWorkflowExpandedUntilAssistantText = keepWorkflowExpanded;
+				},
+				clearCollapsedAutoWorkflowIds: () => this.collapsedAutoWorkflowIds.clear(),
+				setStateStreaming: (streaming) => {
+					if (!this.state) return;
+					this.state = { ...this.state, isStreaming: streaming };
+					this.onStateChange?.(this.state);
+				},
+				setAutoFollowChat: (next) => {
+					this.autoFollowChat = next;
+				},
+				onRunStateChange: (running) => {
+					this.onRunStateChange?.(running);
+				},
+				setRetryStatus: (status) => {
+					this.retryStatus = status;
+				},
+				pushRuntimeNotice: this.pushRuntimeNotice.bind(this),
+				pushNotice: this.pushNotice.bind(this),
+				extractRuntimeErrorMessage: this.extractRuntimeErrorMessage.bind(this),
+				truncate,
+				extensionLabelFromPath: this.extensionLabelFromPath.bind(this),
+				maybePushExtensionCompatibilityHint: this.maybePushExtensionCompatibilityHint.bind(this),
+				render: this.render.bind(this),
+				scrollToBottom: this.scrollToBottom.bind(this),
+				refreshFromBackend: this.refreshFromBackend.bind(this),
+				loadAvailableModels: this.loadAvailableModels.bind(this),
+				refreshStateAfterAgentEnd: () => {
+					rpcBridge
+						.getState()
+						.then((state) => {
+							this.state = state;
+							this.syncComposerQueueFromState(state);
+							this.pendingDeliveryMode = state.isStreaming ? "steer" : "prompt";
+							this.onStateChange?.(state);
+							void this.refreshSessionStats(true);
+							void this.refreshGitSummary(true);
+							this.render();
+						})
+						.catch(() => {
+							/* ignore */
+						});
+				},
+			})
+		) {
+			return;
 		}
 	}
 
@@ -4251,50 +2691,27 @@ export class ChatView {
 	}
 
 	private isImageName(name: string): boolean {
-		return /\.(png|jpe?g|gif|webp|bmp|svg|avif|heic|heif)$/i.test(name.toLowerCase());
+		return isImageNameValue(name);
 	}
 
 	private mimeFromFileName(name: string): string {
-		const lower = name.toLowerCase();
-		if (lower.endsWith(".png")) return "image/png";
-		if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
-		if (lower.endsWith(".gif")) return "image/gif";
-		if (lower.endsWith(".webp")) return "image/webp";
-		if (lower.endsWith(".bmp")) return "image/bmp";
-		if (lower.endsWith(".svg")) return "image/svg+xml";
-		if (lower.endsWith(".avif")) return "image/avif";
-		if (lower.endsWith(".heic")) return "image/heic";
-		if (lower.endsWith(".heif")) return "image/heif";
-		return "image/png";
+		return mimeFromFileNameValue(name);
 	}
 
 	private toBase64(bytes: Uint8Array): string {
-		let binary = "";
-		const chunkSize = 0x8000;
-		for (let i = 0; i < bytes.length; i += chunkSize) {
-			const chunk = bytes.subarray(i, i + chunkSize);
-			binary += String.fromCharCode(...chunk);
-		}
-		return btoa(binary);
+		return toBase64Bytes(bytes);
 	}
 
 	private isImageFile(file: File): boolean {
-		if (file.type.startsWith("image/")) return true;
-		return this.isImageName(file.name || "");
+		return isImageFileValue(file);
 	}
 
 	private fileNameFromPath(path: string): string {
-		const normalized = path.replace(/\\/g, "/").trim();
-		const parts = normalized.split("/");
-		return parts[parts.length - 1] || normalized;
+		return fileNameFromPathValue(path);
 	}
 
 	private shouldIgnoreDuplicateDrop(names: string[]): boolean {
-		const signature = names
-			.map((name) => name.trim().toLowerCase())
-			.filter(Boolean)
-			.sort()
-			.join("|");
+		const signature = createDropSignature(names);
 		if (!signature) return false;
 		const now = Date.now();
 		if (this.lastDropSignature === signature && now - this.lastDropAt < 1200) {
@@ -4306,33 +2723,109 @@ export class ChatView {
 	}
 
 	private extractFilePathsFromDropPayload(raw: string): string[] {
-		const lines = raw
-			.split(/\r?\n/)
-			.map((line) => line.trim())
-			.filter((line) => line && !line.startsWith("#"));
-		const paths: string[] = [];
-		for (const line of lines) {
-			if (line.startsWith("file://")) {
-				try {
-					const url = new URL(line);
-					let path = decodeURIComponent(url.pathname || "");
-					if (/^\/[A-Za-z]:\//.test(path)) {
-						path = path.slice(1);
-					}
-					if (path) paths.push(path);
-					continue;
-				} catch {
-					// ignore invalid url
-				}
-			}
-			if (line.startsWith("/") || /^[A-Za-z]:[\\/]/.test(line)) {
-				paths.push(line);
-			}
-		}
-		return paths;
+		return extractFilePathsFromDropPayloadValue(raw);
 	}
 
-	private async prepareImagesFromPaths(paths: string[]): Promise<void> {
+	private normalizeDroppedPath(path: string): string {
+		return path.replace(/\\/g, "/").trim();
+	}
+
+	private formatDroppedPathToken(path: string): string {
+		const normalized = this.normalizeDroppedPath(path);
+		if (!normalized) return "";
+		const projectRoot = this.projectPath ? this.normalizeDroppedPath(this.projectPath).replace(/\/+$/, "") : "";
+		let token = normalized;
+		if (projectRoot) {
+			const lowerPath = normalized.toLowerCase();
+			const lowerRoot = projectRoot.toLowerCase();
+			if (lowerPath === lowerRoot) {
+				token = ".";
+			} else if (lowerPath.startsWith(`${lowerRoot}/`)) {
+				token = `./${normalized.slice(projectRoot.length + 1)}`;
+			}
+		}
+		if (/\s/.test(token)) {
+			return `"${token.replace(/"/g, '\\"')}"`;
+		}
+		return token;
+	}
+
+	private appendDroppedPathReferences(paths: string[]): void {
+		const seen = new Set<string>(this.pendingFileReferences.map((entry) => entry.token.toLowerCase()));
+		const next: PendingFileReference[] = [];
+		for (const rawPath of paths) {
+			const normalizedPath = this.normalizeDroppedPath(rawPath);
+			if (!normalizedPath) continue;
+			const token = this.formatDroppedPathToken(normalizedPath);
+			if (!token) continue;
+			const key = token.toLowerCase();
+			if (seen.has(key)) continue;
+			seen.add(key);
+			next.push({
+				id: uid("file"),
+				name: this.fileNameFromPath(normalizedPath),
+				path: normalizedPath,
+				token,
+			});
+		}
+		if (next.length === 0) return;
+		this.pendingFileReferences = [...this.pendingFileReferences, ...next];
+		this.render();
+	}
+
+	private dedupeDroppedPaths(paths: string[]): string[] {
+		const seen = new Set<string>();
+		const unique: string[] = [];
+		for (const rawPath of paths) {
+			const normalized = this.normalizeDroppedPath(rawPath);
+			if (!normalized) continue;
+			const key = normalized.toLowerCase();
+			if (seen.has(key)) continue;
+			seen.add(key);
+			unique.push(normalized);
+		}
+		return unique;
+	}
+
+	private handleDroppedPathCandidates(
+		paths: string[],
+		options: { quietImageReadFailure?: boolean } = {},
+	): boolean {
+		const normalizedPaths = this.dedupeDroppedPaths(paths);
+		if (normalizedPaths.length === 0) return false;
+		const signatureNames = normalizedPaths.map((path) => this.fileNameFromPath(path));
+		if (signatureNames.length > 0 && this.shouldIgnoreDuplicateDrop(signatureNames)) {
+			return true;
+		}
+		const imagePaths = normalizedPaths.filter((path) => this.isImageName(this.fileNameFromPath(path)));
+		const filePaths = normalizedPaths.filter((path) => !this.isImageName(this.fileNameFromPath(path)));
+
+		let handled = false;
+		if (imagePaths.length > 0) {
+			void this.prepareImagesFromPaths(imagePaths, {
+				quietIfNone: options.quietImageReadFailure ?? true,
+			});
+			handled = true;
+		}
+		if (filePaths.length > 0) {
+			this.appendDroppedPathReferences(filePaths);
+			handled = true;
+		}
+		return handled;
+	}
+
+	private pathFromDroppedFile(file: File): string {
+		const maybePath = file as File & { path?: string; webkitRelativePath?: string };
+		const pathValue =
+			typeof maybePath.path === "string" && maybePath.path.trim().length > 0
+				? maybePath.path
+				: typeof maybePath.webkitRelativePath === "string" && maybePath.webkitRelativePath.trim().length > 0
+					? maybePath.webkitRelativePath
+					: file.name || "";
+		return this.normalizeDroppedPath(pathValue);
+	}
+
+	private async prepareImagesFromPaths(paths: string[], options: { quietIfNone?: boolean } = {}): Promise<void> {
 		if (paths.length === 0) return;
 		try {
 			const { readFile } = await import("@tauri-apps/plugin-fs");
@@ -4349,6 +2842,7 @@ export class ChatView {
 					next.push({
 						id: uid("img"),
 						name,
+						path: cleanPath,
 						mimeType: mime,
 						data: base64,
 						previewUrl: `data:${mime};base64,${base64}`,
@@ -4359,7 +2853,9 @@ export class ChatView {
 				}
 			}
 			if (next.length === 0) {
-				this.pushNotice("Could not read dropped image files", "info");
+				if (!options.quietIfNone) {
+					this.pushNotice("Could not read dropped image files", "info");
+				}
 				return;
 			}
 			this.pendingImages = [...this.pendingImages, ...next];
@@ -4370,30 +2866,137 @@ export class ChatView {
 	}
 
 	private handleDroppedDataTransfer(dataTransfer: DataTransfer | null): void {
-		if (!dataTransfer) return;
-		const directFiles = Array.from(dataTransfer.files || []);
-		if (directFiles.length > 0) {
-			if (this.shouldIgnoreDuplicateDrop(directFiles.map((file) => file.name || ""))) return;
-			void this.prepareImages(directFiles);
+		const activeSidebarPaths = peekActiveDraggedFilePaths();
+		if (!dataTransfer) {
+			const handledFromSidebarFallback = this.handleDroppedPathCandidates(activeSidebarPaths, {
+				quietImageReadFailure: true,
+			});
+			if (activeSidebarPaths.length > 0) {
+				clearActiveDraggedFilePaths();
+			}
+			if (!handledFromSidebarFallback && activeSidebarPaths.length > 0) {
+				this.pushNotice("No readable files found in drop payload", "info");
+			}
 			return;
 		}
+
+		const customPayload = dataTransfer.getData("application/x-pi-file-path") || "";
+		const customPaths = customPayload
+			.split(/\r?\n/)
+			.map((value) => value.trim())
+			.filter(Boolean);
+		const customJsonPayload = dataTransfer.getData("application/x-pi-file-paths-json") || "";
+		let customJsonPaths: string[] = [];
+		if (customJsonPayload) {
+			try {
+				const parsed = JSON.parse(customJsonPayload) as unknown;
+				if (Array.isArray(parsed)) {
+					customJsonPaths = parsed.filter((value): value is string => typeof value === "string");
+				}
+			} catch {
+				// ignore malformed payload
+			}
+		}
+		const uriPayload = [customPayload, customJsonPaths.join("\n"), dataTransfer.getData("text/uri-list"), dataTransfer.getData("text/plain")]
+			.map((value) => value || "")
+			.join("\n");
+		const uriPaths = this.extractFilePathsFromDropPayload(uriPayload);
+		const droppedPathsFromPayload = this.dedupeDroppedPaths([...customPaths, ...customJsonPaths, ...uriPaths]);
+
+		const directFiles = Array.from(dataTransfer.files || []);
 		const fromItems = Array.from(dataTransfer.items || [])
 			.filter((item) => item.kind === "file")
 			.map((item) => item.getAsFile())
 			.filter((f): f is File => Boolean(f));
-		if (fromItems.length > 0) {
-			if (this.shouldIgnoreDuplicateDrop(fromItems.map((file) => file.name || ""))) return;
-			void this.prepareImages(fromItems);
-			return;
+		const fileObjects = directFiles.length > 0 ? directFiles : fromItems;
+
+		const imageFiles = fileObjects.filter((file) => this.isImageFile(file));
+		const imagePathsFromPayload = droppedPathsFromPayload.filter((path) => this.isImageName(this.fileNameFromPath(path)));
+		const filePathsFromPayload = droppedPathsFromPayload.filter((path) => !this.isImageName(this.fileNameFromPath(path)));
+		const filePathsFromObjects = this.dedupeDroppedPaths(
+			fileObjects
+				.filter((file) => !this.isImageFile(file))
+				.map((file) => this.pathFromDroppedFile(file))
+				.filter(Boolean),
+		);
+
+		const hasPayloadCandidates =
+			imageFiles.length > 0 ||
+			imagePathsFromPayload.length > 0 ||
+			filePathsFromPayload.length > 0 ||
+			filePathsFromObjects.length > 0;
+		const fallbackSidebarPaths = !hasPayloadCandidates ? this.dedupeDroppedPaths(activeSidebarPaths) : [];
+		const fallbackImagePaths = fallbackSidebarPaths.filter((path) => this.isImageName(this.fileNameFromPath(path)));
+		const fallbackFilePaths = fallbackSidebarPaths.filter((path) => !this.isImageName(this.fileNameFromPath(path)));
+
+		const imagePaths = imagePathsFromPayload.length > 0 ? imagePathsFromPayload : fallbackImagePaths;
+		const filePaths = this.dedupeDroppedPaths(
+			filePathsFromPayload.length > 0
+				? filePathsFromPayload
+				: filePathsFromObjects.length > 0
+					? filePathsFromObjects
+					: fallbackFilePaths,
+		);
+
+		if (customPaths.length > 0 || customJsonPaths.length > 0 || fallbackSidebarPaths.length > 0) {
+			clearActiveDraggedFilePaths();
 		}
-		const uriPayload = dataTransfer.getData("text/uri-list") || dataTransfer.getData("text/plain") || "";
-		const paths = this.extractFilePathsFromDropPayload(uriPayload);
-		if (paths.length > 0) {
-			if (this.shouldIgnoreDuplicateDrop(paths.map((path) => this.fileNameFromPath(path)))) return;
-			void this.prepareImagesFromPaths(paths);
-			return;
+
+		const signatureNames = [
+			...imageFiles.map((file) => file.name || ""),
+			...imagePaths.map((path) => this.fileNameFromPath(path)),
+			...filePaths.map((path) => this.fileNameFromPath(path)),
+		];
+		if (signatureNames.length > 0 && this.shouldIgnoreDuplicateDrop(signatureNames)) return;
+
+		let handled = false;
+		if (imageFiles.length > 0) {
+			void this.prepareImages(imageFiles);
+			handled = true;
+		} else if (imagePaths.length > 0) {
+			void this.prepareImagesFromPaths(imagePaths, { quietIfNone: true });
+			handled = true;
 		}
-		this.pushNotice("No readable files found in drop payload", "info");
+
+		if (filePaths.length > 0) {
+			this.appendDroppedPathReferences(filePaths);
+			handled = true;
+		}
+
+		if (!handled && activeSidebarPaths.length > 0) {
+			const handledFromSidebarFallback = this.handleDroppedPathCandidates(activeSidebarPaths, {
+				quietImageReadFailure: true,
+			});
+			clearActiveDraggedFilePaths();
+			if (handledFromSidebarFallback) {
+				handled = true;
+			}
+		}
+
+		if (!handled) {
+			this.pushNotice("No readable files found in drop payload", "info");
+		}
+	}
+
+	private async prepareComposerFiles(files: FileList | File[]): Promise<void> {
+		const list = Array.from(files || []);
+		if (list.length === 0) return;
+		const imageFiles = list.filter((file) => this.isImageFile(file));
+		const filePaths = this.dedupeDroppedPaths(
+			list
+				.filter((file) => !this.isImageFile(file))
+				.map((file) => this.pathFromDroppedFile(file))
+				.filter(Boolean),
+		);
+		if (imageFiles.length > 0) {
+			await this.prepareImages(imageFiles);
+		}
+		if (filePaths.length > 0) {
+			this.appendDroppedPathReferences(filePaths);
+		}
+		if (imageFiles.length === 0 && filePaths.length === 0) {
+			this.pushNotice("No readable files selected", "info");
+		}
 	}
 
 	private async prepareImages(files: FileList | File[]): Promise<void> {
@@ -4409,6 +3012,8 @@ export class ChatView {
 		for (const file of list) {
 			const safeName = file.name || `image-${Date.now()}.png`;
 			const mime = file.type || this.mimeFromFileName(safeName);
+			const rawPathHint = this.pathFromDroppedFile(file);
+			const pathHint = rawPathHint && rawPathHint !== safeName ? rawPathHint : undefined;
 			let base64 = "";
 
 			try {
@@ -4424,6 +3029,7 @@ export class ChatView {
 							next.push({
 								id: uid("img"),
 								name: safeName,
+								path: pathHint,
 								mimeType: parsedMime,
 								data: base64,
 								previewUrl: `data:${parsedMime};base64,${base64}`,
@@ -4446,6 +3052,7 @@ export class ChatView {
 			next.push({
 				id: uid("img"),
 				name: safeName,
+				path: pathHint,
 				mimeType: mime,
 				data: base64,
 				previewUrl: `data:${mime};base64,${base64}`,
@@ -4482,6 +3089,19 @@ export class ChatView {
 	private removePendingImage(id: string): void {
 		this.pendingImages = this.pendingImages.filter((img) => img.id !== id);
 		this.render();
+	}
+
+	private removePendingFileReference(id: string): void {
+		this.pendingFileReferences = this.pendingFileReferences.filter((entry) => entry.id !== id);
+		this.render();
+	}
+
+	private composedPromptText(rawText: string): string {
+		const baseText = rawText.trim();
+		const fileTokens = this.pendingFileReferences.map((entry) => entry.token).filter((token) => token.length > 0);
+		if (fileTokens.length === 0) return baseText;
+		const fileBlock = fileTokens.join("\n");
+		return baseText ? `${baseText}\n\n${fileBlock}` : fileBlock;
 	}
 
 	private currentIsStreaming(): boolean {
@@ -4660,15 +3280,10 @@ export class ChatView {
 		this.inputText = text;
 		this.updateSlashPaletteStateFromInput();
 		this.render();
-		requestAnimationFrame(() => {
-			const textarea = this.container.querySelector("#chat-input") as HTMLTextAreaElement | null;
-			if (!textarea) return;
-			textarea.value = text;
-			textarea.style.height = "auto";
-			textarea.style.height = `${Math.min(textarea.scrollHeight, 220)}px`;
-			const end = text.length;
-			textarea.setSelectionRange(end, end);
-			textarea.focus();
+		this.syncComposerTextareaDeferred(text, {
+			maxHeight: 220,
+			moveCaretToEnd: true,
+			focus: true,
 		});
 	}
 
@@ -4700,100 +3315,44 @@ export class ChatView {
 	private clearComposer(): void {
 		this.inputText = "";
 		this.pendingImages = [];
+		this.pendingFileReferences = [];
 		this.selectedSkillDraft = null;
 		this.resetComposerHistoryNavigation();
 		this.closeSlashPalette();
 		this.render();
-		const textarea = this.container.querySelector("#chat-input") as HTMLTextAreaElement | null;
-		if (textarea) {
-			textarea.value = "";
-			textarea.style.height = "auto";
-		}
+		this.syncComposerTextarea("", { maxHeight: 0 });
 	}
 
 	async sendMessage(mode: DeliveryMode = this.pendingDeliveryMode): Promise<void> {
-		if (this.isComposerInteractionLocked()) {
-			this.pushNotice(this.bindingStatusText || "Session is still loading. Try again in a moment.", "info");
-			return;
-		}
-		const promptText = this.inputText.trim();
-		const selectedSkillCommand = this.selectedSkillDraft?.commandText?.trim() ?? "";
-		const text = selectedSkillCommand
-			? (promptText ? `${selectedSkillCommand}\n\n${promptText}` : selectedSkillCommand)
-			: promptText;
-		const images = [...this.pendingImages];
-		if (!selectedSkillCommand && images.length === 0 && this.slashQueryFromInput() !== null) {
-			await this.executeSlashCommandFromComposer();
-			return;
-		}
-		if (!text && images.length === 0) return;
-		if (text) this.rememberComposerHistoryEntry(text);
-
-		let streaming = this.currentIsStreaming();
-		if (streaming) {
-			try {
-				const backendState = await rpcBridge.getState();
-				const backendStreaming = Boolean(backendState.isStreaming);
-				this.state = backendState;
-				this.syncComposerQueueFromState(backendState);
-				this.onStateChange?.(backendState);
-				if (!backendStreaming) {
-					streaming = false;
-					this.clearStreamingUiState();
-					this.render();
-				}
-			} catch {
-				// ignore pre-flight run-state check failures
-			}
-		}
-
-		let actualMode: DeliveryMode = mode;
-		if (!streaming) {
-			actualMode = "prompt";
-		}
-
-		let queuedMessageId: string | null = null;
-		if (actualMode === "followUp") {
-			queuedMessageId = this.enqueueComposerQueueMessage(text, images);
-			this.pushNotice("Queued message", "info");
-		} else {
-			this.pushUserEcho(text, actualMode, images);
-		}
-		this.clearComposer();
-		this.sendingPrompt = true;
-		this.render();
-
-		try {
-			const rpcImages = this.toRpcImages(images);
-			if (actualMode === "prompt") {
-				await rpcBridge.prompt(text, { images: rpcImages });
-			} else if (actualMode === "steer") {
-				await rpcBridge.steer(text, rpcImages);
-			} else {
-				await rpcBridge.followUp(text, rpcImages);
-				void rpcBridge
-					.getState()
-					.then((state) => {
-						this.state = state;
-						this.syncComposerQueueFromState(state);
-						this.onStateChange?.(state);
-						this.render();
-					})
-					.catch(() => {
-						/* ignore */
-					});
-			}
-			this.onPromptSubmitted?.();
-		} catch (err) {
-			if (queuedMessageId) {
-				this.removeComposerQueueMessage(queuedMessageId);
-			}
-			console.error("Failed to send message:", err);
-			this.pushNotice(err instanceof Error ? err.message : "Failed to send message", "error");
-		} finally {
-			this.sendingPrompt = false;
-			this.render();
-		}
+		await sendMessageFlow({
+			mode,
+			bindingStatusText: this.bindingStatusText,
+			isComposerInteractionLocked: this.isComposerInteractionLocked.bind(this),
+			inputText: this.composedPromptText(this.inputText),
+			selectedSkillCommandText: this.selectedSkillDraft?.commandText?.trim() ?? "",
+			pendingImages: [...this.pendingImages],
+			slashQueryFromInput: () => (this.pendingFileReferences.length > 0 ? null : this.slashQueryFromInput()),
+			executeSlashCommandFromComposer: this.executeSlashCommandFromComposer.bind(this),
+			rememberComposerHistoryEntry: this.rememberComposerHistoryEntry.bind(this),
+			currentIsStreaming: this.currentIsStreaming.bind(this),
+			applyBackendState: (state) => {
+				this.state = state;
+				this.syncComposerQueueFromState(state);
+				this.onStateChange?.(state);
+			},
+			clearStreamingUiState: this.clearStreamingUiState.bind(this),
+			render: this.render.bind(this),
+			enqueueComposerQueueMessage: this.enqueueComposerQueueMessage.bind(this),
+			pushNotice: this.pushNotice.bind(this),
+			pushUserEcho: this.pushUserEcho.bind(this),
+			clearComposer: this.clearComposer.bind(this),
+			setSendingPrompt: (value) => {
+				this.sendingPrompt = value;
+			},
+			toRpcImages: this.toRpcImages.bind(this),
+			removeComposerQueueMessage: this.removeComposerQueueMessage.bind(this),
+			onPromptSubmitted: this.onPromptSubmitted ?? undefined,
+		});
 	}
 
 	private async copyMessage(msg: UiMessage): Promise<void> {
@@ -4813,6 +3372,7 @@ export class ChatView {
 
 	private editUserMessage(msg: UiMessage): void {
 		this.pendingImages = this.cloneImages(msg.attachments);
+		this.pendingFileReferences = [];
 		this.setInputText(msg.text || "");
 		this.pushNotice("Loaded message into composer", "info");
 	}
@@ -4826,6 +3386,7 @@ export class ChatView {
 		}
 
 		this.pendingImages = images;
+		this.pendingFileReferences = [];
 		this.setInputText(text);
 		this.pushNotice("Message loaded. Press send to resend", "info");
 	}
@@ -5079,35 +3640,15 @@ export class ChatView {
 	}
 
 	async openForkPicker(): Promise<void> {
-		if (this.openingForkPicker) return;
-		this.openingForkPicker = true;
-		this.forkPickerOpen = true;
-		this.render();
-		try {
-			this.forkOptions = await rpcBridge.getForkMessages();
-		} catch (err) {
-			console.error("Failed to load fork points:", err);
-			this.pushNotice("Failed to load fork points", "error");
-			this.forkOptions = [];
-		} finally {
-			this.openingForkPicker = false;
-			this.render();
-		}
-	}
-
-	private closeForkPicker(): void {
-		this.forkPickerOpen = false;
-		this.render();
-	}
-
-	private deriveForkSessionName(sourceName: string): string {
-		const base = sourceName.trim() || "session";
-		return `fork-${base}`;
+		this.openHistoryViewerForFork({
+			loading: false,
+			sessionName: this.state?.sessionName ?? null,
+		});
 	}
 
 	private async forkFrom(entryId: string): Promise<void> {
 		const sourceSessionName = this.historyViewerSessionLabel.trim() || this.state?.sessionName?.trim() || "";
-		const forkSessionName = this.deriveForkSessionName(sourceSessionName);
+		const forkSessionName = deriveForkSessionName(sourceSessionName);
 		try {
 			const result = await rpcBridge.fork(entryId);
 			if (!result.cancelled) {
@@ -5122,7 +3663,6 @@ export class ChatView {
 			}
 			await this.refreshFromBackend();
 			this.pushNotice(result.cancelled ? "Fork cancelled" : "Fork ready in editor", "success");
-			this.closeForkPicker();
 			if (this.historyViewerMode === "fork") {
 				this.closeHistoryViewer();
 			}
@@ -5140,8 +3680,6 @@ export class ChatView {
 		this.historyTreeRows = [];
 		this.historyQuery = options?.query?.trim() ?? "";
 		this.historyRoleFilter = "all";
-		this.forkExpandedMessageRows.clear();
-		this.forkExpandedToolRows.clear();
 		this.render();
 		void this.loadSessionTreeForHistory();
 	}
@@ -5154,8 +3692,6 @@ export class ChatView {
 		this.historyQuery = options?.query?.trim() ?? "";
 		this.historyRoleFilter = "all";
 		this.forkOptions = [];
-		this.forkExpandedMessageRows.clear();
-		this.forkExpandedToolRows.clear();
 		this.render();
 		if (!this.historyViewerLoading) {
 			void this.loadForkTargetsForHistory();
@@ -5173,41 +3709,7 @@ export class ChatView {
 		this.historyRoleFilter = "all";
 		this.forkOptions = [];
 		this.forkEntryIdByMessageId.clear();
-		this.forkExpandedMessageRows.clear();
-		this.forkExpandedToolRows.clear();
 		this.render();
-	}
-
-	private normalizeForkText(value: string): string {
-		return value.replace(/\s+/g, " ").trim();
-	}
-
-	private hydrateForkTargetsFromOptions(options: ForkOption[]): void {
-		const userMessages = this.messages.filter((msg) => msg.role === "user");
-		const byText = new Map<string, string[]>();
-		for (const option of options) {
-			const key = this.normalizeForkText(option.text);
-			if (!key) continue;
-			const queue = byText.get(key) ?? [];
-			queue.push(option.entryId);
-			byText.set(key, queue);
-		}
-
-		const map = new Map<string, string>();
-		for (const msg of userMessages) {
-			const key = this.normalizeForkText(msg.text);
-			const queue = byText.get(key);
-			if (queue && queue.length > 0) {
-				const entryId = queue.shift();
-				if (entryId) map.set(msg.id, entryId);
-				continue;
-			}
-			if (msg.sessionEntryId) {
-				map.set(msg.id, msg.sessionEntryId);
-			}
-		}
-
-		this.forkEntryIdByMessageId = map;
 	}
 
 	private async loadForkTargetsForHistory(): Promise<void> {
@@ -5219,7 +3721,7 @@ export class ChatView {
 			const options = await rpcBridge.getForkMessages();
 			if (requestId !== this.forkTargetsRequestSeq || this.historyViewerMode !== "fork") return;
 			this.forkOptions = options;
-			this.hydrateForkTargetsFromOptions(options);
+			this.forkEntryIdByMessageId = buildForkEntryIdByMessageId(this.messages, options);
 		} catch (err) {
 			if (requestId !== this.forkTargetsRequestSeq || this.historyViewerMode !== "fork") return;
 			console.error("Failed to load fork points:", err);
@@ -5487,33 +3989,11 @@ export class ChatView {
 	}
 
 	private normalizeThinkingText(value: string): string {
-		let text = value.replace(/^\s*thinking\.\.\.\s*/i, "").trim();
-		if (!text) return "";
-		const paragraphs = text
-		.split(/\n{2,}/)
-			.map((part) => part.trim())
-			.filter(Boolean);
-		const deduped: string[] = [];
-		const seen = new Set<string>();
-		for (const part of paragraphs) {
-			if (seen.has(part)) continue;
-			seen.add(part);
-			deduped.push(part);
-		}
-		text = deduped.join("\n\n").trim();
-		const half = Math.floor(text.length / 2);
-		if (text.length > 40 && text.length % 2 === 0 && text.slice(0, half) === text.slice(half)) {
-			text = text.slice(0, half).trim();
-		}
-		return text;
+		return normalizeThinkingText(value);
 	}
 
 	private isStandaloneCodeBlockMarkdown(value: string): boolean {
-		const text = value.trim();
-		if (!text) return false;
-		if (/^```[^\n`]*\n[\s\S]*\n```$/.test(text)) return true;
-		if (/^~~~[^\n~]*\n[\s\S]*\n~~~$/.test(text)) return true;
-		return false;
+		return isStandaloneCodeBlockMarkdown(value);
 	}
 
 	private renderThinking(msg: UiMessage): TemplateResult | typeof nothing {
@@ -5561,46 +4041,8 @@ export class ChatView {
 		`;
 	}
 
-	private pickToolArg(args: Record<string, unknown>, keys: string[]): string {
-		for (const key of keys) {
-			const value = args[key];
-			if (typeof value === "string" && value.trim().length > 0) return value.trim();
-		}
-		return "";
-	}
-
 	private summarizeToolCall(tc: ToolCallBlock): string {
-		const name = tc.name.trim().toLowerCase();
-		const command = this.pickToolArg(tc.args, ["command", "cmd", "shell", "script"]);
-		const path = this.pickToolArg(tc.args, ["path", "filePath", "targetPath", "from", "to"]);
-		const query = this.pickToolArg(tc.args, ["query", "pattern", "glob", "name"]);
-		if (name === "bash" && command) return `Ran ${truncate(command, 84)}`;
-		if ((name === "read" || name === "readfile") && path) return `Read ${truncate(path, 74)}`;
-		if ((name === "write" || name === "writefile") && path) return `Wrote ${truncate(path, 74)}`;
-		if (name === "edit" && path) return `Edited ${truncate(path, 74)}`;
-		if (name.includes("search") && query) return `Explored ${truncate(query, 74)}`;
-		if ((name === "list" || name.includes("ls")) && path) return `Explored ${truncate(path, 74)}`;
-		if (path) return `${tc.name} ${truncate(path, 74)}`;
-		return `Ran ${tc.name}`;
-	}
-
-	private buildToolCallGroups(toolCalls: ToolCallBlock[]): ToolCallGroup[] {
-		const groups: ToolCallGroup[] = [];
-		for (const tc of toolCalls) {
-			const preview = this.summarizeToolCall(tc);
-			const previous = groups[groups.length - 1];
-			if (previous && previous.toolName === tc.name && previous.preview === preview) {
-				previous.calls.push(tc);
-				continue;
-			}
-			groups.push({
-				id: `${tc.id}-group`,
-				toolName: tc.name,
-				preview,
-				calls: [tc],
-			});
-		}
-		return groups;
+		return summarizeToolCall(tc, truncate);
 	}
 
 	private isToolWorkflowExpanded(workflowId: string): boolean {
@@ -5663,128 +4105,15 @@ export class ChatView {
 		return html`${verb} <span class="tool-file-target">${target}</span>`;
 	}
 
-	private isThinkingOnlyAssistantMessage(message: UiMessage | undefined): boolean {
-		if (!message || message.role !== "assistant") return false;
-		if (message.toolCalls.length > 0) return false;
-		if (message.text.trim().length > 0) return false;
-		if ((message.errorText ?? "").trim().length > 0) return false;
-		return Boolean((message.thinking ?? "").trim());
-	}
-
-	private collectAssistantWorkflow(startIndex: number): {
-		workflow: {
-			id: string;
-			messages: UiMessage[];
-			toolCalls: ToolCallBlock[];
-			toolGroups: ToolCallGroup[];
-			thinkingText: string;
-			finalText: string;
-			errorText: string;
-			isStreaming: boolean;
-			startedAt: number;
-			endedAt: number;
-			isTerminal: boolean;
-		};
-		nextIndex: number;
-	} | null {
-		const start = this.messages[startIndex];
-		if (!start || start.role !== "assistant") return null;
-		const startIsThinkingOnly = this.isThinkingOnlyAssistantMessage(start);
-		const startHasTools = start.toolCalls.length > 0;
-		if (!startIsThinkingOnly && !startHasTools) return null;
-
-		const grouped: UiMessage[] = [];
-		let sawTools = false;
-		let consumedFinalMessage = false;
-		let cursor = startIndex;
-
-		while (cursor < this.messages.length) {
-			const candidate = this.messages[cursor];
-			if (candidate.role !== "assistant") break;
-			const hasTools = candidate.toolCalls.length > 0;
-			const hasText = candidate.text.trim().length > 0;
-			const hasThinking = Boolean((candidate.thinking ?? "").trim());
-			const hasError = Boolean((candidate.errorText ?? "").trim());
-
-			if (hasTools) {
-				grouped.push(candidate);
-				sawTools = true;
-				cursor += 1;
-				continue;
-			}
-
-			if (!sawTools) {
-				if (hasThinking && !hasText && !hasError) {
-					grouped.push(candidate);
-					cursor += 1;
-					continue;
-				}
-				break;
-			}
-
-			if (!consumedFinalMessage && (hasText || hasError)) {
-				grouped.push(candidate);
-				consumedFinalMessage = true;
-				cursor += 1;
-				break;
-			}
-
-			if (!consumedFinalMessage && hasThinking) {
-				grouped.push(candidate);
-				cursor += 1;
-				continue;
-			}
-
-			break;
-		}
-
-		if (grouped.length === 0) return null;
-		const toolCalls = grouped.flatMap((entry) => entry.toolCalls);
-		const isProvisionalWorkflow =
-			toolCalls.length === 0 && this.currentIsStreaming() && this.keepWorkflowExpandedUntilAssistantText && !this.runHasAssistantText;
-		if (toolCalls.length === 0 && !isProvisionalWorkflow) return null;
-
-		const startedAt = toolCalls.reduce((min, tc) => {
-			if (!tc.startedAt) return min;
-			return min === 0 ? tc.startedAt : Math.min(min, tc.startedAt);
-		}, 0);
-		const endedAt = toolCalls.reduce((max, tc) => {
-			if (!tc.endedAt) return max;
-			return Math.max(max, tc.endedAt);
-		}, 0);
-		const thinkingParts = grouped
-			.map((entry) => this.normalizeThinkingText((entry.thinking ?? "").replace(/^\s+/, "")))
-			.filter(Boolean);
-		const dedupedThinkingParts = thinkingParts.filter((part, index) => index === 0 || part !== thinkingParts[index - 1]);
-		const thinkingText = dedupedThinkingParts.join("\n\n").trim();
-		const finalText = grouped
-			.filter((entry) => entry.toolCalls.length === 0)
-			.map((entry) => entry.text.trim())
-			.filter(Boolean)
-			.join("\n\n");
-		const errorText = grouped
-			.map((entry) => (entry.errorText ?? "").trim())
-			.filter(Boolean)
-			.join("\n");
-		const workflowId = `workflow-${grouped[0]?.id ?? start.id}`;
-
-		const nextIndex = Math.max(startIndex + 1, cursor);
-		return {
-			workflow: {
-				id: workflowId,
-				messages: grouped,
-				toolCalls,
-				toolGroups: this.buildToolCallGroups(toolCalls),
-				thinkingText,
-				finalText,
-				errorText,
-				isStreaming: grouped.some((entry) => entry.isStreaming),
-				startedAt,
-				endedAt,
-				isTerminal: nextIndex >= this.messages.length,
-			},
-			nextIndex,
-		};
+	private collectAssistantWorkflow(startIndex: number): AssistantWorkflowCandidate | null {
+		return collectAssistantWorkflow({
+			messages: this.messages,
+			startIndex,
+			currentIsStreaming: this.currentIsStreaming(),
+			keepWorkflowExpandedUntilAssistantText: this.keepWorkflowExpandedUntilAssistantText,
+			runHasAssistantText: this.runHasAssistantText,
+			truncateText: truncate,
+		});
 	}
 
 	private resolveWorkflowExpansionState(
@@ -5797,395 +4126,90 @@ export class ChatView {
 		autoExpanded: boolean;
 		expanded: boolean;
 	} {
-		const total = toolCalls.length;
-		const running = toolCalls.filter((tc) => tc.isRunning).length;
-		const manualExpanded = this.isToolWorkflowExpanded(workflowId);
-		const autoExpanded = isTerminal && this.keepWorkflowExpandedUntilAssistantText && (running > 0 || this.runSawToolActivity || total === 0);
-		const expanded = (autoExpanded && !this.collapsedAutoWorkflowIds.has(workflowId)) || manualExpanded;
-		return {
-			total,
-			running,
-			autoExpanded,
-			expanded,
-		};
+		return resolveWorkflowExpansionState({
+			workflowId,
+			toolCalls,
+			isTerminal,
+			keepWorkflowExpandedUntilAssistantText: this.keepWorkflowExpandedUntilAssistantText,
+			runSawToolActivity: this.runSawToolActivity,
+			expandedWorkflowIds: this.expandedToolWorkflowIds,
+			collapsedAutoWorkflowIds: this.collapsedAutoWorkflowIds,
+		});
 	}
 
-	private renderAssistantWorkflow(workflow: {
-		id: string;
-		messages: UiMessage[];
-		toolCalls: ToolCallBlock[];
-		toolGroups: ToolCallGroup[];
-		thinkingText: string;
-		finalText: string;
-		errorText: string;
-		isStreaming: boolean;
-		startedAt: number;
-		endedAt: number;
-		isTerminal: boolean;
-	}): TemplateResult {
-		const { total, running, autoExpanded, expanded } = this.resolveWorkflowExpansionState(
-			workflow.id,
-			workflow.toolCalls,
-			workflow.isTerminal,
-		);
-		const failed = workflow.toolCalls.filter((tc) => tc.isError).length;
-		const durationMs =
-			workflow.startedAt > 0
-				? (running > 0 ? Date.now() : Math.max(workflow.endedAt, workflow.startedAt)) - workflow.startedAt
-				: 0;
-		const durationLabel = durationMs > 0 ? formatDuration(durationMs) : "0s";
-		const summaryPrimary = durationLabel;
-		const completed = Math.max(0, total - running - failed);
-		const summaryParts: string[] = [];
-		if (completed > 0) summaryParts.push(`${completed} complete`);
-		if (failed > 0) summaryParts.push(`${failed} failed`);
-		if (running > 0) summaryParts.push(`${running} running`);
-		if (summaryParts.length === 0 && total > 0) summaryParts.push(`${total} complete`);
-		const summarySecondary = summaryParts.join(" · ");
-		const hasFinalContent = Boolean(workflow.finalText || workflow.errorText);
-		type WorkflowDetailEntry =
-			| {
-				kind: "thinking";
-				id: string;
-				text: string;
-				animating: boolean;
-			}
-			| {
-				kind: "group";
-				group: ToolCallGroup;
-			};
-		const detailEntries: WorkflowDetailEntry[] = [];
-		let lastThinkingFull = "";
-		for (const message of workflow.messages) {
-			const normalizedThinking = this.normalizeThinkingText((message.thinking ?? "").replace(/^\s+/, ""));
-			if (normalizedThinking) {
-				let displayThinking = normalizedThinking;
-				if (lastThinkingFull) {
-					if (normalizedThinking.startsWith(lastThinkingFull)) {
-						displayThinking = normalizedThinking.slice(lastThinkingFull.length).replace(/^\s+/, "").trim();
-					} else if (lastThinkingFull.startsWith(normalizedThinking)) {
-						displayThinking = "";
-					}
-				}
-				lastThinkingFull = normalizedThinking;
-
-				const previous = detailEntries[detailEntries.length - 1];
-				if (!displayThinking) {
-					if (previous && previous.kind === "thinking") {
-						previous.animating = previous.animating || Boolean(message.isThinkingStreaming);
-					}
-				} else if (previous && previous.kind === "thinking") {
-					previous.animating = previous.animating || Boolean(message.isThinkingStreaming);
-					if (displayThinking === previous.text || previous.text.startsWith(displayThinking)) {
-						// no-op: duplicate or shorter repeat
-					} else if (displayThinking.startsWith(previous.text)) {
-						previous.text = displayThinking;
-					} else {
-						detailEntries.push({
-							kind: "thinking",
-							id: `${workflow.id}:thinking:${message.id}`,
-							text: displayThinking,
-							animating: Boolean(message.isThinkingStreaming),
-						});
-					}
-				} else {
-					detailEntries.push({
-						kind: "thinking",
-						id: `${workflow.id}:thinking:${message.id}`,
-						text: displayThinking,
-						animating: Boolean(message.isThinkingStreaming),
-					});
-				}
-			}
-
-			for (const toolCall of message.toolCalls) {
-				const preview = this.summarizeToolCall(toolCall);
-				const previous = detailEntries[detailEntries.length - 1];
-				if (previous && previous.kind === "group" && previous.group.toolName === toolCall.name && previous.group.preview === preview) {
-					previous.group.calls.push(toolCall);
-					continue;
-				}
-				detailEntries.push({
-					kind: "group",
-					group: {
-						id: `${toolCall.id}-group`,
-						toolName: toolCall.name,
-						preview,
-						calls: [toolCall],
-					},
-				});
-			}
-		}
-		if (!expanded) {
-			this.expandedToolGroupByWorkflowId.delete(workflow.id);
-			this.clearWorkflowThinkingExpansion(workflow.id);
-		}
-
-		return html`
-			<div class="chat-row assistant-row assistant-workflow-row" data-message-id=${workflow.id}>
-				<div class="message-shell assistant-message-shell">
-					<div class="assistant-block">
-						<button
-							class="tool-workflow-summary"
-							@click=${() => {
-								this.toggleToolWorkflowExpanded(workflow.id, autoExpanded, expanded);
-							}}
-						>
-							<span class="workflow-divider" aria-hidden="true"></span>
-							<span class="workflow-summary-center">
-								<span class="workflow-summary-label">${summaryPrimary}</span>
-								${summarySecondary ? html`<span class="workflow-summary-meta">${summarySecondary}</span>` : nothing}
-								<span class="workflow-summary-caret">${expanded ? "▾" : "▸"}</span>
-							</span>
-							<span class="workflow-divider" aria-hidden="true"></span>
-						</button>
-						${expanded
-							? html`
-								<div class="tool-workflow-list">
-									${detailEntries.map((entry) => {
-										if (entry.kind === "thinking") {
-											const thinkingExpanded = this.isWorkflowThinkingExpanded(entry.id);
-											const thinkingAnimating = running === 0 && entry.animating;
-											return html`
-												<div class="tool-workflow-thinking">
-													<button class="tool-workflow-thinking-toggle ${thinkingAnimating ? "animating" : "done"}" @click=${() => this.toggleWorkflowThinkingExpanded(entry.id)}>
-														${thinkingAnimating ? html`<span class="tool-workflow-inline-pi" aria-hidden="true">${piGlyphIcon()}</span>` : nothing}
-														<span class="tool-workflow-thinking-text">Thinking…</span>
-													</button>
-													${thinkingExpanded ? html`<div class="tool-workflow-thinking-content">${entry.text}</div>` : nothing}
-												</div>
-											`;
-										}
-										const group = entry.group;
-										const count = group.calls.length;
-										const groupRunning = group.calls.some((tc) => tc.isRunning);
-										const groupFailed = group.calls.some((tc) => tc.isError);
-										const groupExpanded = this.isToolGroupExpanded(workflow.id, group.id);
-										const output =
-											[...group.calls]
-												.reverse()
-												.map((call) => (call.streamingOutput ?? call.result ?? "").trim())
-												.find((value) => value.length > 0) ?? "";
-										const statusLabel = groupRunning ? "running" : groupFailed ? "failed" : "success";
-										return html`
-											<div class="tool-workflow-item">
-												<button
-													class="tool-workflow-line ${groupRunning ? "running" : ""}"
-													@click=${() => this.toggleToolGroupExpanded(workflow.id, group.id)}
-												>
-													${groupRunning ? html`<span class="tool-workflow-inline-pi" aria-hidden="true">${piGlyphIcon()}</span>` : nothing}
-													<span class="tool-workflow-line-text ${groupRunning ? "running" : ""}">${this.renderToolPreview(group.preview)}</span>
-													${count > 1 ? html`<span class="tool-workflow-count">×${count}</span>` : nothing}
-												</button>
-												${groupExpanded
-													? html`
-														<div class="tool-workflow-details">
-															<pre class="tool-workflow-output">${output || "No output reported."}${groupRunning ? html`<span class="streaming-inline"></span>` : nothing}</pre>
-															<div class="tool-workflow-detail-meta"><span class="tool-workflow-detail-status ${groupRunning ? "running" : groupFailed ? "error" : "done"}">${statusLabel}</span></div>
-														</div>
-													`
-													: nothing}
-											</div>
-										`;
-									})}
-								</div>
-								${hasFinalContent ? html`<div class="assistant-final-divider"><span>Agent</span></div>` : nothing}
-								${workflow.finalText
-									? html`<div class="assistant-content"><markdown-block .content=${workflow.finalText}></markdown-block></div>`
-									: nothing}
-								${workflow.errorText ? html`<div class="assistant-error-line">${workflow.errorText}</div>` : nothing}
-							`
-							: html`
-								${workflow.finalText
-									? html`<div class="assistant-content workflow-final-collapsed"><markdown-block .content=${workflow.finalText}></markdown-block></div>`
-									: nothing}
-								${workflow.errorText ? html`<div class="assistant-error-line">${workflow.errorText}</div>` : nothing}
-							`}
-					</div>
-				</div>
-			</div>
-		`;
+	private renderAssistantWorkflow(workflow: AssistantWorkflow): TemplateResult {
+		return renderAssistantWorkflowView({
+			workflow,
+			resolveWorkflowExpansionState: (workflowId, toolCalls, isTerminal) =>
+				this.resolveWorkflowExpansionState(workflowId, toolCalls, isTerminal),
+			normalizeThinkingText: (value) => this.normalizeThinkingText(value),
+			summarizeToolCall: (toolCall) => this.summarizeToolCall(toolCall),
+			renderToolPreview: (preview) => this.renderToolPreview(preview),
+			formatDuration,
+			isWorkflowThinkingExpanded: (thinkingId) => this.isWorkflowThinkingExpanded(thinkingId),
+			toggleWorkflowThinkingExpanded: (thinkingId) => this.toggleWorkflowThinkingExpanded(thinkingId),
+			isToolGroupExpanded: (workflowId, groupId) => this.isToolGroupExpanded(workflowId, groupId),
+			toggleToolGroupExpanded: (workflowId, groupId) => this.toggleToolGroupExpanded(workflowId, groupId),
+			toggleToolWorkflowExpanded: (workflowId, autoExpanded, currentlyExpanded) =>
+				this.toggleToolWorkflowExpanded(workflowId, autoExpanded, currentlyExpanded),
+			clearCollapsedWorkflowState: (workflowId) => {
+				this.expandedToolGroupByWorkflowId.delete(workflowId);
+				this.clearWorkflowThinkingExpansion(workflowId);
+			},
+			piGlyphIcon,
+		});
 	}
 
 	private renderMessageTimeline(): TemplateResult[] {
-		const rows: TemplateResult[] = [];
-		const compactionInsertAt = this.compactionCycle
-			? Math.max(0, Math.min(this.compactionInsertIndex ?? this.messages.length, this.messages.length))
-			: null;
-		let compactionInserted = false;
-		const maybeInsertCompaction = (position: number): void => {
-			if (compactionInserted) return;
-			if (compactionInsertAt === null) return;
-			if (position !== compactionInsertAt) return;
-			const row = this.renderCompactionCycle();
-			if (row !== nothing) {
-				rows.push(row as TemplateResult);
-			}
-			compactionInserted = true;
-		};
-
-		for (let index = 0; index < this.messages.length; index += 1) {
-			maybeInsertCompaction(index);
-			const msg = this.messages[index];
-			if (msg.role === "assistant") {
-				const workflowCandidate = this.collectAssistantWorkflow(index);
-				if (workflowCandidate) {
-					rows.push(this.renderAssistantWorkflow(workflowCandidate.workflow));
-					index = workflowCandidate.nextIndex - 1;
-					continue;
-				}
-			}
-			if (msg.role === "user") {
-				rows.push(this.renderUserMessage(msg));
-				continue;
-			}
-			if (msg.role === "assistant") {
-				if (!this.hasRenderableAssistantContent(msg)) {
-					continue;
-				}
-				rows.push(this.renderAssistantMessage(msg));
-				continue;
-			}
-			if (msg.label === "changelog") {
-				rows.push(this.renderChangelogMessage(msg));
-				continue;
-			}
-			rows.push(this.renderSystemMessage(msg));
-		}
-		maybeInsertCompaction(this.messages.length);
-		return rows;
+		return renderMessageTimelineRows({
+			messages: this.messages,
+			compactionCycle: this.compactionCycle,
+			compactionInsertIndex: this.compactionInsertIndex,
+			collectAssistantWorkflow: (index) => this.collectAssistantWorkflow(index),
+			renderAssistantWorkflow: (workflow) => this.renderAssistantWorkflow(workflow),
+			renderUserMessage: (message) => this.renderUserMessage(message),
+			hasRenderableAssistantContent: (message) => this.hasRenderableAssistantContent(message),
+			renderAssistantMessage: (message) => this.renderAssistantMessage(message),
+			renderChangelogMessage: (message) => this.renderChangelogMessage(message),
+			renderSystemMessage: (message) => this.renderSystemMessage(message),
+			renderCompactionCycle: () => this.renderCompactionCycle(),
+		});
 	}
 
 	private renderAssistantMessage(msg: UiMessage): TemplateResult {
-		const trimmedText = msg.text.trim();
-		const errorLine = (msg.errorText ?? "").trim();
-		const standaloneCodeBlock = this.isStandaloneCodeBlockMarkdown(trimmedText);
-		const canCopy = Boolean(errorLine.length > 0 || (trimmedText.length > 0 && !standaloneCodeBlock));
-		const formattedErrorLine = errorLine
-			? (/^error\b[:\s-]*/i.test(errorLine) ? errorLine : `Error: ${errorLine}`)
-			: "";
-
-		return html`
-			<div class="chat-row assistant-row" data-message-id=${msg.id}>
-				<div class="message-shell assistant-message-shell">
-					<div class="assistant-block">
-						${this.renderThinking(msg)}
-						${msg.text
-							? html`
-								<div class="assistant-content">
-									<markdown-block .content=${msg.text}></markdown-block>
-								</div>
-							`
-							: nothing}
-						${formattedErrorLine ? html`<div class="assistant-error-line">${formattedErrorLine}</div>` : nothing}
-					</div>
-					<div class="message-actions">
-						${canCopy
-							? html`<button class="message-action-btn icon" title="Copy message" @click=${() => this.copyMessage(msg)}>${uiIcon("copy")}</button>`
-							: nothing}
-					</div>
-				</div>
-			</div>
-		`;
+		return renderAssistantMessageRow({
+			message: msg,
+			renderThinking: (message) => this.renderThinking(message),
+			isStandaloneCodeBlockMarkdown: (value) => this.isStandaloneCodeBlockMarkdown(value),
+			copyIcon: uiIcon("copy"),
+			onCopyMessage: (message) => this.copyMessage(message),
+		});
 	}
 
 	private renderSystemMessage(msg: UiMessage): TemplateResult {
-		const isInline = msg.label === "share" || msg.label === "auth" || msg.label === "models";
-		return html`
-			<div class="chat-row system-row ${isInline ? "system-row-inline" : ""}" data-message-id=${msg.id}>
-				<div class="system-message ${isInline ? "system-message-inline" : ""}">
-					${msg.label ? html`<div class="system-label ${isInline ? "system-label-inline" : ""}">${msg.label}</div>` : nothing}
-					<div class="system-text ${isInline ? "system-text-inline" : ""}">
-						${msg.renderAsMarkdown ? html`<markdown-block .content=${msg.text}></markdown-block>` : msg.text}
-					</div>
-				</div>
-			</div>
-		`;
+		return renderSystemMessageRow({ message: msg });
 	}
 
 	private renderChangelogMessage(msg: UiMessage): TemplateResult {
-		const expanded = Boolean(msg.collapsibleExpanded);
-		const title = msg.collapsibleTitle?.trim() || "Changelog";
-		return html`
-			<div class="chat-row assistant-row assistant-workflow-row changelog-row" data-message-id=${msg.id}>
-				<div class="message-shell assistant-message-shell">
-					<div class="assistant-block">
-						<div class="changelog-inline">
-							<button
-								class="tool-workflow-line changelog-inline-toggle"
-								@click=${() => {
-									msg.collapsibleExpanded = !expanded;
-									this.render();
-								}}
-							>
-								<span class="tool-workflow-line-text">${title}</span>
-								<span class="tool-workflow-count">${expanded ? "hide" : "show"}</span>
-							</button>
-							${expanded
-								? html`
-									<div class="tool-workflow-details changelog-inline-details">
-										<div class="tool-workflow-output changelog-inline-output">
-											<markdown-block .content=${msg.text}></markdown-block>
-										</div>
-									</div>
-								`
-								: nothing}
-						</div>
-					</div>
-				</div>
-			</div>
-		`;
+		return renderChangelogMessageRow({
+			message: msg,
+			onToggleExpanded: (message, nextExpanded) => {
+				message.collapsibleExpanded = nextExpanded;
+				this.render();
+			},
+		});
 	}
 
 	private renderCompactionCycle(): TemplateResult | typeof nothing {
-		if (!this.compactionCycle) return nothing;
-		const cycle = this.compactionCycle;
-		const completed = cycle.endedAt ?? Date.now();
-		const elapsedSeconds = Math.max(1, Math.round((completed - cycle.startedAt) / 1000));
-		const elapsed = `${elapsedSeconds}s`;
-		const title =
-			cycle.status === "running"
-				? "Compacting context..."
-				: cycle.status === "done"
-					? "Compaction complete"
-					: cycle.status === "error"
-						? "Compaction failed"
-						: "Compaction aborted";
-		const normalizedSummary = cycle.summary.trim().toLowerCase();
-		const showSummaryLine =
-			cycle.status !== "running" &&
-			Boolean(cycle.summary.trim()) &&
-			!(["compaction complete", "compaction failed", "compaction aborted", "compacting context…", "compacting context"] as string[]).includes(normalizedSummary);
-		return html`
-			<div class="chat-row assistant-row assistant-workflow-row compaction-row" data-message-id=${cycle.id}>
-				<div class="message-shell assistant-message-shell">
-					<div class="assistant-block">
-						<div class="compaction-inline">
-							<button
-								class="tool-workflow-line compaction-inline-toggle"
-								@click=${() => {
-									cycle.expanded = !cycle.expanded;
-									this.render();
-								}}
-							>
-								${cycle.status === "running" ? html`<span class="tool-workflow-inline-pi" aria-hidden="true">${piGlyphIcon()}</span>` : nothing}
-								<span class="tool-workflow-line-text ${cycle.status === "running" ? "running" : ""}">${title}</span>
-								<span class="tool-workflow-count">${elapsed}</span>
-							</button>
-							${cycle.expanded
-								? html`
-									<div class="tool-workflow-details compaction-inline-details">
-										${showSummaryLine ? html`<div class="tool-workflow-output compaction-inline-summary">${cycle.summary}</div>` : nothing}
-										${cycle.errorMessage ? html`<div class="tool-workflow-output compaction-inline-error">${cycle.errorMessage}</div>` : nothing}
-										${cycle.details.map((line) => html`<div class="tool-workflow-output compaction-inline-line">${line}</div>`)}
-									</div>
-								`
-								: nothing}
-						</div>
-					</div>
-				</div>
-			</div>
-		`;
+		return renderCompactionCycleRow({
+			cycle: this.compactionCycle,
+			piGlyphIcon,
+			onToggleExpanded: (nextExpanded) => {
+				if (!this.compactionCycle) return;
+				this.compactionCycle.expanded = nextExpanded;
+				this.render();
+			},
+		});
 	}
 
 	private renderBindingState(): TemplateResult {
@@ -6204,83 +4228,6 @@ export class ChatView {
 		return this.renderCenteredWelcome();
 	}
 
-	private async openExternalUrl(url: string): Promise<void> {
-		try {
-			const { open } = await import("@tauri-apps/plugin-shell");
-			await open(url);
-		} catch {
-			window.open(url, "_blank", "noopener,noreferrer");
-		}
-	}
-
-	private async readDirSafe(path: string): Promise<Array<{ name: string; isDirectory: boolean; isFile: boolean; isSymlink: boolean }>> {
-		try {
-			const { exists, readDir } = await import("@tauri-apps/plugin-fs");
-			if (!(await exists(path))) return [];
-			return await readDir(path);
-		} catch {
-			return [];
-		}
-	}
-
-	private async collectSkillNames(skillsRoot: string): Promise<string[]> {
-		const names = new Set<string>();
-		const queue: Array<{ path: string; depth: number }> = [{ path: skillsRoot, depth: 0 }];
-
-		while (queue.length > 0) {
-			const next = queue.shift()!;
-			if (next.depth > 5) continue;
-			const entries = await this.readDirSafe(next.path);
-			for (const entry of entries) {
-				const fullPath = joinFsPath(next.path, entry.name);
-				if (entry.isDirectory) {
-					queue.push({ path: fullPath, depth: next.depth + 1 });
-					continue;
-				}
-				if (entry.isFile && entry.name.toLowerCase() === "skill.md") {
-					const parts = next.path.replace(/\\/g, "/").split("/");
-					names.add(parts[parts.length - 1] || next.path);
-				}
-			}
-		}
-
-		return [...names].sort((a, b) => a.localeCompare(b));
-	}
-
-	private async collectExtensionNames(extensionsRoot: string): Promise<string[]> {
-		const names = new Set<string>();
-		const queue: Array<{ path: string; depth: number }> = [{ path: extensionsRoot, depth: 0 }];
-
-		while (queue.length > 0) {
-			const next = queue.shift()!;
-			if (next.depth > 2) continue;
-			const entries = await this.readDirSafe(next.path);
-			for (const entry of entries) {
-				const fullPath = joinFsPath(next.path, entry.name);
-				if (entry.isDirectory) {
-					if (next.depth > 0) names.add(entry.name);
-					queue.push({ path: fullPath, depth: next.depth + 1 });
-					continue;
-				}
-				if (entry.isFile && entry.name.toLowerCase().endsWith(".json")) {
-					names.add(entry.name.replace(/\.json$/i, ""));
-				}
-			}
-		}
-
-		return [...names].sort((a, b) => a.localeCompare(b));
-	}
-
-	private async collectThemeNames(themesRoot: string): Promise<string[]> {
-		const entries = await this.readDirSafe(themesRoot);
-		const names = entries
-			.filter((entry) => entry.isFile && entry.name.toLowerCase().endsWith(".json"))
-			.map((entry) => entry.name.replace(/\.json$/i, ""))
-			.filter(Boolean)
-			.sort((a, b) => a.localeCompare(b));
-		return names;
-	}
-
 	private async refreshWelcomeDashboard(force = false): Promise<void> {
 		if (this.projectPath) return;
 		if (this.welcomeDashboard.loading) return;
@@ -6294,39 +4241,15 @@ export class ChatView {
 		this.render();
 
 		try {
-			const { homeDir } = await import("@tauri-apps/api/path");
-			const home = await homeDir();
-			const agentRoot = joinFsPath(joinFsPath(home, ".pi"), "agent");
-			const skillsRoot = joinFsPath(agentRoot, "skills");
-			const extensionsRoot = joinFsPath(agentRoot, "extensions");
-			const themesRoot = joinFsPath(agentRoot, "themes");
-
-			const [skills, extensions, themes] = await Promise.all([
-				this.collectSkillNames(skillsRoot),
-				this.collectExtensionNames(extensionsRoot),
-				this.collectThemeNames(themesRoot),
-			]);
-
-			let currentCliVersion: string | null = null;
-			let latestCliVersion: string | null = null;
-			let updateAvailable = false;
-			try {
-				const cliStatus = await rpcBridge.getCliUpdateStatus();
-				currentCliVersion = cliStatus.current_version ?? null;
-				latestCliVersion = cliStatus.latest_version ?? null;
-				updateAvailable = cliStatus.update_available;
-			} catch {
-				// Ignore status fetch errors for welcome state.
-			}
-
+			const inventory = await loadWelcomeDashboardInventory(() => rpcBridge.getCliUpdateStatus());
 			this.welcomeDashboard = {
 				loading: false,
-				skills,
-				extensions,
-				themes,
-				currentCliVersion,
-				latestCliVersion,
-				updateAvailable,
+				skills: inventory.skills,
+				extensions: inventory.extensions,
+				themes: inventory.themes,
+				currentCliVersion: inventory.currentCliVersion,
+				latestCliVersion: inventory.latestCliVersion,
+				updateAvailable: inventory.updateAvailable,
 				error: null,
 				updatedAt: Date.now(),
 			};
@@ -6358,62 +4281,69 @@ export class ChatView {
 		const projectLabel = activeProject?.name ?? (this.projectPath ? this.fileNameFromPath(this.projectPath) : "Add project");
 		const welcomeHeadline = this.welcomeHeadlines[this.welcomeHeadlineIndex] ?? this.welcomeHeadlines[0];
 
-		return html`
-			<div class="welcome-dashboard welcome-dashboard-minimal">
-				<div class="welcome-brand-lockup" aria-hidden="true">
-					<div class="welcome-brand-mark"><img src=${brandIconUrl} alt="Pi Desktop" /></div>
-				</div>
-				<h2>${welcomeHeadline}</h2>
-				<div class="welcome-project-wrap">
-					<button
-						class="welcome-project-trigger ${hasProject ? "active" : ""}"
-						@click=${() => {
-							this.welcomeProjectMenuOpen = !this.welcomeProjectMenuOpen;
-							this.render();
-						}}
-					>
-						<span>${projectLabel}</span>
-						<span class="welcome-project-caret ${this.welcomeProjectMenuOpen ? "open" : ""}">⌄</span>
-					</button>
-					${this.welcomeProjectMenuOpen
-						? html`
-							<div class="welcome-project-menu">
-								${this.welcomeProjects.map((project) => {
-									const isCurrent = project.id === activeProject?.id;
-									return html`
-										<button class="welcome-project-item ${isCurrent ? "current" : ""}" @click=${() => {
-											this.welcomeProjectMenuOpen = false;
-											if (!isCurrent) this.onSelectWelcomeProject?.(project.id);
-										}}>
-											<span>${project.name}</span>
-											<span>${isCurrent ? "✓" : ""}</span>
-										</button>
-									`;
-								})}
-								${this.welcomeProjects.length > 0 ? html`<div class="welcome-project-sep"></div>` : nothing}
-								<button class="welcome-project-item" @click=${() => {
-									this.welcomeProjectMenuOpen = false;
-									this.onAddProject?.();
-								}}>Add new project</button>
-								<div class="welcome-project-sep"></div>
-								<button class="welcome-project-item" @click=${() => {
-									this.welcomeProjectMenuOpen = false;
-									this.onOpenPackages?.();
-								}}>Packages</button>
-								<button class="welcome-project-item" @click=${() => {
-									this.welcomeProjectMenuOpen = false;
-									this.onOpenSettings?.();
-								}}>Settings</button>
-							</div>
-						`
-						: nothing}
-				</div>
-				<div class="welcome-meta-line muted ${this.welcomeProjectMenuOpen ? "hidden" : ""}">
-					${snapshot.loading ? "Refreshing local Pi inventory…" : `${snapshot.skills.length} skills · ${snapshot.extensions.length} extensions · ${snapshot.themes.length} themes`}
-				</div>
-				${snapshot.error ? html`<div class="welcome-error">${snapshot.error}</div>` : nothing}
-			</div>
-		`;
+		return renderCenteredWelcomeView({
+			brandIconUrl,
+			welcomeHeadline,
+			projectLabel,
+			hasProject,
+			projectMenuOpen: this.welcomeProjectMenuOpen,
+			projects: this.welcomeProjects,
+			activeProjectId: activeProject?.id ?? null,
+			snapshot,
+			onToggleProjectMenu: () => {
+				this.welcomeProjectMenuOpen = !this.welcomeProjectMenuOpen;
+				this.render();
+			},
+			onSelectProject: (projectId) => {
+				this.welcomeProjectMenuOpen = false;
+				if (projectId !== activeProject?.id) this.onSelectWelcomeProject?.(projectId);
+			},
+			onAddProject: () => {
+				this.welcomeProjectMenuOpen = false;
+				this.onAddProject?.();
+			},
+			onOpenPackages: () => {
+				this.welcomeProjectMenuOpen = false;
+				this.onOpenPackages?.();
+			},
+			onOpenSettings: () => {
+				this.welcomeProjectMenuOpen = false;
+				this.onOpenSettings?.();
+			},
+		});
+	}
+
+	private async openComposerFilePicker(): Promise<void> {
+		if (this.isComposerInteractionLocked()) return;
+		try {
+			const { open } = await import("@tauri-apps/plugin-dialog");
+			const selected = await open({
+				multiple: true,
+				directory: false,
+				title: "Attach files",
+			});
+			if (selected === null) return;
+			const paths = this.dedupeDroppedPaths(
+				(Array.isArray(selected) ? selected : [selected])
+					.filter((value): value is string => typeof value === "string")
+					.map((value) => value.trim())
+					.filter(Boolean),
+			);
+			if (paths.length === 0) return;
+			const imagePaths = paths.filter((path) => this.isImageName(this.fileNameFromPath(path)));
+			const filePaths = paths.filter((path) => !this.isImageName(this.fileNameFromPath(path)));
+			if (imagePaths.length > 0) {
+				await this.prepareImagesFromPaths(imagePaths, { quietIfNone: true });
+			}
+			if (filePaths.length > 0) {
+				this.appendDroppedPathReferences(filePaths);
+			}
+			return;
+		} catch {
+			// fallback to file input
+		}
+		const input = this.container.querySelector("#file-picker") as HTMLInputElement | null;
+		input?.click();
 	}
 
 	private renderComposerControls(canSend: boolean, isStreaming: boolean, interactionLocked: boolean): TemplateResult {
@@ -6426,420 +4356,62 @@ export class ChatView {
 		const thinkingValue = (this.state?.thinkingLevel ?? "off") as ThinkingLevel;
 		const thinkingLabel = formatThinkingDisplayName(thinkingValue);
 
-		const availableByKey = new Map<string, ModelOption>();
-		for (const model of this.availableModels) {
-			availableByKey.set(`${model.provider}::${model.id}`.toLowerCase(), model);
-		}
-
-		const catalogSeed = this.modelCatalog.length > 0 ? this.modelCatalog : this.availableModels;
-		const combinedByKey = new Map<string, ModelOption>();
-		for (const model of catalogSeed) {
-			const key = `${model.provider}::${model.id}`.toLowerCase();
-			if (!combinedByKey.has(key)) combinedByKey.set(key, model);
-		}
-		for (const model of this.availableModels) {
-			const key = `${model.provider}::${model.id}`.toLowerCase();
-			if (!combinedByKey.has(key)) combinedByKey.set(key, model);
-		}
-
-		if (currentProvider && currentModelId) {
-			const currentKey = `${currentProvider}::${currentModelId}`.toLowerCase();
-			if (!combinedByKey.has(currentKey)) {
-				combinedByKey.set(currentKey, {
-					provider: currentProvider,
-					id: currentModelId,
-					label: `${currentProvider}/${currentModelId}`,
-					reasoning: false,
-				});
-			}
-		}
-
-		const groupedByProvider = new Map<
-			string,
-			{ providerKey: string; providerLabel: string; models: Array<ModelOption & { selectable: boolean }> }
-		>();
-		for (const model of combinedByKey.values()) {
-			const providerKey = model.provider;
-			const modelKey = `${model.provider}::${model.id}`.toLowerCase();
-			const selectable = availableByKey.has(modelKey) || (model.provider === currentProvider && model.id === currentModelId);
-			const existing = groupedByProvider.get(providerKey);
-			if (existing) {
-				existing.models.push({ ...model, selectable });
-			} else {
-				groupedByProvider.set(providerKey, {
-					providerKey,
-					providerLabel: this.displayProviderLabel(providerKey),
-					models: [{ ...model, selectable }],
-				});
-			}
-		}
-		for (const provider of this.providerAuthById.keys()) {
-			if (groupedByProvider.has(provider)) continue;
-			groupedByProvider.set(provider, {
-				providerKey: provider,
-				providerLabel: this.displayProviderLabel(provider),
-				models: [],
-			});
-		}
-		for (const provider of this.oauthProviderCatalog.keys()) {
-			if (groupedByProvider.has(provider)) continue;
-			groupedByProvider.set(provider, {
-				providerKey: provider,
-				providerLabel: this.displayProviderLabel(provider),
-				models: [],
-			});
-		}
-		for (const provider of DEFAULT_OAUTH_PROVIDER_IDS) {
-			if (groupedByProvider.has(provider)) continue;
-			groupedByProvider.set(provider, {
-				providerKey: provider,
-				providerLabel: this.displayProviderLabel(provider),
-				models: [],
-			});
-		}
-		for (const forcedLoggedOutProvider of this.providerAuthForcedLoggedOut) {
-			if (groupedByProvider.has(forcedLoggedOutProvider)) continue;
-			groupedByProvider.set(forcedLoggedOutProvider, {
-				providerKey: forcedLoggedOutProvider,
-				providerLabel: this.displayProviderLabel(forcedLoggedOutProvider),
-				models: [],
-			});
-		}
-
-		const providerGroups = Array.from(groupedByProvider.values())
-			.map((group) => {
-				const authKey = this.providerKey(group.providerKey);
-				const hasSelectableModel = group.models.some((model) => model.selectable);
-				const authInfo = this.providerAuthById.get(authKey);
-				const forcedLoggedOut = this.providerAuthForcedLoggedOut.has(authKey);
-				const isOAuthProvider = this.isOAuthProviderId(authKey);
-				const authConfigured = !forcedLoggedOut && (this.providerAuthConfigured.has(authKey) || (!isOAuthProvider && hasSelectableModel));
-				const authSource = forcedLoggedOut
-					? "missing"
-					: (authInfo?.source ?? (!isOAuthProvider && hasSelectableModel ? "runtime" : "missing"));
-				return {
-					...group,
-					authConfigured,
-					authSource,
-					authKind: authInfo?.kind ?? "unknown",
-					isDefaultOAuthProvider: isOAuthProvider,
-					models: [...group.models].sort((a, b) =>
-						formatModelDisplayName(a.id).localeCompare(formatModelDisplayName(b.id), undefined, { sensitivity: "base" }),
-					),
-				};
-			})
-			.sort((a, b) => a.providerLabel.localeCompare(b.providerLabel, undefined, { sensitivity: "base" }));
-
-		const resolvedActiveProvider = providerGroups.some((g) => g.providerKey === this.modelPickerActiveProvider)
-			? this.modelPickerActiveProvider
-			: providerGroups.some((g) => g.providerKey === currentProvider)
-				? currentProvider
-				: (providerGroups[0]?.providerKey ?? "");
+		const providerGroups = buildModelPickerProviderGroups({
+			availableModels: this.availableModels,
+			modelCatalog: this.modelCatalog,
+			currentProvider,
+			currentModelId,
+			providerAuthById: this.providerAuthById,
+			providerAuthConfigured: this.providerAuthConfigured,
+			providerAuthForcedLoggedOut: this.providerAuthForcedLoggedOut,
+			oauthProviderCatalog: this.oauthProviderCatalog,
+			getProviderLabel: (provider) => this.displayProviderLabel(provider),
+		});
+		const resolvedActiveProvider = resolveActiveModelPickerProvider(
+			providerGroups,
+			this.modelPickerActiveProvider,
+			currentProvider,
+		);
 		const activeProviderGroup = providerGroups.find((group) => group.providerKey === resolvedActiveProvider) ?? null;
 
-		return html`
-			<div class="composer-controls">
-				<div class="control-group">
-					<button
-						class="composer-icon-btn"
-						title="Attach file"
-						?disabled=${interactionLocked}
-						@click=${() => {
-							if (interactionLocked) return;
-							const input = this.container.querySelector("#file-picker") as HTMLInputElement | null;
-							input?.click();
-						}}
-					>
-						${uiIcon("attach")}
-					</button>
-
-					<div
-						class="model-picker-root"
-						@keydown=${(event: KeyboardEvent) => {
-							if (event.key !== "Escape") return;
-							event.preventDefault();
-							this.modelPickerOpen = false;
-							this.render();
-							requestAnimationFrame(() => {
-								const textarea = this.container.querySelector("#chat-input") as HTMLTextAreaElement | null;
-								textarea?.focus();
-							});
-						}}
-						@focusout=${(event: FocusEvent) => {
-							const next = event.relatedTarget as Node | null;
-							const root = event.currentTarget as HTMLElement;
-							if (next && root.contains(next)) return;
-							if (!this.modelPickerOpen) return;
-							this.modelPickerOpen = false;
-							this.render();
-						}}
-					>
-						<button
-							type="button"
-							class="model-picker-trigger"
-							title=${currentModelTitle}
-							?disabled=${interactionLocked || this.settingModel}
-							@click=${() => {
-								if (interactionLocked || this.settingModel) return;
-								if (!this.loadingModels && this.availableModels.length === 0) {
-									void this.loadAvailableModels();
-								}
-								if (!this.loadingProviderAuth) {
-									void this.loadProviderAuthStatus();
-								}
-								if (!this.oauthProviderCatalogLoading) {
-									void this.loadOAuthProviderCatalog();
-								}
-								if (!this.loadingModelCatalog && this.modelCatalog.length === 0) {
-									void this.loadModelCatalog();
-								}
-								if (this.modelPickerOpen) {
-									this.modelPickerOpen = false;
-									this.render();
-									return;
-								}
-								if (resolvedActiveProvider) this.modelPickerActiveProvider = resolvedActiveProvider;
-								this.modelPickerOpen = true;
-								this.render();
-							}}
-						>
-							<span class="model-picker-trigger-label">${currentProviderDisplay ? `${currentModelDisplay} · ${currentProviderDisplay}` : currentModelDisplay}</span>
-							<span class="composer-select-caret">▾</span>
-						</button>
-
-						${this.modelPickerOpen
-							? html`
-								<div class="model-picker-popover" role="listbox" aria-label="Available models">
-									${providerGroups.length === 0
-										? html`<div class="model-picker-empty">${this.loadingModels || this.loadingModelCatalog ? "Loading models…" : "No models available"}</div>`
-										: html`
-											<div class="model-picker-providers">
-												${providerGroups.map((group) => {
-													const authKey = this.providerKey(group.providerKey);
-													const isActionBusy = this.runningProviderAuthAction?.provider === authKey;
-													const canLogout = group.authConfigured && group.authSource !== "environment";
-													const action = canLogout ? ("logout" as const) : ("login" as const);
-													const actionLabel = group.authConfigured
-														? group.authSource === "environment"
-															? "Env"
-															: "Logout"
-														: "Login";
-													const actionDisabled =
-														interactionLocked ||
-														this.settingModel ||
-														isActionBusy ||
-														(group.authConfigured && group.authSource === "environment");
-													const actionTitle = group.authConfigured
-														? group.authSource === "environment"
-															? "Configured from environment variable"
-															: `Logout from ${group.providerLabel}`
-														: group.isDefaultOAuthProvider
-															? `Open terminal login for ${group.providerLabel} (starts /login automatically)`
-															: `Set up ${group.providerLabel}`;
-													return html`
-														<div class="model-picker-provider-row ${group.providerKey === resolvedActiveProvider ? "active" : ""} ${group.authConfigured ? "" : "unauth"}">
-															<button
-																type="button"
-																class="model-picker-provider ${group.providerKey === resolvedActiveProvider ? "active" : ""} ${group.authConfigured ? "" : "unauth"}"
-																title=${group.authConfigured ? `${group.providerLabel} connected` : `${group.providerLabel} needs setup`}
-																@mouseenter=${() => {
-																	if (this.modelPickerActiveProvider === group.providerKey) return;
-																	this.modelPickerActiveProvider = group.providerKey;
-																	this.render();
-																}}
-																@focus=${() => {
-																	if (this.modelPickerActiveProvider === group.providerKey) return;
-																	this.modelPickerActiveProvider = group.providerKey;
-																	this.render();
-																}}
-																@click=${() => {
-																	if (this.modelPickerActiveProvider === group.providerKey) return;
-																	this.modelPickerActiveProvider = group.providerKey;
-																	this.render();
-																}}
-															>
-																<span class="model-picker-provider-label">${group.providerLabel}</span>
-															</button>
-															<button
-																type="button"
-																class="model-picker-provider-auth ${group.authConfigured ? "connected" : ""} ${isActionBusy ? "busy" : ""}"
-																title=${actionTitle}
-																?disabled=${actionDisabled}
-																@click=${(event: MouseEvent) => {
-																	event.preventDefault();
-																	event.stopPropagation();
-																	if (actionDisabled) return;
-																	void this.handleProviderAuthAction(group.providerKey, action);
-																}}
-															>
-																${isActionBusy ? "…" : actionLabel}
-															</button>
-														</div>
-													`;
-												})}
-											</div>
-											<div class="model-picker-models">
-												${activeProviderGroup
-													? html`
-														${activeProviderGroup.models.length === 0
-															? html`
-																<div class="model-picker-auth-hint">
-																	${activeProviderGroup.authConfigured
-																		? activeProviderGroup.isDefaultOAuthProvider
-																			? "Connected, but no models are available right now. Try /reload after login changes."
-																			: "Connected, but no models are loaded for this provider. Install/enable its package in Packages, then run /reload."
-																		: activeProviderGroup.isDefaultOAuthProvider
-																								? "Not connected yet. Click Login to open terminal and start /login automatically."
-																								: "Not connected yet. Use Login to set up this provider."}
-																</div>
-															`
-															: html`
-																${!activeProviderGroup.authConfigured
-																	? html`<div class="model-picker-auth-hint">${activeProviderGroup.isDefaultOAuthProvider
-																							? "Not connected yet. Click Login to open terminal and start /login automatically."
-																							: "Not connected yet. Use Login to set up this provider."}</div>`
-																	: nothing}
-																${activeProviderGroup.models.map((model) => {
-																	const nextValue = `${model.provider}::${model.id}`;
-																	const isActive = model.provider === currentProvider && model.id === currentModelId;
-																	const isDisabled = !model.selectable || !activeProviderGroup.authConfigured;
-																	return html`
-																		<button
-																			type="button"
-																			class="model-picker-model ${isActive ? "active" : ""} ${isDisabled ? "disabled" : ""}"
-																			title=${isDisabled
-																				? `${formatProviderDisplayName(model.provider)} / ${model.id} (setup required)`
-																				: `${formatProviderDisplayName(model.provider)} / ${model.id}`}
-																			?disabled=${interactionLocked || this.settingModel || isDisabled}
-																			@click=${() => {
-																				if (isDisabled) return;
-																				this.modelPickerOpen = false;
-																				this.render();
-																				if (nextValue === currentModelValue) return;
-																				void this.setModel(model.provider, model.id);
-																			}}
-																		>
-																			<span>${formatModelDisplayName(model.id)}</span>
-																		</button>
-																	`;
-																})}
-															`}
-													`
-													: html`<div class="model-picker-empty">No models</div>`}
-											</div>
-										`}
-								</div>
-							`
-							: nothing}
-					</div>
-
-					<div class="thinking-select-wrap" title="Reasoning effort · Shift+Tab to cycle">
-						<span class="thinking-select-label">${thinkingLabel}</span>
-						<select
-							class="thinking-select-native"
-							.value=${thinkingValue}
-							?disabled=${interactionLocked || this.settingThinking}
-							@change=${(e: Event) => void this.setThinkingLevel((e.target as HTMLSelectElement).value as ThinkingLevel)}
-						>
-							<option value="off">off</option>
-							<option value="minimal">minimal</option>
-							<option value="low">low</option>
-							<option value="medium">medium</option>
-							<option value="high">high</option>
-							<option value="xhigh">xhigh</option>
-						</select>
-						<span class="thinking-select-caret">▾</span>
-					</div>
-				</div>
-
-				<div class="control-group right">
-					${isStreaming
-						? html`
-							<button
-								class="send-btn stop-btn"
-								title="Stop generation"
-								?disabled=${interactionLocked}
-								@click=${() => {
-									if (interactionLocked) return;
-									void this.abortCurrentRun();
-								}}
-							>
-								${uiIcon("stop")}
-							</button>
-						`
-						: this.sendingPrompt
-							? html`
-								<button class="send-btn pending-send" title="Sending" disabled>
-									${uiIcon("spinner")}
-								</button>
-							`
-							: html`
-								<button
-									class="send-btn primary-send"
-									?disabled=${interactionLocked || !canSend}
-									title="Send (Enter) · Queue while streaming (Alt+Enter)"
-									@click=${() => {
-										if (interactionLocked) return;
-										void this.sendMessage("prompt");
-									}}
-								>
-									${uiIcon("send")}
-								</button>
-							`}
-				</div>
-			</div>
-		`;
+		return renderComposerControlsView({
+			canSend,
+			isStreaming,
+			interactionLocked,
+			sendingPrompt: this.sendingPrompt,
+			settingModel: this.settingModel,
+			settingThinking: this.settingThinking,
+			thinkingValue,
+			thinkingLabel,
+			currentProvider,
+			currentModelId,
+			currentModelValue,
+			currentModelTitle,
+			currentModelDisplay,
+			currentProviderDisplay,
+			modelPickerOpen: this.modelPickerOpen,
+			loadingModels: this.loadingModels,
+			loadingModelCatalog: this.loadingModelCatalog,
+			providerGroups,
+			activeProviderGroup,
+			resolvedActiveProvider,
+			runningProviderAuthActionProvider: this.runningProviderAuthAction?.provider ?? null,
+			attachIcon: uiIcon("attach"),
+			stopIcon: uiIcon("stop"),
+			spinnerIcon: uiIcon("spinner"),
+			sendIcon: uiIcon("send"),
+			onAttachFile: () => this.openComposerFilePicker(),
+			onCloseModelPicker: (options) => this.closeModelPicker(options),
+			onToggleModelPicker: (preferredProvider) => this.toggleModelPicker(preferredProvider),
+			onSetModelPickerActiveProvider: (provider) => this.setModelPickerActiveProvider(provider),
+			onProviderAuthAction: (provider, action) => this.handleProviderAuthAction(provider, action),
+			onSelectModel: (provider, modelId) => this.setModel(provider, modelId),
+			onSetThinkingLevel: (value) => this.setThinkingLevel(value),
+			onAbort: () => this.abortCurrentRun(),
+			onSend: () => this.sendMessage("prompt"),
+		});
 	}
 
-	private renderQueuedComposerMessages(): TemplateResult | typeof nothing {
-		if (this.queuedComposerMessages.length === 0) return nothing;
-		const recent = this.queuedComposerMessages.slice(-2);
-		return html`
-			<div class="composer-queued-row" aria-live="polite">
-				${recent.map(
-					(entry) => html`
-						<div class="composer-queued-pill" title=${entry.text}>
-							<span class="composer-queued-label">Queued</span>
-							<span class="composer-queued-text">${truncate(entry.text.replace(/\s+/g, " "), 72)}</span>
-							${entry.imageCount > 0 ? html`<span class="composer-queued-meta">+${entry.imageCount} image${entry.imageCount === 1 ? "" : "s"}</span>` : nothing}
-						</div>
-					`,
-				)}
-			</div>
-		`;
-	}
-
-	private renderPendingImages(): TemplateResult | typeof nothing {
-		if (this.pendingImages.length === 0) return nothing;
-		return html`
-			<div class="composer-attachments">
-				${this.pendingImages.map(
-					(img) => html`
-						<div class="composer-attachment">
-							<img src=${img.previewUrl} alt=${img.name} />
-							<div class="composer-attachment-meta">
-								<div>${truncate(img.name, 18)}</div>
-								<div>${Math.max(1, Math.round(img.size / 1024))} KB</div>
-							</div>
-							<button @click=${() => this.removePendingImage(img.id)}>✕</button>
-						</div>
-					`,
-				)}
-			</div>
-		`;
-	}
-
-	private renderComposerSkillDraftPill(): TemplateResult | typeof nothing {
-		const draft = this.selectedSkillDraft;
-		if (!draft) return nothing;
-		return html`
-			<div class="composer-skill-draft-pill inline">
-				<span class="composer-skill-draft-icon" aria-hidden="true">${skillGlyphIcon()}</span>
-				<span class="composer-skill-draft-name">${draft.name}</span>
-				<button class="composer-skill-draft-remove" title="Remove skill" @click=${() => this.removeComposerSkillDraft()}>✕</button>
-			</div>
-		`;
-	}
 
 	private ensureActiveSlashItemVisible(): void {
 		if (!this.slashPaletteOpen || this.slashPaletteNavigationMode !== "keyboard") return;
@@ -6855,63 +4427,126 @@ export class ChatView {
 		});
 	}
 
+	private handleSlashPaletteMouseMove(event: MouseEvent): void {
+		if (this.slashPaletteNavigationMode === "keyboard") {
+			const moved = Math.abs(event.movementX) + Math.abs(event.movementY) > 0;
+			if (!moved) return;
+			this.slashPaletteNavigationMode = "pointer";
+		}
+		const target = event.target instanceof Element ? (event.target.closest(".composer-slash-item") as HTMLElement | null) : null;
+		if (!target) return;
+		const indexRaw = target.dataset.index;
+		if (!indexRaw) return;
+		const index = Number(indexRaw);
+		if (!Number.isFinite(index)) return;
+		if (this.slashPaletteIndex !== index) {
+			this.slashPaletteIndex = index;
+			this.render();
+		}
+	}
+
 	private renderSlashPalette(items: SlashPaletteItem[]): TemplateResult | typeof nothing {
-		if (!this.slashPaletteOpen) return nothing;
-		if (this.slashCommandsLoading && items.length === 0) {
-			return html`<div class="composer-slash-menu"><div class="composer-slash-empty">Loading commands…</div></div>`;
-		}
-		if (items.length === 0) {
-			return html`<div class="composer-slash-menu"><div class="composer-slash-empty">No commands match “/${this.slashPaletteQuery}”.</div></div>`;
-		}
-		const activeIndex = Math.max(0, Math.min(this.slashPaletteIndex, items.length - 1));
-		let currentSection: SlashPaletteSection | null = null;
-		return html`
-			<div
-				class="composer-slash-menu ${this.slashPaletteNavigationMode === "keyboard" ? "keyboard-nav" : ""}"
-				@mousemove=${(event: MouseEvent) => {
-					if (this.slashPaletteNavigationMode === "keyboard") {
-						const moved = Math.abs(event.movementX) + Math.abs(event.movementY) > 0;
-						if (!moved) return;
-						this.slashPaletteNavigationMode = "pointer";
-					}
-					const target = event.target instanceof Element ? event.target.closest(".composer-slash-item") as HTMLElement | null : null;
-					if (!target) return;
-					const indexRaw = target.dataset.index;
-					if (!indexRaw) return;
-					const index = Number(indexRaw);
-					if (!Number.isFinite(index)) return;
-					if (this.slashPaletteIndex !== index) {
-						this.slashPaletteIndex = index;
-						this.render();
-					}
-				}}
-			>
-				${items.map((item, index) => {
-					const sectionChanged = item.section !== currentSection;
-					currentSection = item.section;
-					return html`
-						${sectionChanged ? html`<div class="composer-slash-section">${item.section}</div>` : nothing}
-						<button
-							class="composer-slash-item ${index === activeIndex ? "active" : ""}"
-							data-index=${String(index)}
-							@click=${() => this.selectSlashPaletteItem(item)}
-						>
-							<span class="composer-slash-item-main">
-								<span class="composer-slash-item-label">${item.label}</span>
-								<span class="composer-slash-item-hint">${item.hint}</span>
-							</span>
-						</button>
-					`;
-				})}
-			</div>
-		`;
+		return renderSlashPaletteView({
+			open: this.slashPaletteOpen,
+			loading: this.slashCommandsLoading,
+			query: this.slashPaletteQuery,
+			items,
+			activeIndex: this.slashPaletteIndex,
+			navigationMode: this.slashPaletteNavigationMode,
+			onMouseMove: (event) => this.handleSlashPaletteMouseMove(event),
+			onSelect: (item) => this.selectSlashPaletteItem(item),
+		});
+	}
+
+	private setSessionStatsHover(next: boolean): void {
+		if (this.sessionStatsHover === next) return;
+		this.sessionStatsHover = next;
+		this.render();
+	}
+
+	private handleComposerInput(event: Event, interactionLocked: boolean): void {
+		handleComposerInputEvent({
+			event,
+			interactionLocked,
+			slashPaletteOpenBefore: this.slashPaletteOpen,
+			onSetInputText: (text) => {
+				this.inputText = text;
+			},
+			onResetComposerHistoryNavigation: () => this.resetComposerHistoryNavigation(),
+			onUpdateSlashPaletteStateFromInput: () => this.updateSlashPaletteStateFromInput(),
+			onIsSlashPaletteOpen: () => this.slashPaletteOpen,
+			onRender: () => this.render(),
+		});
+	}
+
+	private handleComposerPaste(event: ClipboardEvent, interactionLocked: boolean): void {
+		handleComposerPasteEvent({
+			event,
+			interactionLocked,
+			onPrepareImages: (files) => this.prepareImages(files),
+		});
+	}
+
+	private handleComposerDragOver(event: DragEvent, interactionLocked: boolean): void {
+		handleComposerDragOverEvent({ event, interactionLocked });
+	}
+
+	private handleComposerDrop(event: DragEvent, interactionLocked: boolean): void {
+		handleComposerDropEvent({
+			event,
+			interactionLocked,
+			onHandleDroppedDataTransfer: (dataTransfer) => this.handleDroppedDataTransfer(dataTransfer),
+		});
+	}
+
+	private handleComposerKeyDown(event: KeyboardEvent, interactionLocked: boolean, isStreaming: boolean): void {
+		handleComposerKeyDownEvent({
+			event,
+			interactionLocked,
+			isStreaming,
+			modelPickerOpen: this.modelPickerOpen,
+			inputText: this.inputText,
+			hasSelectedSkillDraft: Boolean(this.selectedSkillDraft),
+			slashPaletteOpen: this.slashPaletteOpen,
+			composerHistoryIndex: this.composerHistoryIndex,
+			onCloseModelPicker: () => this.closeModelPicker(),
+			onRemoveSelectedSkillDraft: () => this.removeComposerSkillDraft(),
+			onCycleThinkingLevel: (step) => this.cycleThinkingLevel(step),
+			shouldHandleComposerHistoryKey: (ev, textarea, direction) => this.shouldHandleComposerHistoryKey(ev, textarea, direction),
+			onNavigateComposerHistory: (direction) => this.navigateComposerHistory(direction),
+			getSlashPaletteItems: () => this.getSlashPaletteItems(),
+			onSetSlashPaletteNavigationMode: (mode) => {
+				this.slashPaletteNavigationMode = mode;
+			},
+			getSlashPaletteIndex: () => this.slashPaletteIndex,
+			onSetSlashPaletteIndex: (index) => {
+				this.slashPaletteIndex = index;
+			},
+			onPreviewSlashPaletteItem: (item) => this.previewSlashPaletteItem(item),
+			onRender: () => this.render(),
+			onEnsureActiveSlashItemVisible: () => this.ensureActiveSlashItemVisible(),
+			onCloseSlashPalette: () => this.closeSlashPalette(),
+			slashQueryFromInput: () => this.slashQueryFromInput(),
+			onExecuteSlashCommandFromComposer: () => this.executeSlashCommandFromComposer(),
+			onSendMessage: (mode) => this.sendMessage(mode),
+		});
+	}
+
+	private handleComposerFilePickerChange(event: Event, interactionLocked: boolean): void {
+		handleComposerFilePickerChangeEvent({
+			event,
+			interactionLocked,
+			onPrepareFiles: (files) => this.prepareComposerFiles(files),
+		});
 	}
 
 	private renderComposer(): TemplateResult {
 		const isStreaming = this.currentIsStreaming();
 		const interactionLocked = this.isComposerInteractionLocked();
 		const slashItems = this.getSlashPaletteItems();
-		const canSendBase = !interactionLocked && (this.inputText.trim().length > 0 || this.pendingImages.length > 0 || Boolean(this.selectedSkillDraft));
+		const canSendBase =
+			!interactionLocked &&
+			(this.inputText.trim().length > 0 || this.pendingImages.length > 0 || this.pendingFileReferences.length > 0 || Boolean(this.selectedSkillDraft));
 		const canSend = canSendBase;
 		if (slashItems.length > 0 && this.slashPaletteIndex >= slashItems.length) {
 			this.slashPaletteIndex = slashItems.length - 1;
@@ -6927,130 +4562,26 @@ export class ChatView {
 		return html`
 			<div class="composer-shell">
 				<div class="composer-inner">
-					${this.renderQueuedComposerMessages()}
+					${renderQueuedComposerMessagesView(this.queuedComposerMessages, truncate)}
 					<div class="composer-panel">
-						${this.renderPendingImages()}
 						<div class="composer-row">
-							${this.renderComposerSkillDraftPill()}
+							${renderComposerSkillDraftPillView(this.selectedSkillDraft, skillGlyphIcon(), () => this.removeComposerSkillDraft())}
+							${renderPendingImagesView(this.pendingImages, truncate, (id) => this.removePendingImage(id))}
+							${renderPendingFileReferencesView(this.pendingFileReferences, truncate, (id) => this.removePendingFileReference(id))}
 							<textarea
 								id="chat-input"
 								class="chat-input"
+								draggable="false"
 								placeholder=${interactionLocked ? (connectivityStatus || "Session not ready…") : "Describe the next change — type / for commands"}
 								rows="1"
 								?disabled=${interactionLocked}
 								.value=${this.inputText}
-								@input=${(e: Event) => {
-									if (interactionLocked) return;
-									const ta = e.target as HTMLTextAreaElement;
-									const hadSlashPalette = this.slashPaletteOpen;
-									this.inputText = ta.value;
-									this.resetComposerHistoryNavigation();
-									this.updateSlashPaletteStateFromInput();
-									ta.style.height = "auto";
-									ta.style.height = `${Math.min(ta.scrollHeight, 220)}px`;
-									if (this.slashPaletteOpen || hadSlashPalette) {
-										this.render();
-									}
-								}}
-								@paste=${(e: ClipboardEvent) => {
-									if (interactionLocked) {
-										e.preventDefault();
-										return;
-									}
-									const items = Array.from(e.clipboardData?.items || []);
-									const files = items
-										.filter((item) => item.type.startsWith("image/"))
-										.map((item) => item.getAsFile())
-										.filter((f): f is File => Boolean(f));
-									if (files.length > 0) {
-										e.preventDefault();
-										void this.prepareImages(files);
-									}
-								}}
-								@dragover=${(e: DragEvent) => {
-									e.preventDefault();
-									if (e.dataTransfer) e.dataTransfer.dropEffect = interactionLocked ? "none" : "copy";
-								}}
-								@drop=${(e: DragEvent) => {
-									e.preventDefault();
-									if (interactionLocked) return;
-									this.handleDroppedDataTransfer(e.dataTransfer ?? null);
-								}}
-								@keydown=${(e: KeyboardEvent) => {
-									if (interactionLocked) return;
-									if (e.key === "Escape" && this.modelPickerOpen) {
-										e.preventDefault();
-										this.modelPickerOpen = false;
-										this.render();
-										return;
-									}
-									if ((e.key === "Backspace" || e.key === "Delete") && this.inputText.length === 0 && this.selectedSkillDraft) {
-										e.preventDefault();
-										this.removeComposerSkillDraft();
-										return;
-									}
-									if (e.key === "Tab" && e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey) {
-										e.preventDefault();
-										void this.cycleThinkingLevel(1);
-										return;
-									}
-									const textarea = e.currentTarget as HTMLTextAreaElement;
-									const canHistoryUp = e.key === "ArrowUp" && this.shouldHandleComposerHistoryKey(e, textarea, "up");
-									const canHistoryDown = e.key === "ArrowDown" && this.shouldHandleComposerHistoryKey(e, textarea, "down");
-									const historyBrowsing = this.composerHistoryIndex >= 0;
-									if (canHistoryUp && (historyBrowsing || !this.slashPaletteOpen)) {
-										e.preventDefault();
-										this.navigateComposerHistory("up");
-										return;
-									}
-									if (canHistoryDown && historyBrowsing) {
-										e.preventDefault();
-										this.navigateComposerHistory("down");
-										return;
-									}
-									const liveSlashItems = this.getSlashPaletteItems();
-									if (this.slashPaletteOpen && liveSlashItems.length > 0) {
-										if (e.key === "ArrowDown") {
-											e.preventDefault();
-											this.slashPaletteNavigationMode = "keyboard";
-											this.slashPaletteIndex = (this.slashPaletteIndex + 1) % liveSlashItems.length;
-											const item = liveSlashItems[this.slashPaletteIndex];
-											if (item) this.previewSlashPaletteItem(item);
-											this.render();
-											this.ensureActiveSlashItemVisible();
-											return;
-										}
-										if (e.key === "ArrowUp") {
-											e.preventDefault();
-											this.slashPaletteNavigationMode = "keyboard";
-											this.slashPaletteIndex = (this.slashPaletteIndex - 1 + liveSlashItems.length) % liveSlashItems.length;
-											const item = liveSlashItems[this.slashPaletteIndex];
-											if (item) this.previewSlashPaletteItem(item);
-											this.render();
-											this.ensureActiveSlashItemVisible();
-											return;
-										}
-									}
-									if (this.slashPaletteOpen && e.key === "Escape") {
-										e.preventDefault();
-										this.closeSlashPalette();
-										this.render();
-										return;
-									}
-									if (e.key === "Enter" && !e.shiftKey) {
-										e.preventDefault();
-										if (!this.selectedSkillDraft && this.slashQueryFromInput() !== null) {
-											void this.executeSlashCommandFromComposer();
-											return;
-										}
-										if (e.altKey) {
-											void this.sendMessage("followUp");
-										} else {
-											const mode = isStreaming ? "steer" : "prompt";
-											void this.sendMessage(mode);
-										}
-									}
-								}}
+								@input=${(event: Event) => this.handleComposerInput(event, interactionLocked)}
+								@paste=${(event: ClipboardEvent) => this.handleComposerPaste(event, interactionLocked)}
+								@dragstart=${(event: DragEvent) => event.preventDefault()}
+								@dragover=${(event: DragEvent) => this.handleComposerDragOver(event, interactionLocked)}
+								@drop=${(event: DragEvent) => this.handleComposerDrop(event, interactionLocked)}
+								@keydown=${(event: KeyboardEvent) => this.handleComposerKeyDown(event, interactionLocked, isStreaming)}
 							></textarea>
 						</div>
 						${this.renderSlashPalette(slashItems)}
@@ -7059,483 +4590,30 @@ export class ChatView {
 
 					<div class="composer-under-row">
 						${this.renderGitRepoControl()}
-						<div class="composer-stats-slot">
-							<div
-								class="session-stats-wrap"
-								@mouseenter=${() => {
-									this.sessionStatsHover = true;
-									this.render();
-								}}
-								@mouseleave=${() => {
-									this.sessionStatsHover = false;
-									this.render();
-								}}
-							>
-								<div class="session-stats-inline">
-									<button
-										type="button"
-										class="session-stats-ring ${this.refreshingSessionStats ? "loading" : ""}"
-										aria-label=${this.sessionStatsTooltip()}
-									>
-										<svg viewBox="0 0 24 24" aria-hidden="true">
-											<circle class="session-stats-ring-track" cx="12" cy="12" r=${ringRadius}></circle>
-											<circle
-												class="session-stats-ring-progress"
-												cx="12"
-												cy="12"
-												r=${ringRadius}
-												style=${`stroke-dasharray:${circumference};stroke-dashoffset:${strokeOffset};`}
-											></circle>
-										</svg>
-									</button>
-									<span class="session-stats-percent">${ratioPercent}</span>
-								</div>
-								${this.sessionStatsHover
-									? html`
-										<div class="session-stats-popover">
-											${statsLines.length > 0
-												? statsLines.map((line) => html`<div>${line}</div>`)
-												: html`<div>Session stats unavailable</div>`}
-										</div>
-									`
-									: nothing}
-							</div>
-						</div>
+						${renderComposerStatsView({
+							hover: this.sessionStatsHover,
+							refreshing: this.refreshingSessionStats,
+							tooltip: this.sessionStatsTooltip(),
+							ratioPercent,
+							ringRadius,
+							circumference,
+							strokeOffset,
+							statsLines,
+							onMouseEnter: () => this.setSessionStatsHover(true),
+							onMouseLeave: () => this.setSessionStatsHover(false),
+						})}
 					</div>
 
 					<input
 						id="file-picker"
 						type="file"
-						accept="image/*"
 						multiple
 						style="display:none"
-						@change=${(e: Event) => {
-							if (interactionLocked) {
-								(e.target as HTMLInputElement).value = "";
-								return;
-							}
-							const files = (e.target as HTMLInputElement).files;
-							if (files?.length) void this.prepareImages(files);
-							(e.target as HTMLInputElement).value = "";
-						}}
+						@change=${(event: Event) => this.handleComposerFilePickerChange(event, interactionLocked)}
 					/>
 				</div>
 			</div>
 		`;
-	}
-
-	private renderForkPicker(): TemplateResult | typeof nothing {
-		if (!this.forkPickerOpen) return nothing;
-		return html`
-			<div class="overlay" @click=${(e: Event) => e.target === e.currentTarget && this.closeForkPicker()}>
-				<div class="overlay-card">
-					<div class="overlay-header">
-						<div>Fork from earlier user message</div>
-						<button @click=${() => this.closeForkPicker()}>✕</button>
-					</div>
-					<div class="overlay-body">
-						${this.openingForkPicker
-							? html`<div class="overlay-empty">Loading…</div>`
-							: this.forkOptions.length === 0
-								? html`<div class="overlay-empty">No fork points available.</div>`
-								: this.forkOptions.map(
-									(option) => html`
-										<button class="fork-option" @click=${() => this.forkFrom(option.entryId)}>
-											${truncate(option.text.replace(/\s+/g, " "), 140)}
-										</button>
-									`,
-								)}
-					</div>
-				</div>
-			</div>
-		`;
-	}
-
-	private buildForkTimelineRows(source: UiMessage[]): ForkTimelineRow[] {
-		const rows: ForkTimelineRow[] = [];
-		let latestAssistantRow: ForkTimelineRow | null = null;
-		for (let i = 0; i < source.length; i++) {
-			const msg = source[i];
-			if (!msg) continue;
-			if (msg.role === "user") {
-				rows.push({ main: msg, sourceIndex: i, thinkingSnippets: [], tools: [] });
-				latestAssistantRow = null;
-				continue;
-			}
-			if (msg.role !== "assistant") continue;
-
-			const text = msg.text.trim();
-			const thinking = (msg.thinking ?? "").trim();
-			const tools = msg.toolCalls ?? [];
-			if (text) {
-				const row: ForkTimelineRow = {
-					main: msg,
-					sourceIndex: i,
-					thinkingSnippets: thinking ? [thinking] : [],
-					tools: [...tools],
-				};
-				rows.push(row);
-				latestAssistantRow = row;
-				continue;
-			}
-
-			if (!thinking && tools.length === 0) continue;
-			if (!latestAssistantRow) {
-				latestAssistantRow = {
-					main: msg,
-					sourceIndex: i,
-					thinkingSnippets: [],
-					tools: [],
-				};
-				rows.push(latestAssistantRow);
-			}
-			if (thinking) latestAssistantRow.thinkingSnippets.push(thinking);
-			if (tools.length > 0) latestAssistantRow.tools.push(...tools);
-		}
-		return rows;
-	}
-
-	private forkRowKey(row: ForkTimelineRow): string {
-		const base = row.main.sessionEntryId ?? row.main.id;
-		return `${base}:${row.sourceIndex}`;
-	}
-
-	private toggleForkMessageExpanded(rowKey: string): void {
-		if (this.forkExpandedMessageRows.has(rowKey)) {
-			this.forkExpandedMessageRows.delete(rowKey);
-		} else {
-			this.forkExpandedMessageRows.add(rowKey);
-		}
-		this.render();
-	}
-
-	private toggleForkToolsExpanded(rowKey: string): void {
-		if (this.forkExpandedToolRows.has(rowKey)) {
-			this.forkExpandedToolRows.delete(rowKey);
-		} else {
-			this.forkExpandedToolRows.add(rowKey);
-		}
-		this.render();
-	}
-
-	private forkRowPreview(row: ForkTimelineRow): string {
-		const normalized = this.messagePreview(row.main).replace(/\s+/g, " ").trim();
-		if (normalized && normalized !== "(empty message)") return normalized;
-		if (row.main.role === "assistant" && (row.thinkingSnippets.length > 0 || row.tools.length > 0)) {
-			return "assistant activity";
-		}
-		return normalized || "(empty message)";
-	}
-
-	private resolveForkEntryId(messages: UiMessage[], index: number): string | null {
-		const current = messages[index];
-		if (!current) return null;
-		if (current.role === "user") {
-			return this.forkEntryIdByMessageId.get(current.id) ?? current.sessionEntryId ?? null;
-		}
-		for (let i = index; i >= 0; i--) {
-			const candidate = messages[i];
-			if (!candidate || candidate.role !== "user") continue;
-			const entryId = this.forkEntryIdByMessageId.get(candidate.id) ?? candidate.sessionEntryId;
-			if (entryId) return entryId;
-		}
-		return null;
-	}
-
-	private roleFromSessionEntry(roleRaw: string): UiRole {
-		const normalized = roleRaw.trim().toLowerCase();
-		if (normalized === "user") return "user";
-		if (normalized === "assistant") return "assistant";
-		if (normalized === "custom" || normalized === "custom_message") return "custom";
-		return "system";
-	}
-
-	private mapSessionTreeEntry(
-		record: Record<string, unknown>,
-		index: number,
-		labelsByTargetId: Map<string, string>,
-	): SessionTreeEntryRecord | null {
-		const type = typeof record.type === "string" ? record.type.trim() : "";
-		if (!type || type === "session" || type === "label") return null;
-
-		const id = typeof record.id === "string" ? record.id.trim() : "";
-		if (!id) return null;
-
-		const parentRaw = record.parentId;
-		const parentId = typeof parentRaw === "string" && parentRaw.trim().length > 0 ? parentRaw.trim() : null;
-		let role: UiRole = "system";
-		let entryLabel = type.replace(/_/g, " ");
-		let preview = "";
-		let displayText = "";
-		let canFork = false;
-
-		switch (type) {
-			case "message": {
-				const message = record.message;
-				const messageRecord = message && typeof message === "object" ? (message as Record<string, unknown>) : null;
-				const messageRoleRaw = typeof messageRecord?.role === "string" ? messageRecord.role.trim() : "system";
-				const messageRole = messageRoleRaw.toLowerCase();
-
-				if (messageRole === "user") {
-					role = "user";
-					entryLabel = "user";
-					preview = this.extractText(messageRecord?.content).replace(/\s+/g, " ").trim() || "(empty message)";
-					displayText = `user: ${preview}`;
-					canFork = true;
-					break;
-				}
-
-				if (messageRole === "assistant") {
-					role = "assistant";
-					entryLabel = "assistant";
-					const contentPreview = this.extractText(messageRecord?.content).replace(/\s+/g, " ").trim();
-					const stopReason = pickString(messageRecord ?? {}, ["stopReason", "stop_reason"]) ?? "";
-					const errorMessage = pickString(messageRecord ?? {}, ["errorMessage", "error_message"]) ?? "";
-					preview = contentPreview || (stopReason === "aborted" ? "(aborted)" : errorMessage || "(no content)");
-					displayText = `assistant: ${preview}`;
-					break;
-				}
-
-				if (messageRole === "toolresult") {
-					role = "system";
-					entryLabel = "tool";
-					const toolName = pickString(messageRecord ?? {}, ["toolName", "tool_name"]) ?? "tool";
-					const toolOutputRaw = this.extractToolOutput(messageRecord?.content ?? messageRecord?.result ?? messageRecord ?? {});
-					preview = toolOutputRaw.replace(/\s+/g, " ").trim() || "(no output)";
-					displayText = `[${toolName}: ${truncate(preview, 120)}]`;
-					break;
-				}
-
-				if (messageRole === "bashexecution") {
-					role = "system";
-					entryLabel = "bash";
-					const command = pickString(messageRecord ?? {}, ["command"]) ?? "bash";
-					preview = command;
-					displayText = `[bash: ${truncate(command.replace(/\s+/g, " ").trim(), 120)}]`;
-					break;
-				}
-
-				role = this.roleFromSessionEntry(messageRoleRaw);
-				entryLabel = messageRoleRaw || "message";
-				preview = this.extractText(messageRecord?.content).replace(/\s+/g, " ").trim() || `(${entryLabel})`;
-				displayText = `[${entryLabel}]: ${preview}`;
-				break;
-			}
-			case "custom_message": {
-				role = "custom";
-				const customType = pickString(record, ["customType", "custom_type"]) ?? "custom";
-				entryLabel = customType;
-				preview = this.extractText(record.content).replace(/\s+/g, " ").trim() || "(empty)";
-				displayText = `[${customType}]: ${preview}`;
-				break;
-			}
-			case "branch_summary": {
-				role = "system";
-				entryLabel = "branch summary";
-				preview = (pickString(record, ["summary"]) ?? this.extractText(record.content)).replace(/\s+/g, " ").trim() || "(empty)";
-				displayText = `[branch summary]: ${truncate(preview, 180)}`;
-				break;
-			}
-			case "compaction": {
-				role = "system";
-				entryLabel = "compaction";
-				const tokensBefore = pickNumber(record, ["tokensBefore", "tokens_before"]);
-				preview = (pickString(record, ["summary"]) ?? "compaction entry").replace(/\s+/g, " ").trim();
-				const tokensBadge = typeof tokensBefore === "number" && Number.isFinite(tokensBefore) ? `${Math.max(1, Math.round(tokensBefore / 1000))}k tokens` : "summary";
-				displayText = `[compaction: ${tokensBadge}] ${truncate(preview, 160)}`;
-				break;
-			}
-			case "thinking_level_change": {
-				role = "system";
-				entryLabel = "thinking";
-				const level = pickString(record, ["thinkingLevel", "thinking_level"]) ?? "updated";
-				preview = level;
-				displayText = `[thinking: ${level}]`;
-				break;
-			}
-			case "model_change": {
-				role = "system";
-				entryLabel = "model";
-				const provider = pickString(record, ["provider"]) ?? "provider";
-				const modelId = pickString(record, ["modelId", "model_id"]) ?? "model";
-				preview = `${provider}/${modelId}`;
-				displayText = `[model: ${preview}]`;
-				break;
-			}
-			case "session_info": {
-				role = "system";
-				entryLabel = "title";
-				preview = pickString(record, ["name"]) ?? "(untitled)";
-				displayText = `[title: ${preview}]`;
-				break;
-			}
-			case "custom": {
-				role = "custom";
-				const customType = pickString(record, ["customType", "custom_type"]) ?? "custom";
-				entryLabel = customType;
-				preview = this.extractText(record.data).replace(/\s+/g, " ").trim() || "custom entry";
-				displayText = `[custom: ${customType}] ${truncate(preview, 140)}`;
-				break;
-			}
-			default: {
-				role = "system";
-				preview = this.extractText(record.content).replace(/\s+/g, " ").trim() || entryLabel;
-				displayText = `[${entryLabel}]: ${truncate(preview, 160)}`;
-				break;
-			}
-		}
-
-		const resolvedLabel = labelsByTargetId.get(id);
-		if (resolvedLabel) {
-			entryLabel = `${entryLabel} · ${resolvedLabel}`;
-			displayText = `[${resolvedLabel}] ${displayText}`;
-		}
-		const normalizedPreview = preview.replace(/\s+/g, " ").trim();
-		const normalizedDisplayText = displayText.replace(/\s+/g, " ").trim();
-
-		return {
-			id,
-			parentId,
-			type,
-			index,
-			role,
-			entryLabel,
-			preview: normalizedPreview || `(${entryLabel})`,
-			displayText: normalizedDisplayText || `${entryLabel}: ${normalizedPreview || "(empty)"}`,
-			canFork,
-		};
-	}
-
-	private resolveCurrentTreeLeafId(entriesById: Map<string, SessionTreeEntryRecord>, entries: SessionTreeEntryRecord[]): string | null {
-		for (let i = this.messages.length - 1; i >= 0; i--) {
-			const entryId = this.messages[i]?.sessionEntryId;
-			if (entryId && entriesById.has(entryId)) return entryId;
-		}
-		for (let i = entries.length - 1; i >= 0; i--) {
-			const entry = entries[i];
-			if (!entry) continue;
-			if (entriesById.has(entry.id)) return entry.id;
-		}
-		return null;
-	}
-
-	private compactTreeLinePrefix(prefix: string, depth: number): string {
-		const normalized = prefix ?? "";
-		if (!normalized) return "";
-		const maxVisibleDepth = 14;
-		if (depth <= maxVisibleDepth) return normalized;
-		const charsPerLevel = 3;
-		const tail = normalized.slice(Math.max(0, normalized.length - maxVisibleDepth * charsPerLevel));
-		return `… ${tail}`;
-	}
-
-	private parseSessionTreeRows(sessionContent: string): HistoryTreeRow[] {
-		const rawRecords: Array<{ record: Record<string, unknown>; index: number }> = [];
-		const lines = sessionContent.split(/\r?\n/);
-		for (const line of lines) {
-			const trimmed = line.trim();
-			if (!trimmed) continue;
-			let parsed: unknown;
-			try {
-				parsed = JSON.parse(trimmed);
-			} catch {
-				continue;
-			}
-			if (!parsed || typeof parsed !== "object") continue;
-			rawRecords.push({
-				record: parsed as Record<string, unknown>,
-				index: rawRecords.length,
-			});
-		}
-
-		if (rawRecords.length === 0) return [];
-
-		const labelsByTargetId = new Map<string, string>();
-		for (const { record } of rawRecords) {
-			if (record.type !== "label") continue;
-			const targetId = typeof record.targetId === "string" ? record.targetId.trim() : "";
-			if (!targetId) continue;
-			const label = typeof record.label === "string" ? record.label.trim() : "";
-			if (!label) {
-				labelsByTargetId.delete(targetId);
-			} else {
-				labelsByTargetId.set(targetId, label);
-			}
-		}
-
-		const entries: SessionTreeEntryRecord[] = rawRecords
-			.map(({ record, index }) => this.mapSessionTreeEntry(record, index, labelsByTargetId))
-			.filter((entry): entry is SessionTreeEntryRecord => Boolean(entry));
-
-		if (entries.length === 0) return [];
-
-		const entriesById = new Map<string, SessionTreeEntryRecord>();
-		for (const entry of entries) {
-			entriesById.set(entry.id, entry);
-		}
-
-		const childrenByParent = new Map<string, SessionTreeEntryRecord[]>();
-		const roots: SessionTreeEntryRecord[] = [];
-		for (const entry of entries) {
-			const parentId = entry.parentId && entriesById.has(entry.parentId) ? entry.parentId : null;
-			if (!parentId) {
-				roots.push(entry);
-				continue;
-			}
-			const bucket = childrenByParent.get(parentId) ?? [];
-			bucket.push(entry);
-			childrenByParent.set(parentId, bucket);
-		}
-		const byIndex = (a: SessionTreeEntryRecord, b: SessionTreeEntryRecord): number => a.index - b.index;
-		roots.sort(byIndex);
-		for (const bucket of childrenByParent.values()) {
-			bucket.sort(byIndex);
-		}
-
-		const currentLeafId = this.resolveCurrentTreeLeafId(entriesById, entries);
-		const activePath = new Set<string>();
-		let cursor = currentLeafId;
-		while (cursor && entriesById.has(cursor)) {
-			if (activePath.has(cursor)) break;
-			activePath.add(cursor);
-			const parentId = entriesById.get(cursor)?.parentId ?? null;
-			cursor = parentId && entriesById.has(parentId) ? parentId : null;
-		}
-
-		const rows: HistoryTreeRow[] = [];
-		const buildPrefix = (ancestorHasNext: boolean[], isLast: boolean, depth: number): string => {
-			const parts: string[] = ancestorHasNext.map((hasNext) => (hasNext ? "│  " : "   "));
-			if (depth > 0) {
-				parts.push(isLast ? "└─ " : "├─ ");
-			}
-			return parts.join("");
-		};
-		const visit = (entry: SessionTreeEntryRecord, depth: number, ancestorHasNext: boolean[], isLast: boolean): void => {
-			rows.push({
-				entryId: entry.id,
-				depth,
-				role: entry.role,
-				entryLabel: entry.entryLabel,
-				preview: entry.preview,
-				displayText: entry.displayText,
-				linePrefix: buildPrefix(ancestorHasNext, isLast, depth),
-				onActivePath: activePath.has(entry.id),
-				canFork: entry.canFork,
-			});
-			const children = childrenByParent.get(entry.id) ?? [];
-			const nextAncestorHasNext = [...ancestorHasNext, !isLast];
-			for (let i = 0; i < children.length; i += 1) {
-				const child = children[i];
-				if (!child) continue;
-				visit(child, depth + 1, nextAncestorHasNext, i === children.length - 1);
-			}
-		};
-		for (let i = 0; i < roots.length; i += 1) {
-			const root = roots[i];
-			if (!root) continue;
-			visit(root, 0, [], i === roots.length - 1);
-		}
-		return rows;
 	}
 
 	private async loadSessionTreeForHistory(): Promise<void> {
@@ -7555,7 +4633,15 @@ export class ChatView {
 		try {
 			const content = await rpcBridge.getSessionContent(sessionPath);
 			if (requestId !== this.historyTreeRequestSeq || this.historyViewerMode !== "browse" || !this.historyViewerOpen) return;
-			this.historyTreeRows = this.parseSessionTreeRows(content);
+			this.historyTreeRows = parseSessionTreeRows({
+				sessionContent: content,
+				currentSessionEntryIds: this.messages.map((message) => message.sessionEntryId ?? "").filter((id) => id.length > 0),
+				extractText: (value) => this.extractText(value),
+				extractToolOutput: (value) => this.extractToolOutput(value),
+				truncateText: truncate,
+				pickString,
+				pickNumber,
+			});
 		} catch (err) {
 			if (requestId !== this.historyTreeRequestSeq || this.historyViewerMode !== "browse" || !this.historyViewerOpen) return;
 			console.error("Failed to load session tree:", err);
@@ -7568,158 +4654,32 @@ export class ChatView {
 	}
 
 	private renderHistoryViewer(): TemplateResult | typeof nothing {
-		if (!this.historyViewerOpen) return nothing;
-
-		const forkMode = this.historyViewerMode === "fork";
-		const query = this.historyQuery.trim().toLowerCase();
-		const sourceMessages: UiMessage[] = this.messages;
-		const sessionMessageIdByEntryId = new Map<string, string>();
-		for (const message of this.messages) {
-			if (!message.sessionEntryId) continue;
-			if (sessionMessageIdByEntryId.has(message.sessionEntryId)) continue;
-			sessionMessageIdByEntryId.set(message.sessionEntryId, message.id);
-		}
-
-		const filteredForkOptions: ForkOption[] = forkMode
-			? this.forkOptions.filter((option) => {
-				if (!query) return true;
-				const haystack = option.text.toLowerCase();
-				return haystack.includes(query);
-			})
-			: [];
-		const useTreeRows = !forkMode && this.historyTreeRows.length > 0;
-		const filteredTreeRows: HistoryTreeRow[] = forkMode
-			? []
-			: this.historyTreeRows.filter((row) => {
-				if (this.historyRoleFilter !== "all" && row.role !== this.historyRoleFilter) return false;
-				if (!query) return true;
-				const haystack = `${row.role} ${row.entryLabel} ${row.preview} ${row.displayText} ${row.entryId}`.toLowerCase();
-				return haystack.includes(query);
-			});
-		const filteredBrowseRows: Array<{ msg: UiMessage; sourceIndex: number }> = forkMode || useTreeRows
-			? []
-			: sourceMessages
-				.map((msg, sourceIndex) => ({ msg, sourceIndex }))
-				.filter(({ msg }) => {
-					if (this.historyRoleFilter !== "all" && msg.role !== this.historyRoleFilter) return false;
-					if (!query) return true;
-					const haystack = `${msg.role} ${msg.label || ""} ${this.messagePreview(msg)}`.toLowerCase();
-					return haystack.includes(query);
-				});
-
-		const hasNoRows = forkMode ? filteredForkOptions.length === 0 : useTreeRows ? filteredTreeRows.length === 0 : filteredBrowseRows.length === 0;
-
-		return html`
-			<div class="overlay" @click=${(e: Event) => e.target === e.currentTarget && this.closeHistoryViewer()}>
-				<div class="overlay-card history-card ${forkMode ? "fork-mode" : ""}">
-					<div class="overlay-header">
-						<div>
-							<div>${forkMode ? "Fork from message" : "Session tree"}</div>
-							${forkMode
-								? html`<div class="history-subtitle">${this.historyViewerSessionLabel || "Current session"}</div>`
-								: nothing}
-						</div>
-						<button @click=${() => this.closeHistoryViewer()}>✕</button>
-					</div>
-					<div class="history-controls ${forkMode ? "fork" : ""}">
-						<input
-							type="text"
-							placeholder=${forkMode ? "Search user messages" : "Search tree entries"}
-							.value=${this.historyQuery}
-							@input=${(e: Event) => {
-								this.historyQuery = (e.target as HTMLInputElement).value;
-								this.render();
-							}}
-						/>
-						${forkMode
-							? nothing
-							: html`
-								<select
-									class="settings-select"
-									.value=${this.historyRoleFilter}
-									@change=${(e: Event) => {
-										this.historyRoleFilter = (e.target as HTMLSelectElement).value as UiRole | "all";
-										this.render();
-									}}
-								>
-									<option value="all">all roles</option>
-									<option value="user">user</option>
-									<option value="assistant">assistant</option>
-									<option value="system">system</option>
-									<option value="custom">custom</option>
-								</select>
-							`}
-					</div>
-					<div class="overlay-body history-list ${forkMode ? "fork-history-list" : ""}">
-						${this.historyViewerLoading
-							? html`<div class="overlay-empty">Loading session history…</div>`
-							: hasNoRows
-								? html`<div class="overlay-empty">${forkMode ? "No messages available for forking." : "No session entries match your filters."}</div>`
-								: forkMode
-									? filteredForkOptions.map((option, idx) => {
-											const preview = truncate(option.text.replace(/\s+/g, " ").trim(), 240);
-											return html`
-												<div class="history-item fork-user-row">
-													<div class="history-item-main">
-														<button class="history-jump" @click=${() => void this.forkFrom(option.entryId)} title="Fork from this user message">
-															<div class="history-meta">
-																<span class="history-role role-user">user</span>
-																<span>#${idx + 1}</span>
-															</div>
-															<div class="history-preview">${preview}</div>
-														</button>
-														<button class="history-fork-btn" @click=${() => void this.forkFrom(option.entryId)} title="Fork from this user message">Fork</button>
-													</div>
-												</div>
-											`;
-									  })
-									: useTreeRows
-										? filteredTreeRows.map((row, idx) => {
-												const visibleMessageId = sessionMessageIdByEntryId.get(row.entryId) ?? null;
-												const canJump = Boolean(visibleMessageId);
-												const title = canJump ? "Jump to this entry" : "Entry is outside the active branch";
-												const compactPrefix = this.compactTreeLinePrefix(row.linePrefix, row.depth);
-												const rowText = row.displayText.trim() || row.preview || "(entry)";
-												const lineText = `${compactPrefix}${row.onActivePath ? "• " : "  "}${truncate(rowText, 320)}`;
-												const lineBody = html`<span class="history-tree-line-mono role-${row.role}">${lineText}</span>`;
-												return html`
-													<div class="history-tree-line-row ${row.onActivePath ? "on-path" : "off-path"}">
-														${canJump && visibleMessageId
-															? html`<button class="history-tree-line ${row.onActivePath ? "on-path" : ""}" @click=${() => this.revealMessage(visibleMessageId)} title=${title}>${lineBody}</button>`
-															: html`<div class="history-tree-line static" title=${title}>${lineBody}</div>`}
-														<div class="history-tree-line-actions">
-															<span class="history-tree-index">#${idx + 1}</span>
-															${row.canFork
-																? html`<button class="history-fork-btn" @click=${() => void this.forkFrom(row.entryId)} title="Fork from this user message">Fork</button>`
-																: nothing}
-														</div>
-													</div>
-												`;
-									  })
-										: filteredBrowseRows.map(({ msg, sourceIndex }, idx: number) => {
-												const forkEntryId = this.resolveForkEntryId(sourceMessages, sourceIndex);
-												const canFork = Boolean(forkEntryId) && (msg.role === "user" || msg.role === "assistant");
-												return html`
-													<div class="history-item">
-														<div class="history-item-main">
-															<button class="history-jump" @click=${() => this.revealMessage(msg.id)}>
-																<div class="history-meta">
-																	<span class="history-role role-${msg.role}">${msg.role}</span>
-																	<span>#${idx + 1}</span>
-																</div>
-																<div class="history-preview">${truncate(this.messagePreview(msg).replace(/\s+/g, " "), 200)}</div>
-															</button>
-															${canFork && forkEntryId
-																? html`<button class="history-fork-btn" @click=${() => void this.forkFrom(forkEntryId)} title=${msg.role === "assistant" ? "Fork from preceding user message" : "Fork from this user message"}>Fork</button>`
-																: nothing}
-														</div>
-													</div>
-												`;
-									  })}
-					</div>
-				</div>
-			</div>
-		`;
+		return renderHistoryViewerView<UiMessage>({
+			historyViewerOpen: this.historyViewerOpen,
+			historyViewerMode: this.historyViewerMode,
+			historyViewerLoading: this.historyViewerLoading,
+			historyViewerSessionLabel: this.historyViewerSessionLabel,
+			historyQuery: this.historyQuery,
+			historyRoleFilter: this.historyRoleFilter,
+			messages: this.messages,
+			historyTreeRows: this.historyTreeRows,
+			forkOptions: this.forkOptions,
+			messagePreview: (message) => this.messagePreview(message),
+			resolveForkEntryId: (messages, index) => resolveForkEntryId(messages, index, this.forkEntryIdByMessageId),
+			onClose: () => this.closeHistoryViewer(),
+			onQueryChange: (value) => {
+				this.historyQuery = value;
+				this.render();
+			},
+			onRoleFilterChange: (role) => {
+				this.historyRoleFilter = role;
+				this.render();
+			},
+			onJumpToMessage: (messageId) => this.revealMessage(messageId),
+			onForkFromEntry: (entryId) => void this.forkFrom(entryId),
+			compactTreeLinePrefix,
+			truncateText: truncate,
+		});
 	}
 
 	private doRender(): void {
@@ -7770,6 +4730,7 @@ export class ChatView {
 					if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
 				}}
 				@drop=${(e: DragEvent) => {
+					if (e.defaultPrevented) return;
 					e.preventDefault();
 					if (!hasProject) return;
 					this.handleDroppedDataTransfer(e.dataTransfer ?? null);
@@ -7786,7 +4747,6 @@ export class ChatView {
 					${showWorkingIndicator ? this.renderWorkingIndicatorRow() : nothing}
 				</div>
 				${hasProject ? this.renderComposer() : nothing}
-				${hasProject ? this.renderForkPicker() : nothing}
 				${hasProject ? this.renderHistoryViewer() : nothing}
 				${hasProject ? this.renderJumpToLatest() : nothing}
 				${this.renderNotices()}
@@ -7834,7 +4794,6 @@ export class ChatView {
 	}
 
 	focusInput(): void {
-		const ta = this.container.querySelector("#chat-input") as HTMLTextAreaElement | null;
-		ta?.focus();
+		this.getComposerTextarea()?.focus();
 	}
 }
