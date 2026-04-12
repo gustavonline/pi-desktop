@@ -871,14 +871,6 @@ export class SettingsPanel {
 			this.compatibilityReport = null;
 			this.authLoading = false;
 			this.compatibilityLoading = false;
-			this.desktopStatus = null;
-			this.cliStatus = null;
-			this.desktopLoading = false;
-			this.cliLoading = false;
-			this.themeCatalogLoading = false;
-			this.themeCatalogError = "";
-			this.themeCatalogMessage = "";
-			this.availableThemes = [];
 			this.scopedModelsLoading = false;
 			this.scopedModelsSaving = false;
 			this.scopedModelsError = "";
@@ -909,19 +901,20 @@ export class SettingsPanel {
 			// ignore missing persisted settings
 		}
 
-		if (!runtimeReady) {
-			this.applyAppearanceProfileForCurrentResolvedTheme(false);
-			return;
-		}
-
-		await Promise.all([
+		const refreshTasks: Promise<void>[] = [
 			this.refreshDesktopStatus(),
 			this.refreshCliStatus(),
 			this.refreshThemeCatalog(),
-			this.refreshAccountStatus(),
-			this.refreshCompatibilityStatus(),
-			this.refreshScopedModels(),
-		]);
+		];
+		if (runtimeReady) {
+			refreshTasks.push(
+				this.refreshAccountStatus(),
+				this.refreshCompatibilityStatus(),
+				this.refreshScopedModels(),
+			);
+		}
+
+		await Promise.all(refreshTasks);
 		this.applyAppearanceProfileForCurrentResolvedTheme(false);
 	}
 
@@ -1993,12 +1986,11 @@ export class SettingsPanel {
 								${this.cliStatus?.note ? html`<div class="settings-desc">${this.cliStatus.note}</div>` : null}
 							`}
 						<div class="settings-actions">
-							<button class="ghost-btn" ?disabled=${this.cliLoading || !runtimeControlsEnabled} @click=${() => this.refreshCliStatus()}>Refresh CLI status</button>
+							<button class="ghost-btn" ?disabled=${this.cliLoading} @click=${() => this.refreshCliStatus()}>Refresh CLI status</button>
 							<button
 								class="ghost-btn"
 								?disabled=${
 									this.cliUpdating ||
-									!runtimeControlsEnabled ||
 									!this.cliStatus?.can_update_in_app ||
 									!this.cliStatus?.npm_available ||
 									!this.cliStatus?.update_available
