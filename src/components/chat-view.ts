@@ -952,6 +952,21 @@ export class ChatView {
 		return normalizeProviderKeyValue(provider);
 	}
 
+	private isUnknownRuntimeModel(provider: string, modelId: string): boolean {
+		const providerKey = this.providerKey(provider);
+		const modelKey = normalizeText(modelId).toLowerCase();
+		return providerKey === "unknown" && (modelKey.length === 0 || modelKey === "unknown");
+	}
+
+	private currentModelSelection(state: RpcSessionState | null | undefined = this.state): { provider: string; modelId: string } {
+		const provider = normalizeText(state?.model?.provider);
+		const modelId = normalizeText(state?.model?.id);
+		if (this.isUnknownRuntimeModel(provider, modelId)) {
+			return { provider: "", modelId: "" };
+		}
+		return { provider, modelId };
+	}
+
 	private isOAuthProviderId(provider: string): boolean {
 		return isOAuthProviderIdInCatalog(provider, this.oauthProviderCatalog);
 	}
@@ -1337,7 +1352,7 @@ export class ChatView {
 			this.modelPickerActiveProvider = preferred;
 		}
 		if (!this.modelPickerActiveProvider) {
-			const currentProvider = normalizeText(this.state?.model?.provider);
+			const currentProvider = this.currentModelSelection().provider;
 			if (currentProvider) {
 				this.modelPickerActiveProvider = currentProvider;
 			}
@@ -1786,8 +1801,7 @@ export class ChatView {
 	}
 
 	private thinkingLevelModelKey(state: RpcSessionState | null | undefined = this.state): string {
-		const provider = state?.model?.provider?.trim() ?? "";
-		const modelId = state?.model?.id?.trim() ?? "";
+		const { provider, modelId } = this.currentModelSelection(state);
 		if (!provider || !modelId) return "";
 		return `${provider}::${modelId}`;
 	}
@@ -1883,8 +1897,7 @@ export class ChatView {
 				: null;
 		if (stateWindow && stateWindow > 0) return stateWindow;
 
-		const provider = this.state?.model?.provider ?? "";
-		const modelId = this.state?.model?.id ?? "";
+		const { provider, modelId } = this.currentModelSelection();
 		if (provider && modelId) {
 			const fromCatalog = this.availableModels.find((m) => m.provider === provider && m.id === modelId)?.contextWindow;
 			if (typeof fromCatalog === "number" && Number.isFinite(fromCatalog) && fromCatalog > 0) {
@@ -4347,8 +4360,7 @@ export class ChatView {
 	}
 
 	private renderComposerControls(canSend: boolean, isStreaming: boolean, interactionLocked: boolean): TemplateResult {
-		const currentProvider = normalizeText(this.state?.model?.provider);
-		const currentModelId = normalizeText(this.state?.model?.id);
+		const { provider: currentProvider, modelId: currentModelId } = this.currentModelSelection();
 		const currentModelValue = currentProvider && currentModelId ? `${currentProvider}::${currentModelId}` : "";
 		const currentModelDisplay = currentModelId ? formatModelDisplayName(currentModelId) : "Select model";
 		const currentProviderDisplay = currentProvider ? this.displayProviderLabel(currentProvider) : "";

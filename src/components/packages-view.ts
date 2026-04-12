@@ -745,6 +745,21 @@ export class PackagesView {
 		}
 	}
 
+	private updateBundledThemeInstallStateFromResources(resources: DiscoveredThemeItem[]): void {
+		const bundledResources = resources.filter((item) => isBundledThemeId(item.id));
+		if (bundledResources.length === 0) return;
+		this.desktopThemesInstalledCount = Math.max(this.desktopThemesInstalledCount, bundledResources.length);
+		if (!this.desktopThemesRootPath) {
+			const samplePath = bundledResources[0]?.path ?? "";
+			if (samplePath) {
+				this.desktopThemesRootPath = pathDirName(samplePath);
+			}
+		}
+		if (bundledResources.length >= this.desktopThemesTotal) {
+			this.desktopThemesInstalled = true;
+		}
+	}
+
 	private async openExternal(url: string): Promise<void> {
 		try {
 			const { open } = await import("@tauri-apps/plugin-shell");
@@ -1327,6 +1342,7 @@ export class PackagesView {
 				globalThemes,
 				(item) => `${item.id}:${normalizeFsPath(item.path)}`,
 			).sort((a, b) => a.name.localeCompare(b.name));
+			this.updateBundledThemeInstallStateFromResources(this.themeResources);
 		} catch (err) {
 			this.promptTemplateResources = [];
 			this.skillResources = [];
