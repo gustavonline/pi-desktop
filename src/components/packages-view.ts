@@ -2908,20 +2908,52 @@ export class PackagesView {
 		return normalized === ".git" || normalized === "node_modules";
 	}
 
+	private async copyFilePreservingMode(sourcePath: string, targetPath: string): Promise<void> {
+		const { readFile, writeFile, stat } = await import("@tauri-apps/plugin-fs");
+		const data = await readFile(sourcePath);
+		let mode: number | undefined;
+		try {
+			const sourceInfo = await stat(sourcePath);
+			if (typeof sourceInfo.mode === "number" && Number.isFinite(sourceInfo.mode)) {
+				mode = sourceInfo.mode;
+			}
+		} catch {
+			// ignore mode fallback
+		}
+		await writeFile(targetPath, data, {
+			append: false,
+			create: true,
+			mode,
+		});
+	}
+
 	private async copyDirectoryRecursive(fromPath: string, toPath: string): Promise<void> {
-		const { mkdir, readDir, copyFile } = await import("@tauri-apps/plugin-fs");
+		const { mkdir, readDir, stat } = await import("@tauri-apps/plugin-fs");
 		await mkdir(toPath, { recursive: true });
 		const entries = await readDir(fromPath);
 		for (const entry of entries) {
 			const sourcePath = joinFsPath(fromPath, entry.name);
 			const targetPath = joinFsPath(toPath, entry.name);
-			if (entry.isDirectory) {
+
+			let isDirectory = entry.isDirectory;
+			let isFile = entry.isFile;
+			if (!isDirectory && !isFile) {
+				try {
+					const sourceInfo = await stat(sourcePath);
+					isDirectory = sourceInfo.isDirectory;
+					isFile = sourceInfo.isFile;
+				} catch {
+					continue;
+				}
+			}
+
+			if (isDirectory) {
 				if (this.shouldSkipPackagedSkillDir(entry.name)) continue;
 				await this.copyDirectoryRecursive(sourcePath, targetPath);
 				continue;
 			}
-			if (!entry.isFile) continue;
-			await copyFile(sourcePath, targetPath);
+			if (!isFile) continue;
+			await this.copyFilePreservingMode(sourcePath, targetPath);
 		}
 	}
 
@@ -2967,7 +2999,7 @@ export class PackagesView {
 
 		const targetDir = joinFsPath(skillsRoot, item.definition.skillName);
 		const targetSkillPath = joinFsPath(targetDir, "SKILL.md");
-		const { exists, mkdir } = await import("@tauri-apps/plugin-fs");
+		const { exists, mkdir, readTextFile, writeTextFile } = await import("@tauri-apps/plugin-fs");
 		if (await exists(targetSkillPath)) return targetSkillPath;
 
 		const installedPackage = this.findInstalledItemForSource(item.definition.packageSource, "global");
@@ -2976,9 +3008,26 @@ export class PackagesView {
 
 		const sourceDir = await this.resolveSkillDirectoryFromPackage(basePath, item.definition.skillName);
 		if (!sourceDir) return null;
+		const sourceSkillPath = joinFsPath(sourceDir, "SKILL.md");
 		await mkdir(skillsRoot, { recursive: true });
-		await this.copyDirectoryRecursive(sourceDir, targetDir);
-		return (await exists(targetSkillPath)) ? targetSkillPath : null;
+
+		let copyError: string | null = null;
+		try {
+			await this.copyDirectoryRecursive(sourceDir, targetDir);
+		} catch (err) {
+			copyError = err instanceof Error ? err.message : String(err);
+		}
+
+		if (!(await exists(targetSkillPath)) && await exists(sourceSkillPath)) {
+			await mkdir(targetDir, { recursive: true });
+			const sourceSkillContent = await readTextFile(sourceSkillPath);
+			await writeTextFile(targetSkillPath, sourceSkillContent, { append: false, create: true });
+		}
+
+		if (!(await exists(targetSkillPath))) {
+			throw new Error(`Missing SKILL.md for ${item.definition.skillName} after install.${copyError ? ` ${copyError}` : ""}`);
+		}
+		return targetSkillPath;
 	}
 
 	private async resolvePackageSkillContentPath(skillName: string, packageSource: string | null): Promise<string | null> {
@@ -3315,13 +3364,20 @@ export class PackagesView {
 		} catch (err) {
 			const message = err instanceof Error ? err.message : String(err);
 			this.commandStatus = `Installed ${item.definition.name}, but failed to prepare local skill files: ${message}`;
+			this.render();
 		}
 
 		await this.refreshDiscoveredResources();
 		const resolvedSkill = this.findSkillResourceByName(item.definition.skillName);
-		const commandText = resolvedSkill?.commandText || `/skill:${item.definition.skillName}`;
+		if (!resolvedSkill) {
+			this.commandStatus = `Installed ${item.definition.name}, but no SKILL.md was discovered for ${item.definition.skillName} in ~/.pi/agent/skills.`;
+			this.render();
+			return;
+		}
+		const commandText = resolvedSkill.commandText;
 		const setupSuffix = item.definition.setupHint ? ` Setup: ${item.definition.setupHint}` : "";
-		const locationSuffix = materializedSkillPath ? ` Skill files copied to ${pathDirName(materializedSkillPath)}.` : "";
+		const skillPath = materializedSkillPath || resolvedSkill.path;
+		const locationSuffix = skillPath ? ` Skill files at ${pathDirName(skillPath)}.` : "";
 		await this.stageResourceCommandInChat(commandText, `Prepared ${commandText} in chat. Press Enter to run.${locationSuffix}${setupSuffix}`);
 		if (this.activePackagesModal?.kind === "recommended-skill") {
 			this.closePackagesItemModal();
