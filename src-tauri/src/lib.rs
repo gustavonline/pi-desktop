@@ -71,6 +71,9 @@ struct RpcStartOptions {
     /// Dev-mode only: path to the CLI JS file (e.g. "../coding-agent/dist/cli.js").
     /// When null/empty, the backend discovers the pi binary automatically.
     cli_path: Option<String>,
+    /// Optional explicit pi binary path override from Desktop settings.
+    /// When set, this takes precedence over sidecar/PATH/common-location discovery.
+    pi_path: Option<String>,
     cwd: String,
     provider: Option<String>,
     model: Option<String>,
@@ -164,6 +167,44 @@ fn resolve_home_dir() -> Option<PathBuf> {
     None
 }
 
+fn expand_tilde_path(raw: &str) -> PathBuf {
+    let trimmed = raw.trim();
+    if trimmed == "~" {
+        if let Some(home) = resolve_home_dir() {
+            return home;
+        }
+    }
+    if let Some(rest) = trimmed.strip_prefix("~/") {
+        if let Some(home) = resolve_home_dir() {
+            return home.join(rest);
+        }
+    }
+    if let Some(rest) = trimmed.strip_prefix("~\\") {
+        if let Some(home) = resolve_home_dir() {
+            return home.join(rest);
+        }
+    }
+    PathBuf::from(trimmed)
+}
+
+fn resolve_explicit_pi_path(raw: &str) -> Option<PathBuf> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let expanded = expand_tilde_path(trimmed);
+    if expanded.is_file() {
+        return Some(expanded);
+    }
+
+    if let Ok(which_path) = which::which(trimmed) {
+        return Some(which_path);
+    }
+
+    None
+}
+
 fn discover_pi_from_common_locations() -> Option<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
 
@@ -251,6 +292,19 @@ fn discover_pi_from_common_locations() -> Option<PathBuf> {
         candidates.push(home_dir.join(".pi/agent/bin/pi"));
         candidates.push(home_dir.join(".volta/bin/pi"));
         candidates.push(home_dir.join(".local/bin/pi"));
+        candidates.push(home_dir.join(".npm-global/bin/pi"));
+        candidates.push(home_dir.join(".npm/bin/pi"));
+    }
+
+    // npm custom prefix installs (common on Linux/macOS desktop launches)
+    for key in ["NPM_CONFIG_PREFIX", "PREFIX"] {
+        if let Ok(prefix) = std::env::var(key) {
+            let trimmed = prefix.trim();
+            if !trimmed.is_empty() {
+                candidates.push(PathBuf::from(trimmed).join("bin/pi"));
+                candidates.push(PathBuf::from(trimmed).join("pi"));
+            }
+        }
     }
 
     // Common system install locations
@@ -431,16 +485,8 @@ fn resolve_pi_changelog_candidates(pi: &PiProcess) -> Vec<PathBuf> {
 fn discover_pi_from_env_override() -> Option<PathBuf> {
     for key in ["PI_DESKTOP_PI_PATH", "PI_CLI_PATH"] {
         if let Ok(raw) = std::env::var(key) {
-            let value = raw.trim();
-            if value.is_empty() {
-                continue;
-            }
-            let candidate = PathBuf::from(value);
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-            if let Ok(which_path) = which::which(value) {
-                return Some(which_path);
+            if let Some(path) = resolve_explicit_pi_path(&raw) {
+                return Some(path);
             }
         }
     }
@@ -462,13 +508,28 @@ fn missing_pi_cli_error(additional: Option<String>) -> String {
 }
 
 /// Discover the pi binary. Strategy:
-/// 1. If cli_path is provided (dev mode), use node + script
-/// 2. Try explicit env override (PI_DESKTOP_PI_PATH / PI_CLI_PATH)
-/// 3. Try sidecar discovery (packaged app)
-/// 4. Try finding `pi` on PATH (globally installed CLI or standalone binary)
-/// 5. Try common install locations (for GUI app launches without shell PATH)
-/// 6. Fail with actionable error
+/// 1. If pi_path is provided (Desktop manual override), use it
+/// 2. If cli_path is provided (dev mode), use node + script or explicit binary
+/// 3. Try explicit env override (PI_DESKTOP_PI_PATH / PI_CLI_PATH)
+/// 4. Try sidecar discovery (packaged app)
+/// 5. Try finding `pi` on PATH (globally installed CLI or standalone binary)
+/// 6. Try common install locations (for GUI app launches without shell PATH)
+/// 7. Fail with actionable error
 fn discover_pi(app: &AppHandle, options: &RpcStartOptions) -> Result<PiProcess, String> {
+    // Desktop manual override from settings
+    if let Some(ref pi_path) = options.pi_path {
+        let trimmed = pi_path.trim();
+        if !trimmed.is_empty() {
+            if let Some(path) = resolve_explicit_pi_path(trimmed) {
+                return Ok(PiProcess::PathBinary { path });
+            }
+            return Err(missing_pi_cli_error(Some(format!(
+                "Configured pi binary path was not found: {}",
+                trimmed
+            ))));
+        }
+    }
+
     // Dev mode: cli_path explicitly provided
     if let Some(ref cli_path) = options.cli_path {
         let trimmed = cli_path.trim();
@@ -478,12 +539,8 @@ fn discover_pi(app: &AppHandle, options: &RpcStartOptions) -> Result<PiProcess, 
                     script: trimmed.to_string(),
                 });
             }
-            let direct = PathBuf::from(trimmed);
-            if direct.is_file() {
-                return Ok(PiProcess::PathBinary { path: direct });
-            }
-            if let Ok(which_path) = which::which(trimmed) {
-                return Ok(PiProcess::PathBinary { path: which_path });
+            if let Some(path) = resolve_explicit_pi_path(trimmed) {
+                return Ok(PiProcess::PathBinary { path });
             }
         }
     }
@@ -575,7 +632,7 @@ fn write_rpc_line(stdin: &mut std::process::ChildStdin, line: &str) -> Result<()
 }
 
 /// Start the pi coding agent in RPC mode as a child process.
-/// Discovery order: dev cli_path -> sidecar -> PATH -> error.
+/// Discovery order: manual pi_path -> dev cli_path -> env override -> sidecar -> PATH/common locations -> error.
 #[tauri::command]
 async fn rpc_start(
     app: AppHandle,
@@ -1460,6 +1517,7 @@ async fn get_pi_oauth_providers(app: AppHandle) -> Result<Vec<PiOAuthProviderInf
 
     let discovery_opts = RpcStartOptions {
         cli_path: None,
+        pi_path: None,
         cwd: ".".to_string(),
         provider: None,
         model: None,
@@ -1475,6 +1533,7 @@ async fn get_pi_oauth_providers(app: AppHandle) -> Result<Vec<PiOAuthProviderInf
         cwd: Some(".".to_string()),
         env: None,
         cli_path: None,
+        pi_path: None,
     };
 
     let output = match build_plain_command(&pi, &list_opts).output() {
@@ -1523,6 +1582,7 @@ pub struct AppSettings {
     pub follow_up_mode: String,
     pub model_provider: Option<String>,
     pub model_id: Option<String>,
+    pub pi_path: Option<String>,
 }
 
 impl Default for AppSettings {
@@ -1536,6 +1596,7 @@ impl Default for AppSettings {
             follow_up_mode: "one-at-a-time".to_string(),
             model_provider: None,
             model_id: None,
+            pi_path: None,
         }
     }
 }
@@ -1591,6 +1652,7 @@ struct PiCliCommandOptions {
     cwd: Option<String>,
     env: Option<std::collections::HashMap<String, String>>,
     cli_path: Option<String>,
+    pi_path: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1604,6 +1666,7 @@ struct PiCliCommandResult {
 #[derive(Debug, Deserialize)]
 struct CliStatusOptions {
     cli_path: Option<String>,
+    pi_path: Option<String>,
     cwd: Option<String>,
     env: Option<std::collections::HashMap<String, String>>,
 }
@@ -1803,6 +1866,7 @@ fn get_current_pi_version(pi: &PiProcess, options: &CliStatusOptions) -> Option<
         cwd: options.cwd.clone(),
         env: options.env.clone(),
         cli_path: options.cli_path.clone(),
+        pi_path: options.pi_path.clone(),
     };
 
     let output = build_plain_command(pi, &version_opts).output().ok()?;
@@ -1939,6 +2003,7 @@ async fn run_pi_cli_command(
 
     let discovery_opts = RpcStartOptions {
         cli_path: options.cli_path.clone(),
+        pi_path: options.pi_path.clone(),
         cwd: resolved_cwd,
         provider: None,
         model: None,
@@ -1968,12 +2033,14 @@ async fn get_cli_update_status(
 ) -> Result<CliUpdateStatus, String> {
     let opts = options.unwrap_or(CliStatusOptions {
         cli_path: None,
+        pi_path: None,
         cwd: Some(".".to_string()),
         env: None,
     });
 
     let discovery_opts = RpcStartOptions {
         cli_path: opts.cli_path.clone(),
+        pi_path: opts.pi_path.clone(),
         cwd: opts.cwd.clone().unwrap_or_else(|| ".".to_string()),
         provider: None,
         model: None,
@@ -2027,12 +2094,14 @@ async fn get_pi_changelog(
 ) -> Result<PiChangelogResult, String> {
     let opts = options.unwrap_or(CliStatusOptions {
         cli_path: None,
+        pi_path: None,
         cwd: Some(".".to_string()),
         env: None,
     });
 
     let discovery_opts = RpcStartOptions {
         cli_path: opts.cli_path.clone(),
+        pi_path: opts.pi_path.clone(),
         cwd: opts.cwd.clone().unwrap_or_else(|| ".".to_string()),
         provider: None,
         model: None,

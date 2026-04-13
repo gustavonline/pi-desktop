@@ -143,6 +143,7 @@ let extensionUiHandler: ExtensionUiHandler | null = null;
 
 let cliUpdateStatus: CliUpdateStatus | null = null;
 let desktopUpdateStatus: DesktopUpdateStatus | null = null;
+let preferredPiBinaryPath: string | null = null;
 let cliUpdatePollingTimer: ReturnType<typeof setInterval> | null = null;
 let desktopUpdatePollingTimer: ReturnType<typeof setInterval> | null = null;
 let cliUpdateChecking = false;
@@ -529,10 +530,12 @@ function getOrCreateRuntimeForTab(workspaceId: string, tabId: string, projectPat
 		return existing;
 	}
 	const instanceId = sessionRuntimeInstanceId(key);
+	const bridge = new RpcBridge(instanceId);
+	bridge.setPreferredPiPath(preferredPiBinaryPath);
 	const runtime: SessionRuntime = {
 		key,
 		instanceId,
-		bridge: new RpcBridge(instanceId),
+		bridge,
 		workspaceId,
 		tabId,
 		projectPath,
@@ -1591,8 +1594,9 @@ async function renameSessionFromWorkspace(projectId: string, sessionPath: string
 				}
 			} else {
 				const maintenanceBridge = new RpcBridge(uid("rename_rpc"));
+				maintenanceBridge.setPreferredPiPath(findPiBinaryPath());
 				try {
-					await maintenanceBridge.start({ cliPath: findCliPath(), cwd: project.path });
+					await maintenanceBridge.start({ cliPath: findCliPath(), piPath: findPiBinaryPath(), cwd: project.path });
 					const switched = await maintenanceBridge.switchSession(sessionPath);
 					if (switched.cancelled) return;
 					await maintenanceBridge.setSessionName(trimmedName);
@@ -1937,12 +1941,40 @@ function setupSidebarResize(): void {
 	};
 }
 
+function normalizePiBinaryPath(value: unknown): string | null {
+	if (typeof value !== "string") return null;
+	const trimmed = value.trim();
+	return trimmed.length > 0 ? trimmed : null;
+}
+
+function applyPreferredPiBinaryPath(path: string | null): void {
+	preferredPiBinaryPath = normalizePiBinaryPath(path);
+	rpcBridge.setPreferredPiPath(preferredPiBinaryPath);
+	for (const runtime of sessionRuntimes.values()) {
+		runtime.bridge.setPreferredPiPath(preferredPiBinaryPath);
+	}
+}
+
+async function loadPreferredPiBinaryPathFromSettings(): Promise<void> {
+	try {
+		const { invoke } = await import("@tauri-apps/api/core");
+		const saved = (await invoke("load_settings")) as { pi_path?: string | null };
+		applyPreferredPiBinaryPath(normalizePiBinaryPath(saved?.pi_path ?? null));
+	} catch {
+		applyPreferredPiBinaryPath(null);
+	}
+}
+
 function findCliPath(): string | null {
 	if (import.meta.env.DEV) {
 		// Optional local dev path (if running next to pi-mono)
 		return null;
 	}
 	return null;
+}
+
+function findPiBinaryPath(): string | null {
+	return preferredPiBinaryPath;
 }
 
 function getCwd(): string {
@@ -2677,7 +2709,7 @@ async function ensureRuntimeForSessionTab(
 		if (!bridge.isConnected) {
 			runtime.phase = "starting";
 			recordDebugTrace(`ensureRuntime:start-bridge instance=${runtime.instanceId}`);
-			await bridge.start({ cliPath: findCliPath(), cwd: projectPath });
+			await bridge.start({ cliPath: findCliPath(), piPath: findPiBinaryPath(), cwd: projectPath });
 			recordDebugTrace(`ensureRuntime:bridge-started instance=${runtime.instanceId} discovery=${bridge.discoveryInfo ?? "-"}`);
 			if (typeof taskVersion === "number") {
 				assertProjectTaskCurrent(taskVersion);
@@ -3035,6 +3067,7 @@ async function initialize(): Promise<void> {
 
 	initializeComponents();
 	loadWorkspaces();
+	await loadPreferredPiBinaryPathFromSettings();
 	loadSidebarWidth();
 	applySidebarWidth();
 	await ensureBundledThemesInstalled();
@@ -3329,6 +3362,14 @@ function mountSettingsPanel(): SettingsPanel {
 	panel.setOnCliStatusChange((status) => {
 		cliUpdateStatus = status;
 		syncCliUpdateUiHint();
+	});
+	panel.setOnPiBinaryPathChange((path) => {
+		const previous = preferredPiBinaryPath;
+		applyPreferredPiBinaryPath(path);
+		recordDebugTrace(`pi-path-override updated path=${path ?? "-"}`);
+		if (previous !== preferredPiBinaryPath && preferredPiBinaryPath) {
+			chatView?.notify("Saved CLI binary path override. Use /reload to reconnect active runtimes.", "info");
+		}
 	});
 	panel.setOnClose(() => {
 		const workspace = getActiveWorkspace();

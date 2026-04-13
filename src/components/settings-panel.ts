@@ -49,6 +49,7 @@ interface SettingsState {
 	autoRetryEnabled: boolean;
 	steeringMode: QueueMode;
 	followUpMode: QueueMode;
+	piBinaryPath: string;
 }
 
 interface ScopedModelOption {
@@ -85,6 +86,7 @@ export class SettingsPanel {
 		autoRetryEnabled: true,
 		steeringMode: "one-at-a-time",
 		followUpMode: "one-at-a-time",
+		piBinaryPath: "",
 	};
 	private onClose: (() => void) | null = null;
 	private onRequestAddProject: (() => void) | null = null;
@@ -100,7 +102,9 @@ export class SettingsPanel {
 	private cliLoading = false;
 	private cliUpdating = false;
 	private cliActionMessage = "";
+	private piPathActionMessage = "";
 	private onCliStatusChange: ((status: CliUpdateStatus | null) => void) | null = null;
+	private onPiBinaryPathChange: ((path: string | null) => void) | null = null;
 	private onNavigationStateChange: ((state: SettingsNavigationState) => void) | null = null;
 	private compatibilityReport: RpcCompatibilityReport | null = null;
 	private compatibilityLoading = false;
@@ -162,6 +166,10 @@ export class SettingsPanel {
 
 	setOnCliStatusChange(callback: (status: CliUpdateStatus | null) => void): void {
 		this.onCliStatusChange = callback;
+	}
+
+	setOnPiBinaryPathChange(callback: ((path: string | null) => void) | null): void {
+		this.onPiBinaryPathChange = callback;
 	}
 
 	setOnNavigationStateChange(callback: ((state: SettingsNavigationState) => void) | null): void {
@@ -855,6 +863,59 @@ export class SettingsPanel {
 		this.themeCatalogMessage = `Created theme ${fileStem}.json in ~/.pi/agent/themes`;
 	}
 
+	private normalizePiBinaryPath(value: string | null | undefined): string | null {
+		const normalized = typeof value === "string" ? value.trim() : "";
+		return normalized.length > 0 ? normalized : null;
+	}
+
+	private setPiBinaryPathDraft(value: string): void {
+		this.state.piBinaryPath = value;
+		this.piPathActionMessage = "";
+		this.render();
+	}
+
+	private async choosePiBinaryPathFromDialog(): Promise<void> {
+		try {
+			const { open } = await import("@tauri-apps/plugin-dialog");
+			const selected = await open({
+				multiple: false,
+				directory: false,
+				title: "Select pi binary",
+			});
+			if (typeof selected !== "string" || selected.trim().length === 0) return;
+			this.state.piBinaryPath = selected;
+			this.piPathActionMessage = "";
+			this.render();
+		} catch (err) {
+			this.piPathActionMessage = err instanceof Error ? err.message : "Could not open file picker.";
+			this.render();
+		}
+	}
+
+	private async savePiBinaryPathOverride(): Promise<void> {
+		const normalized = this.normalizePiBinaryPath(this.state.piBinaryPath);
+		this.state.piBinaryPath = normalized ?? "";
+		try {
+			await this.saveSettings();
+			this.onPiBinaryPathChange?.(normalized);
+			this.piPathActionMessage = normalized
+				? "Saved CLI binary override. Use /reload to reconnect active runtimes."
+				: "Cleared CLI binary override.";
+			await this.refreshCliStatus();
+			if (this.isRuntimeControlsEnabled()) {
+				await this.refreshCompatibilityStatus();
+			}
+		} catch (err) {
+			this.piPathActionMessage = err instanceof Error ? err.message : "Failed to save CLI binary override.";
+		}
+		this.render();
+	}
+
+	private async clearPiBinaryPathOverride(): Promise<void> {
+		this.state.piBinaryPath = "";
+		await this.savePiBinaryPathOverride();
+	}
+
 	private async loadState(): Promise<void> {
 		const runtimeReady = Boolean(this.runtimeProjectPath) && rpcBridge.isConnected;
 		if (runtimeReady) {
@@ -889,6 +950,7 @@ export class SettingsPanel {
 			const saved = (await invoke("load_settings")) as {
 				theme?: string;
 				auto_retry?: boolean;
+				pi_path?: string | null;
 			};
 			if (saved.theme === "dark" || saved.theme === "light" || saved.theme === "system") {
 				this.state.theme = saved.theme;
@@ -897,6 +959,9 @@ export class SettingsPanel {
 			if (typeof saved.auto_retry === "boolean") {
 				this.state.autoRetryEnabled = saved.auto_retry;
 			}
+			const normalizedPiPath = this.normalizePiBinaryPath(saved.pi_path);
+			this.state.piBinaryPath = normalizedPiPath ?? "";
+			this.onPiBinaryPathChange?.(normalizedPiPath);
 		} catch {
 			// ignore missing persisted settings
 		}
@@ -1527,6 +1592,7 @@ export class SettingsPanel {
 					follow_up_mode: this.state.followUpMode,
 					model_provider: null,
 					model_id: null,
+					pi_path: this.normalizePiBinaryPath(this.state.piBinaryPath),
 				},
 			});
 		} catch (err) {
@@ -1985,6 +2051,30 @@ export class SettingsPanel {
 									: html`<div class="settings-desc">CLI status unavailable. Install or reconnect CLI, then refresh.</div>`}
 								${this.cliStatus?.note ? html`<div class="settings-desc">${this.cliStatus.note}</div>` : null}
 							`}
+						<div class="settings-row settings-row-top">
+							<div>
+								<div class="settings-label">CLI binary path override (optional)</div>
+								<div class="settings-desc">Set an absolute path to your <code>pi</code> binary if Desktop cannot discover it automatically.</div>
+								<div class="settings-desc">Examples: <code>~/.npm-global/bin/pi</code>, <code>/usr/local/bin/pi</code>, <code>C:\\Users\\you\\AppData\\Roaming\\npm\\pi.cmd</code></div>
+							</div>
+						</div>
+						<input
+							type="text"
+							class="settings-path-input"
+							placeholder="/absolute/path/to/pi"
+							.value=${this.state.piBinaryPath}
+							@input=${(e: Event) => this.setPiBinaryPathDraft((e.target as HTMLInputElement).value)}
+						/>
+						<div class="settings-actions" style="margin-top:8px;">
+							<button class="ghost-btn" @click=${() => this.choosePiBinaryPathFromDialog()}>Browse…</button>
+							<button class="ghost-btn" ?disabled=${this.saving} @click=${() => this.savePiBinaryPathOverride()}>
+								${this.saving ? "Saving…" : "Save path override"}
+							</button>
+							<button class="ghost-btn" ?disabled=${this.saving || this.state.piBinaryPath.trim().length === 0} @click=${() => this.clearPiBinaryPathOverride()}>
+								Clear override
+							</button>
+						</div>
+						${this.piPathActionMessage ? html`<div class="settings-desc">${this.piPathActionMessage}</div>` : null}
 						<div class="settings-actions">
 							<button class="ghost-btn" ?disabled=${this.cliLoading} @click=${() => this.refreshCliStatus()}>Refresh CLI status</button>
 							<button

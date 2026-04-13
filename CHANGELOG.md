@@ -7,10 +7,12 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 ## [Unreleased]
 
 ### Changed
-- _No changes yet._
+- Added a Settings → Updates advanced control for manual Pi binary override (`pi_path`) with browse/save/clear actions, so users can pin an explicit `pi` executable path across all OSes.
+- RPC/CLI command bridge now carries a preferred manual Pi binary override for runtime start and non-runtime CLI actions (status/list/install/update flows).
 
 ### Fixed
-- _No changes yet._
+- Improved Linux/macOS fallback discovery for global npm installs by checking additional common user-prefix locations (including `~/.npm-global/bin/pi`) and npm prefix environment hints.
+- Explicit Pi path resolution now supports `~`-prefixed paths in manual settings/env override flows.
 
 ## [1.0.0] - 2026-04-13
 
