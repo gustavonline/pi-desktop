@@ -6,6 +6,126 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Changed
+- _No changes yet._
+
+### Fixed
+- _No changes yet._
+
+## [1.0.0] - 2026-04-13
+
+### Changed
+- Reworked the no-project / new-thread welcome view into a cleaner Codex-inspired centered layout with Pi Desktop branding, a project-focused dropdown, and reduced UI chrome.
+- Settings navigation now lives in the main left sidebar while Settings is open, and the right pane uses simplified section-first headers with reduced chrome.
+- Composer now supports terminal-style full input history traversal (`ArrowUp` / `ArrowDown`) across previously sent prompts and slash commands.
+- Slash palette keyboard navigation now previews the active command directly in the composer input and keeps the active row visible while traversing.
+- Command palette (`Cmd/Ctrl+K`) keyboard navigation now auto-scrolls the selected row into view for long lists.
+- Command palette slash execution now routes through the shared ChatView slash pipeline first (with fallback), so runtime/extension slash behavior stays aligned with composer execution paths.
+- Content tabs are now session-only (no file tab types), with sidebar session opens auto-filling up to two default session tabs and extra session tabs created explicitly via the tabs-bar `+` action (`New tab`). File opens now keep chat visible and render in a right-side split file panel (Warp-style), so session flow remains centered while file context is side-by-side.
+- Right-side file split panel is now resizable via drag handle, file header now shows directory path above filename title, and file-close affordance uses lightweight icon-only hover styling.
+- File split resize is now bounded to avoid overlap with the floating chat composer, while keeping the divider full-height in the chat surface.
+- Simplified content-tab trailing chrome by removing the visual divider next to the terminal button.
+- Terminal UX now uses a VS Code-style bottom dock inside chat instead of opening as a standalone terminal tab/pane, with an xterm-powered shell surface and close/clear dock controls.
+- Added fast docked-terminal toggles via command palette (`terminal`) and slash command (`/terminal`); keyboard shortcut parity across OS/layouts is being tracked in a dedicated follow-up.
+- Composer follow-up queue UX is now minimal and docked near the composer instead of injecting speculative queued bubbles into the chat timeline.
+- Files can now be dragged from the Files sidebar into the composer, and non-image drops are staged as compact removable file-reference pills (with full-path tooltip) instead of raw path text in the textarea.
+- Pending image attachments now render as tighter inline chips with miniature thumbnails in the composer row (instead of a large strip above the textarea).
+- Welcome project dropdown now lists all projects in the current workspace and supports direct project switching (plus quick actions for add project, packages, and settings).
+- Welcome heading copy now rotates between Pi-style idle phrases for a calmer ambient experience.
+- Reworked assistant tool-heavy runs into a compact workflow timeline with centered duration summary, grouped repeated tool calls, and progressive disclosure for details.
+- Workflow detail timeline now preserves natural interleaving of thinking and tool entries (including mid-run thinking blocks), instead of forcing thinking to the top.
+- Running-state affordances now use synchronized Pi/text animation cadence, including inline Pi indicators on active workflow rows and toned-down bottom-status typography.
+- Polished markdown code blocks toward a cleaner Codex-like appearance (single surface, tightened header/content spacing, smaller copy affordance, less chrome).
+- Composer slash palette now shows CLI-first command groups with runtime-discovered extension/prompt/skill commands, while keeping visual chrome minimal.
+- Extracted shared slash-command modules for both catalog metadata and runtime parsing/filtering (`slash-command-catalog` + `slash-command-runtime`), and aligned Command Palette + Composer to reuse the same normalization/filter logic instead of duplicating command handling.
+- Moved model/provider display + `pi --list-models` parsing utilities into `src/models/model-options.ts` so model catalog logic is separated from chat view orchestration.
+- Extracted provider-auth domain normalization/helpers into `src/auth/provider-auth.ts` (provider key/arg parsing, OAuth catalog normalization, provider-auth status normalization, setup-command resolution) and reduced `chat-view` auth-specific branching logic.
+- Moved model selection argument resolution (`/model` provider-hint/candidate parsing) into `src/models/model-selection.ts`, keeping selection parsing as a dedicated model-domain module.
+- Extracted model-picker provider grouping/auth-state derivation into `src/models/model-picker-provider-groups.ts`, reducing complex inline provider/model aggregation logic in `chat-view`.
+- Extracted model-picker provider auth action/hint view-model logic into `src/models/model-picker-auth-ui.ts` to remove duplicated auth-copy/action-derivation branches from `chat-view` rendering.
+- Consolidated model-picker lifecycle interactions in `chat-view` (data preloading, toggle/open/close, active-provider updates) into focused helper methods to reduce inline template event-handler duplication.
+- Added shared composer-textarea sync helpers in `chat-view` and reused them across input staging/history/preview/clear flows; also extracted preferred model-picker provider resolution into `src/models/model-selection.ts` and centralized session transient-state reset helpers for project/session switches.
+- Split composer UI rendering into dedicated view modules: `src/components/chat-view/composer-controls-view.ts` (model picker + send/thinking controls) and `src/components/chat-view/composer-fragments-view.ts` (queued pills, attachments, skill draft pill), reducing `chat-view` template sprawl and tightening component boundaries.
+- Further split composer rendering into `src/components/chat-view/composer-slash-palette-view.ts` and `src/components/chat-view/composer-stats-view.ts`, and extracted keyboard/event orchestration to `src/components/chat-view/composer-input-events.ts` (with thin `chat-view` delegation), reducing inline template logic/coupling and keeping composer behavior modular.
+- Extracted session tree parsing + tree-line prefix logic from `chat-view` into `src/components/chat-view/history-tree-utils.ts` (including role/entry mapping + active-path derivation) and removed stale fork timeline expansion internals that were no longer wired into rendering.
+- Split history/fork viewer internals into dedicated modules: `history-viewer-view.ts` (overlay rendering/filter UI), `history-viewer-types.ts` (shared row/message contracts), and `history-fork-utils.ts` (fork target mapping + entry-id resolution + naming), while removing the legacy standalone fork-picker overlay path in favor of the unified history viewer flow.
+- Extracted no-project welcome dashboard internals into focused modules: `welcome-dashboard-data.ts` (local inventory discovery + CLI update status aggregation) and `welcome-dashboard-view.ts` (centered welcome rendering), reducing `chat-view` responsibilities and improving decomposition around the no-project experience.
+- Extracted assistant workflow/thinking/tool summarization logic into `src/components/chat-view/workflow-utils.ts` (thinking normalization, standalone-codeblock detection, workflow grouping/collection, tool-call summarization, workflow expansion-state derivation), with `chat-view` now using thin delegating wrappers.
+- Extracted assistant workflow timeline rendering into `src/components/chat-view/assistant-workflow-view.ts`, moving workflow detail-entry rendering and expand/collapse UI templating out of `chat-view` while keeping state orchestration in `chat-view` callbacks.
+- Extracted timeline row rendering into `src/components/chat-view/message-timeline-view.ts` (message-loop orchestration + assistant/system/changelog/compaction row templates), reducing `chat-view` template density and consolidating timeline-specific rendering concerns.
+- Extracted slash built-in command orchestration into `src/components/chat-view/slash-builtin-command.ts`, including shared session-info block formatting, so `chat-view` now delegates built-in slash execution through a callback-driven runtime module.
+- Extracted git repository/branch picker rendering into `src/components/chat-view/git-repo-control-view.ts`, keeping `chat-view` focused on state orchestration while the branch menu template logic lives in a dedicated view module.
+- Extracted backend message normalization/mapping into `src/components/chat-view/backend-message-mapper.ts` and converted `chat-view` message mapping to a thin delegating adapter.
+- Extracted chat message-content helpers into `src/components/chat-view/message-content-utils.ts` (text extraction, tool-output extraction, streaming merge logic, image extraction, assistant partial-content extraction), reducing parser/normalizer logic inside `chat-view`.
+- Extracted git branch action orchestration into `src/components/chat-view/git-branch-actions.ts` (`switch`, remote-tracking checkout, branch create+checkout, remote fetch), with `chat-view` now delegating branch action flows via callback wiring.
+- Extracted latest-assistant context token derivation into `src/components/chat-view/session-stats-utils.ts`, keeping session token estimation logic out of `chat-view`.
+- Extracted streaming event-case orchestration into `src/components/chat-view/event-stream-handlers.ts` (message/tool stream events + compaction/retry event handling), with `chat-view` now delegating these event domains via callback-driven handlers.
+- Extracted runtime lifecycle/status event handling into `src/components/chat-view/event-runtime-status-handlers.ts` (agent lifecycle, runtime/extension errors, RPC connect/disconnect), further slimming `chat-view` event-switch responsibilities.
+- Extracted model loading normalization and session-stats refresh computation into `src/components/chat-view/models-load-utils.ts` and `src/components/chat-view/session-stats-refresh.ts`, reducing inline parsing/calculation logic in `chat-view`.
+- Extracted send-message orchestration flow into `src/components/chat-view/send-message-flow.ts` and image/drop file utility helpers into `src/components/chat-view/image-file-utils.ts`, reducing action-path complexity and utility sprawl in `chat-view`.
+- Compaction status rendering was reduced to a minimal workflow-style row with collapsed-by-default details instead of a heavy status card.
+- Auto-rename extension recommendation and desktop config bridge now target `@byteowlz/pi-auto-rename`, with dynamic command-to-package resolution for config-intent slash commands (including `/auto-rename config`) instead of hardcoded package-name routing.
+- Recommended notifications extension now defaults to `pi-smart-voice-notify`, and Packages auto-migrates legacy `pi-desktop-notify` installs by installing the new package and removing the old one.
+- Desktop now installs a lightweight capability-native notify bridge extension (`~/.pi/agent/extensions/pi-desktop-notify-bridge.ts`) and enforces non-Windows `pi-smart-voice-notify` host mode (`enableDesktopNotification: false`) so desktop delivery flows through `ctx.ui.notify`.
+- Packages modal now includes a dedicated auto-rename settings editor (enabled/mode/model/fallback/prefix/debug + Save/Test actions) backed by `auto-rename.json`, so extension behavior can be configured directly in Desktop.
+- Auto-rename settings now support explicit save target selection (global or project), including choosing among opened sidebar projects for project-scoped config writes.
+- Save target controls were moved next to the Save action in auto-rename settings (instead of top-of-form) for a cleaner, less noisy flow.
+- Runtime slash descriptions now include clearer extension command guidance (including `/voice-notify` action/arg hints and `/auto-rename` subcommand hints like `config`, `test`, `init`, `regen`), and `/voice-notify` with no args now opens extension settings in Desktop.
+- Centralized extension command intent/usage-hint helpers (`extension-command-intent` + `extension-command-hints`) and rewired chat/main/packages/slash-catalog to use the shared path, reducing duplicated desktop heuristics and keeping extension-config routing behavior aligned across entrypoints.
+- Package settings now include explicit `/voice-notify` argument guidance (status/reload/on/off/test) directly in the settings card so command usage is visible without leaving Desktop.
+- Model picker now shows provider-level auth state (including unauthenticated providers), greys out providers that still need setup, and exposes inline per-provider Login/Logout actions directly in the flyout.
+- Expanded package capability docs now define explicit command contracts (`/<base>`, `/<base> config`, `/<base> config <args>`), safe default settings behavior, and extension SDK auth compatibility guidance (`getApiKeyAndHeaders` first, legacy fallback optional).
+- Provider auth discovery in Desktop now uses a CLI-aligned OAuth provider catalog (built-ins + package-registered OAuth providers), so model picker and account diagnostics stay consistent with `/login` behavior.
+- Settings → Account was refocused to a WIP account/product direction with lightweight diagnostics, while provider login/setup remains centered in model picker + Packages flows.
+- Packages recommendations now include `pi-cursor-provider` and `pi-kilocode` as first-class recommended provider extensions.
+- Packages discover-row `+` action now opens package details first (modal-driven install flow) instead of starting immediate background install.
+- Desktop now monitors `~/.pi/agent/auth.json` and auto-applies runtime refresh/reload after provider login/logout changes (with deferred execution while a run is streaming).
+- Composer slash handling now stages `/skill:<name>` selections as a skill pill instead of sending immediately, so Enter flow matches expected draft-then-send behavior.
+
+### Fixed
+- Modal/backdrop layers now preserve window corner clipping (rounded dim/blur overlay) so opening dialogs no longer introduces square edge artifacts around the app window.
+- Bundled default Pi Desktop themes now emit full Pi CLI-compatible theme schema (all required color tokens) instead of a partial Desktop-only color set.
+- Fixed bundled-themes first-run install marker handling by migrating to a non-hidden marker filename and making marker reads/writes best-effort, preventing `forbidden path` install failures.
+- Added bundled-theme package expansion with `pi-desktop-default-dark` and `pi-desktop-default-light`, and updated package metadata/counts accordingly.
+- Fixed bundled-theme install-state resilience so “Pi Desktop Themes” is treated as preinstalled when bundled resources are already present on disk.
+- Fixed model-picker UX to suppress backend placeholder `unknown/unknown` entries and treat them as “no selected model”.
+- Fixed recommended-skill installation materialization to guarantee `~/.pi/agent/skills/<skill>/SKILL.md` before exposing `/skill:<name>` staging.
+- Fixed `/scoped-models` settings-open race causing Lit `ChildPart has no parentNode` errors by removing unsupported `innerHTML` mutation paths in `SettingsPanel` render/fallback lifecycle.
+- Fixed user message bubble width/wrapping regression that could squeeze short text into broken wrapping (`he j`) by correcting user-shell width constraints and wrap behavior.
+- Fixed terminal usability gaps by normalizing legacy `pane: "terminal"` workspace state back to chat+dock, adding clearer disconnected/no-project terminal states, improving keyboard handling/history inside the docked terminal, and preventing terminal commands from leaking into the chat canvas timeline.
+- Added bundled-theme auto-repair for legacy invalid `~/.pi/agent/themes/pi-desktop-*.json` files so existing installs stop producing CLI theme validation errors.
+- Theme files created from Settings (“Create theme”) now use the full Pi theme schema, so custom exports are valid in both Desktop and CLI.
+- Hardened Settings pane mounting/open flow to recover from race conditions and stale container rebinding during workspace/project transitions.
+- Settings now degrade to a safe basic shell when runtime-dependent sections fail to render, instead of showing a blank pane.
+- No-project Settings flow is now runtime-decoupled, so Appearance settings remain available even before RPC runtime is connected.
+- Creating a new workspace now uses a true modal flow with fullscreen interaction blocking + keyboard focus trap, preventing background chat/pane interaction while the create dialog is active.
+- Removed centered welcome dropdown jitter by stabilizing open/close layout behavior and avoiding no-project auto-scroll on re-render.
+- Prevented active workflow dropdowns from auto-reopening after user-initiated manual collapse during ongoing tool runs.
+- Removed transient blank spacing before workflow materialization by avoiding empty assistant placeholder rows during stream startup.
+- Fixed repeated streamed thinking duplication by tightening partial-update merge/dedupe behavior in workflow rendering.
+- Assistant message-level copy action is now suppressed for messages that are only a single fenced code block (copy remains on the code block itself).
+- Fixed slash command execution regressions where `/` input could fall through to plain prompt sends; built-in commands now execute deterministically from the composer.
+- Composer slash execution now treats runtime command sources more generically and supports deterministic runtime fallback execution for typed slash commands that may not yet be in the local cached menu, improving CLI-extension command parity.
+- Fixed workflow summary counters to report mixed outcomes correctly (complete + failed + running) instead of over-reporting failures.
+- Removed blinking assistant-body streaming cursor artifact and removed noisy composer status text beneath model controls.
+- Fixed compaction timeline behavior so compaction rows stay anchored at the correct chronological position instead of drifting to the newest row.
+- Fixed manual `/compact` timeout failures by using an extended RPC timeout window for compaction requests, and fixed post-compaction session stats ring staleness by treating unknown backend context usage as unknown instead of reusing stale pre-compaction fallback tokens.
+- Alt+Enter in composer now surfaces explicit queued-message behavior (`followUp`) with clearer queued labeling in user bubbles.
+- Extension notify delivery now stays desktop-native only (no in-app chat toasts), and notifications are emitted only when Desktop is out of focus.
+- Background desktop notifications now include workspace/session context suffixes (for example `[Workspace 1] -> [session-name]`) and carry richer per-notification targeting metadata for more deterministic deep-link focus behavior.
+- Desktop notification copy/branding was polished (`Pi DESK` title formatting, cleaned body text, context line layout), with richer payload metadata preserved for deterministic click-to-focus routing.
+- Suppressed `smart-voice-notify` status-key output from the floating composer-status layer, so `/voice-notify reload` no longer leaves stray text near the composer.
+- Notification background detection now re-checks Tauri window focus at dispatch time, and Desktop synthesizes a host-side run-end notify fallback when no extension notify was emitted for that run.
+- Desktop notification permission now bootstraps from the next user gesture when permission is still `default`, and native notify dispatch falls back to a minimal payload if richer options fail validation on WebKit/macOS.
+- Sidebar/session switching now avoids reusing or pruning running session tabs, preventing active runs from being interrupted when hopping to another session quickly.
+- Extension runtime errors now include better source context in chat notices, and Desktop emits an explicit compatibility hint when an extension still uses deprecated `ctx.modelRegistry.getApiKey()`.
+- Desktop now ensures a global compatibility extension (`~/.pi/agent/extensions/pi-desktop-sdk-compat.ts`) is installed to shim `modelRegistry.getApiKey()` via `getApiKeyAndHeaders()` for legacy extensions, restoring runtime compatibility for packages such as `@byteowlz/pi-auto-rename`.
+- Auto-rename settings now correctly hydrate saved `model`/`fallbackModel` values from object-form config (`{ provider, id }`) and keep those values visible in model dropdowns (including unavailable-but-saved models).
+- Suppressed internal extension status-key events (for example `oqto_title_changed`) from rendering as floating composer status text, fixing stray session-title overlays above the attach/model row.
+- Git branch picker now includes both local and remote-tracking branches, supports remote-branch checkout as local tracking branches, prevents accidental new-branch creation when a matching remote exists, and adds an inline `Fetch` action for refreshing remotes.
+- Fixed Packages-page horizontal overflow during long install/output status updates by constraining x-overflow and wrapping diagnostics/banner text.
+- Uninstalling an extension from its package modal now closes the modal immediately to avoid stale-context interaction during background removal.
+
 ## [0.1.9] - 2026-03-28
 
 ### Added

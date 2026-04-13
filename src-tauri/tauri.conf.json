@@ -2,7 +2,7 @@
 	"$schema": "https://raw.githubusercontent.com/nicegui/nicegui/refs/heads/main/nicegui/static/tauri_v2_schema.json",
 	"productName": "Pi Desktop",
 	"identifier": "com.pi.desktop",
-	"version": "0.1.9",
+	"version": "1.0.0",
 	"build": {
 		"beforeDevCommand": "npx vite --port 1420",
 		"devUrl": "http://localhost:1420",
@@ -38,7 +38,24 @@
 			"icons/128x128@2x.png",
 			"icons/icon.icns",
 			"icons/icon.ico"
-		]
+		],
+		"linux": {
+			"appimage": {
+				"files": {
+					"linux/com.pi.desktop.metainfo.xml": "usr/share/metainfo/com.pi.desktop.metainfo.xml"
+				}
+			},
+			"deb": {
+				"files": {
+					"linux/com.pi.desktop.metainfo.xml": "usr/share/metainfo/com.pi.desktop.metainfo.xml"
+				}
+			},
+			"rpm": {
+				"files": {
+					"linux/com.pi.desktop.metainfo.xml": "usr/share/metainfo/com.pi.desktop.metainfo.xml"
+				}
+			}
+		}
 	},
 	"plugins": {
 		"shell": {

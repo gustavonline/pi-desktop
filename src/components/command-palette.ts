@@ -3,21 +3,14 @@
  */
 
 import { html, nothing, render } from "lit";
+import { normalizeRuntimeSlashCommands } from "../commands/slash-command-runtime.js";
 import { rpcBridge } from "../rpc/bridge.js";
-
-interface RpcCommand {
-	name: string;
-	description?: string;
-	source: "extension" | "prompt" | "skill";
-	location?: string;
-	path?: string;
-}
 
 interface PaletteCommand {
 	id: string;
 	name: string;
 	description: string;
-	source: "extension" | "prompt" | "skill" | "builtin";
+	source: string | "builtin";
 	commandText?: string;
 	action?: () => Promise<void> | void;
 }
@@ -28,6 +21,10 @@ interface BuiltinAction {
 	action: () => Promise<void> | void;
 }
 
+function normalizeCommandName(name: string): string {
+	return name.trim().toLowerCase().replace(/^\/+/, "");
+}
+
 export class CommandPalette {
 	private container: HTMLElement;
 	private isOpen = false;
@@ -36,6 +33,7 @@ export class CommandPalette {
 	private searchQuery = "";
 	private selectedIndex = 0;
 	private onClose: (() => void) | null = null;
+	private onRunSlashCommand: ((commandText: string) => boolean | Promise<boolean>) | null = null;
 	private builtins: BuiltinAction[] = [];
 
 	constructor(container: HTMLElement) {
@@ -51,6 +49,10 @@ export class CommandPalette {
 		this.onClose = callback;
 	}
 
+	setOnRunSlashCommand(callback: ((commandText: string) => boolean | Promise<boolean>) | null): void {
+		this.onRunSlashCommand = callback;
+	}
+
 	async open(): Promise<void> {
 		this.isOpen = true;
 		this.searchQuery = "";
@@ -59,6 +61,7 @@ export class CommandPalette {
 		this.filterCommands();
 		this.render();
 		this.focusInput();
+		this.ensureSelectedCommandVisible();
 	}
 
 	close(): void {
@@ -72,10 +75,10 @@ export class CommandPalette {
 	}
 
 	private async loadCommands(): Promise<void> {
-		let rpcCommands: RpcCommand[] = [];
+		let rpcCommands: Array<Record<string, unknown>> = [];
 		try {
 			const result = await rpcBridge.getCommands();
-			rpcCommands = result as unknown as RpcCommand[];
+			rpcCommands = Array.isArray(result) ? (result as Array<Record<string, unknown>>) : [];
 		} catch (err) {
 			console.error("Failed to load commands:", err);
 		}
@@ -88,13 +91,17 @@ export class CommandPalette {
 			action: action.action,
 		}));
 
-		const slashCommands: PaletteCommand[] = rpcCommands.map((cmd) => ({
-			id: `${cmd.source}:${cmd.name}`,
-			name: cmd.name,
-			description: cmd.description || `Run /${cmd.name}`,
-			source: cmd.source,
-			commandText: `/${cmd.name}`,
-		}));
+		const slashCommands: PaletteCommand[] = normalizeRuntimeSlashCommands(rpcCommands).map((command) => {
+			const source = command.rawSource || command.source || "runtime";
+			const name = normalizeCommandName(command.name);
+			return {
+				id: `${source}:${name}`,
+				name,
+				description: command.description,
+				source,
+				commandText: `/${name}`,
+			};
+		});
 
 		this.commands = [...builtinCommands, ...slashCommands];
 	}
@@ -121,6 +128,13 @@ export class CommandPalette {
 				return;
 			}
 			const text = command.commandText || `/${command.name}`;
+			if (this.onRunSlashCommand) {
+				const handled = await this.onRunSlashCommand(text);
+				if (handled) {
+					this.close();
+					return;
+				}
+			}
 			await rpcBridge.prompt(text);
 			this.close();
 		} catch (err) {
@@ -134,11 +148,13 @@ export class CommandPalette {
 				e.preventDefault();
 				this.selectedIndex = Math.min(this.selectedIndex + 1, this.filteredCommands.length - 1);
 				this.render();
+				this.ensureSelectedCommandVisible();
 				break;
 			case "ArrowUp":
 				e.preventDefault();
 				this.selectedIndex = Math.max(this.selectedIndex - 1, 0);
 				this.render();
+				this.ensureSelectedCommandVisible();
 				break;
 			case "Enter":
 				e.preventDefault();
@@ -158,6 +174,15 @@ export class CommandPalette {
 			const input = this.container.querySelector("input");
 			input?.focus();
 		}, 50);
+	}
+
+	private ensureSelectedCommandVisible(): void {
+		requestAnimationFrame(() => {
+			const list = this.container.querySelector<HTMLElement>(".command-palette-list");
+			const selected = this.container.querySelector<HTMLElement>(".command-row.selected");
+			if (!list || !selected) return;
+			selected.scrollIntoView({ block: "nearest" });
+		});
 	}
 
 	private getSourceIcon(source: PaletteCommand["source"]): string {

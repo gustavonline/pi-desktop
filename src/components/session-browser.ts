@@ -52,10 +52,10 @@ export class SessionBrowser {
 		this.render();
 	}
 
-	async open(): Promise<void> {
+	async open(options: { query?: string } = {}): Promise<void> {
 		this.isOpen = true;
 		this.loading = true;
-		this.query = "";
+		this.query = options.query?.trim() ?? "";
 		this.forkMode = false;
 		this.forkOptions = [];
 		this.render();

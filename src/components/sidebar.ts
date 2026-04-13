@@ -3,6 +3,7 @@
  */
 
 import { html, nothing, render, type TemplateResult } from "lit";
+import { clearActiveDraggedFilePaths, setActiveDraggedFilePaths } from "./file-drag-transfer.js";
 import { EMOJI_CATALOG } from "./workspace-tabs.js";
 
 export type SidebarMode = "projects" | "files";
@@ -14,6 +15,13 @@ export interface SidebarWorkspaceItem {
 	color?: string | null;
 	pinned?: boolean;
 	closable?: boolean;
+}
+
+export interface SidebarSettingsNavItem {
+	id: string;
+	label: string;
+	description?: string;
+	disabled?: boolean;
 }
 
 interface SidebarSession {
@@ -78,6 +86,14 @@ const WORKSPACE_DRAG_THRESHOLD_PX = 5;
 const WORKSPACE_SWIPE_THRESHOLD_PX = 34;
 const WORKSPACE_SWIPE_IDLE_MS = 420;
 const WORKSPACE_SWIPE_COOLDOWN_MS = 180;
+const FOCUSABLE_SELECTOR = [
+	"button:not([disabled])",
+	"[href]",
+	"input:not([disabled]):not([type='hidden'])",
+	"select:not([disabled])",
+	"textarea:not([disabled])",
+	"[tabindex]:not([tabindex='-1'])",
+].join(",");
 
 function uid(prefix = "id"): string {
 	return `${prefix}_${Math.random().toString(36).slice(2, 8)}_${Date.now().toString(36)}`;
@@ -133,6 +149,14 @@ function parentFsPath(path: string): string {
 function isAbsolutePath(path: string): boolean {
 	if (!path) return false;
 	return /^([a-zA-Z]:[\\/]|[\\/]{2}|\/)/.test(path);
+}
+
+function toFileUri(path: string): string {
+	let normalized = path.replace(/\\/g, "/");
+	if (/^[A-Za-z]:\//.test(normalized)) {
+		normalized = `/${normalized}`;
+	}
+	return `file://${encodeURI(normalized)}`;
 }
 
 function fileExtension(name: string): string {
@@ -221,6 +245,9 @@ export class Sidebar {
 	private projectEmojiPickerY = 0;
 	private projectEmojiSearchQuery = "";
 	private projectEmojiPortalHost: HTMLElement | null = null;
+	private workspaceCreatePortalHost: HTMLElement | null = null;
+	private workspaceCreateDialogFocusTrapActive = false;
+	private workspaceCreateDialogRestoreFocus: HTMLElement | null = null;
 	private pendingProjectDragId: string | null = null;
 	private draggingProjectId: string | null = null;
 	private projectDragOverId: string | null = null;
@@ -228,6 +255,9 @@ export class Sidebar {
 	private projectDragStartY = 0;
 	private projectDragSuppressClickUntil = 0;
 	private mode: SidebarMode = "projects";
+	private settingsShellActive = false;
+	private settingsNavItems: SidebarSettingsNavItem[] = [];
+	private activeSettingsNavId: string | null = null;
 	private query = "";
 	private collapsed = false;
 	private storageKey = workspaceStorageKey("workspace_default");
@@ -276,6 +306,7 @@ export class Sidebar {
 	private onFileOpen: ((projectId: string, filePath: string) => void) | null = null;
 	private onFileDelete: ((projectId: string, filePath: string) => void) | null = null;
 	private onModeChange: ((mode: SidebarMode) => void) | null = null;
+	private onSettingsNavSelect: ((id: string) => void) | null = null;
 	private onCollapsedChange: ((collapsed: boolean) => void) | null = null;
 
 	constructor(container: HTMLElement) {
@@ -328,7 +359,7 @@ export class Sidebar {
 		this.modeFilterMenuOpen = false;
 		this.workspaceMenuOpen = false;
 		this.workspaceRenameDraft = null;
-		this.workspaceCreateDialogOpen = false;
+		this.closeWorkspaceCreateDialog(false, false);
 		this.workspaceCreateName = "";
 		this.workspaceCreateEmoji = "✨";
 		this.workspaceCreateEmojiPickerOpen = false;
@@ -516,6 +547,30 @@ export class Sidebar {
 		this.onModeChange = cb;
 	}
 
+	setOnSettingsNavSelect(cb: ((id: string) => void) | null): void {
+		this.onSettingsNavSelect = cb;
+	}
+
+	setSettingsShellActive(active: boolean): void {
+		if (this.settingsShellActive === active) return;
+		this.settingsShellActive = active;
+		this.modeFilterMenuOpen = false;
+		this.openProjectMenuId = null;
+		this.closeContextMenu(false);
+		this.render();
+	}
+
+	setSettingsNavigation(items: SidebarSettingsNavItem[], activeId: string | null): void {
+		this.settingsNavItems = items.map((item) => ({
+			id: item.id,
+			label: item.label,
+			description: item.description,
+			disabled: Boolean(item.disabled),
+		}));
+		this.activeSettingsNavId = activeId;
+		if (this.settingsShellActive) this.render();
+	}
+
 	setOnCollapsedChange(cb: (collapsed: boolean) => void): void {
 		this.onCollapsedChange = cb;
 	}
@@ -634,6 +689,10 @@ export class Sidebar {
 		return p ? { id: p.id, name: p.name, path: p.path } : null;
 	}
 
+	listProjects(): Array<{ id: string; name: string; path: string }> {
+		return this.projects.map((project) => ({ id: project.id, name: project.name, path: project.path }));
+	}
+
 	getProjectById(projectId: string | null | undefined): { id: string; name: string; path: string } | null {
 		if (!projectId) return null;
 		const project = this.projects.find((entry) => entry.id === projectId) ?? null;
@@ -673,6 +732,16 @@ export class Sidebar {
 		if (this.activeSessionPath === normalized) return;
 		this.activeSessionPath = normalized;
 		this.render();
+	}
+
+	beginSessionRename(projectId: string, sessionPath: string): boolean {
+		const found = this.findSession(projectId, sessionPath);
+		if (!found) return false;
+		this.selectProject(found.project.id, false);
+		this.activeSessionPath = normalizePath(found.session.path);
+		this.activeFilePath = null;
+		this.startSessionRename(found.project, found.session);
+		return true;
 	}
 
 	setActiveFilePath(filePath: string | null): void {
@@ -2134,6 +2203,45 @@ export class Sidebar {
 		`;
 	}
 
+	private primeFileDragPayload(node: FileNode, fileRenameActive: boolean, event?: PointerEvent | MouseEvent): void {
+		if (node.isDirectory || fileRenameActive) return;
+		if (event && event.button !== 0) return;
+		setActiveDraggedFilePaths([node.path]);
+	}
+
+	private handleFileDragStart(event: DragEvent, node: FileNode, fileRenameActive: boolean): void {
+		if (node.isDirectory || fileRenameActive) {
+			event.preventDefault();
+			return;
+		}
+		this.primeFileDragPayload(node, fileRenameActive);
+		const transfer = event.dataTransfer;
+		if (!transfer) return;
+		transfer.effectAllowed = "copy";
+		try {
+			transfer.setData("text/plain", node.path);
+			transfer.setData("text", node.path);
+			transfer.setData("text/uri-list", toFileUri(node.path));
+			transfer.setData("application/x-pi-file-path", node.path);
+			transfer.setData("application/x-pi-file-paths-json", JSON.stringify([node.path]));
+		} catch {
+			// Some desktop runtimes reject custom MIME types; fallback channel remains active.
+		}
+		const dragSource = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
+		if (dragSource) {
+			try {
+				transfer.setDragImage(dragSource, 12, 12);
+			} catch {
+				// ignore unsupported drag-image calls
+			}
+		}
+	}
+
+	private handleFileDragEnd(): void {
+		// Keep active drag payload alive briefly for drop-target fallback paths.
+		// It will be cleared by the drop consumer or TTL expiry.
+	}
+
 	private renderFileNode(projectId: string, node: FileNode, query: string): TemplateResult | typeof nothing {
 		if (!this.nodeMatchesQuery(node, query)) return nothing;
 		const indent = node.depth * 14;
@@ -2146,10 +2254,22 @@ export class Sidebar {
 
 		return html`
 			<div>
-				<div class="sidebar-file-row ${node.isDirectory ? "dir" : "file"}" style=${`--indent:${indent}px`}>
+				<div
+					class="sidebar-file-row ${node.isDirectory ? "dir" : "file"} ${!node.isDirectory && !fileRenameActive ? "is-draggable" : ""}"
+					style=${`--indent:${indent}px`}
+					.draggable=${!node.isDirectory && !fileRenameActive}
+					@pointerdown=${(event: PointerEvent) => this.primeFileDragPayload(node, fileRenameActive, event)}
+					@dragstart=${(event: DragEvent) => this.handleFileDragStart(event, node, fileRenameActive)}
+					@dragend=${() => this.handleFileDragEnd()}
+				>
 					<button
 						class="sidebar-file-main ${activeFile ? "active-file" : ""}"
+						.draggable=${!node.isDirectory && !fileRenameActive}
+						@pointerdown=${(event: PointerEvent) => this.primeFileDragPayload(node, fileRenameActive, event)}
+						@dragstart=${(event: DragEvent) => this.handleFileDragStart(event, node, fileRenameActive)}
+						@dragend=${() => this.handleFileDragEnd()}
 						@click=${() => {
+							clearActiveDraggedFilePaths();
 							if (node.isDirectory) {
 								void this.toggleDirectory(projectId, node);
 							} else {
@@ -2464,9 +2584,7 @@ export class Sidebar {
 	private startWorkspaceRename(workspaceId: string): void {
 		const workspace = this.workspaces.find((entry) => entry.id === workspaceId) ?? null;
 		if (!workspace) return;
-		this.workspaceCreateDialogOpen = false;
-		this.workspaceCreateEmojiPickerOpen = false;
-		this.workspaceCreateEmojiQuery = "";
+		this.closeWorkspaceCreateDialog(false, false);
 		this.workspaceRenameDraft = { workspaceId, value: workspace.title };
 		if (this.activeWorkspaceId !== workspaceId) {
 			this.onWorkspaceSelect?.(workspaceId);
@@ -2508,8 +2626,94 @@ export class Sidebar {
 		return `Workspace ${idx}`;
 	}
 
+	private readonly onWorkspaceCreateDialogFocusIn = (event: FocusEvent): void => {
+		if (!this.workspaceCreateDialogOpen) return;
+		const dialog = this.getWorkspaceCreateDialogElement();
+		if (!dialog) return;
+		const target = event.target instanceof Node ? event.target : null;
+		if (target && dialog.contains(target)) return;
+		this.focusWorkspaceCreateDialogPrimaryInput();
+	};
+
+	private readonly onWorkspaceCreateDialogKeyDown = (event: KeyboardEvent): void => {
+		if (!this.workspaceCreateDialogOpen) return;
+		if (event.key === "Escape") {
+			event.preventDefault();
+			event.stopPropagation();
+			this.closeWorkspaceCreateDialog();
+			return;
+		}
+		if (event.key !== "Tab") return;
+		const focusable = this.getWorkspaceCreateDialogFocusableElements();
+		if (focusable.length === 0) {
+			event.preventDefault();
+			event.stopPropagation();
+			return;
+		}
+		const active = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+		const currentIndex = active ? focusable.findIndex((entry) => entry === active) : -1;
+		const nextIndex = event.shiftKey
+			? currentIndex <= 0
+				? focusable.length - 1
+				: currentIndex - 1
+			: currentIndex === -1 || currentIndex >= focusable.length - 1
+				? 0
+				: currentIndex + 1;
+		event.preventDefault();
+		event.stopPropagation();
+		focusable[nextIndex]?.focus();
+	};
+
+	private getWorkspaceCreateDialogElement(): HTMLElement | null {
+		const host = this.workspaceCreatePortalHost && document.body.contains(this.workspaceCreatePortalHost)
+			? this.workspaceCreatePortalHost
+			: this.container;
+		return host.querySelector<HTMLElement>(".sidebar-space-dialog");
+	}
+
+	private getWorkspaceCreateDialogFocusableElements(): HTMLElement[] {
+		const dialog = this.getWorkspaceCreateDialogElement();
+		if (!dialog) return [];
+		return [...dialog.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)].filter((el) => !el.hasAttribute("disabled") && el.tabIndex !== -1);
+	}
+
+	private focusWorkspaceCreateDialogPrimaryInput(selectText = false): void {
+		const dialog = this.getWorkspaceCreateDialogElement();
+		if (!dialog) return;
+		const input = dialog.querySelector<HTMLInputElement>(".sidebar-space-name-input");
+		if (input) {
+			input.focus();
+			if (selectText) input.select();
+			return;
+		}
+		const firstFocusable = this.getWorkspaceCreateDialogFocusableElements()[0] ?? null;
+		firstFocusable?.focus();
+	}
+
+	private enableWorkspaceCreateDialogFocusTrap(): void {
+		if (this.workspaceCreateDialogFocusTrapActive) return;
+		window.addEventListener("keydown", this.onWorkspaceCreateDialogKeyDown, true);
+		document.addEventListener("focusin", this.onWorkspaceCreateDialogFocusIn, true);
+		this.workspaceCreateDialogFocusTrapActive = true;
+	}
+
+	private disableWorkspaceCreateDialogFocusTrap(): void {
+		if (!this.workspaceCreateDialogFocusTrapActive) return;
+		window.removeEventListener("keydown", this.onWorkspaceCreateDialogKeyDown, true);
+		document.removeEventListener("focusin", this.onWorkspaceCreateDialogFocusIn, true);
+		this.workspaceCreateDialogFocusTrapActive = false;
+	}
+
+	private restoreWorkspaceCreateDialogFocus(): void {
+		const target = this.workspaceCreateDialogRestoreFocus;
+		this.workspaceCreateDialogRestoreFocus = null;
+		if (!target || !document.contains(target)) return;
+		requestAnimationFrame(() => target.focus());
+	}
+
 	private openWorkspaceCreateDialog(): void {
 		this.workspaceRenameDraft = null;
+		this.workspaceCreateDialogRestoreFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
 		this.workspaceCreateDialogOpen = true;
 		this.workspaceCreateName = this.nextWorkspaceDraftName();
 		this.workspaceCreateEmoji = "✨";
@@ -2518,20 +2722,20 @@ export class Sidebar {
 		this.workspaceMenuOpen = false;
 		this.closeWorkspaceEmojiPicker(false);
 		this.closeContextMenu(false);
+		this.enableWorkspaceCreateDialogFocusTrap();
 		this.render();
-		requestAnimationFrame(() => {
-			const input = this.container.querySelector<HTMLInputElement>(".sidebar-space-name-input");
-			input?.focus();
-			input?.select();
-		});
+		requestAnimationFrame(() => this.focusWorkspaceCreateDialogPrimaryInput(true));
 	}
 
-	private closeWorkspaceCreateDialog(shouldRender = true): void {
-		if (!this.workspaceCreateDialogOpen) return;
+	private closeWorkspaceCreateDialog(shouldRender = true, restoreFocus = true): void {
+		const wasOpen = this.workspaceCreateDialogOpen;
 		this.workspaceCreateDialogOpen = false;
 		this.workspaceCreateEmojiPickerOpen = false;
 		this.workspaceCreateEmojiQuery = "";
-		if (shouldRender) this.render();
+		this.disableWorkspaceCreateDialogFocusTrap();
+		if (restoreFocus && wasOpen) this.restoreWorkspaceCreateDialogFocus();
+		else this.workspaceCreateDialogRestoreFocus = null;
+		if (shouldRender && wasOpen) this.render();
 	}
 
 	private filteredWorkspaceCreateEmojis(): typeof EMOJI_CATALOG {
@@ -2543,7 +2747,7 @@ export class Sidebar {
 	private createWorkspaceFromDialog(): void {
 		const title = this.workspaceCreateName.trim() || this.nextWorkspaceDraftName();
 		const emoji = this.workspaceCreateEmoji.trim() || "✨";
-		this.closeWorkspaceCreateDialog(false);
+		this.closeWorkspaceCreateDialog(false, false);
 		this.onWorkspaceCreate?.({ title, emoji });
 		this.render();
 	}
@@ -2620,8 +2824,7 @@ export class Sidebar {
 		event.preventDefault();
 		if (!this.draggingWorkspaceId) return;
 		if (this.workspaceCreateDialogOpen) {
-			this.workspaceCreateDialogOpen = false;
-			this.workspaceCreateEmojiPickerOpen = false;
+			this.closeWorkspaceCreateDialog(false, false);
 		}
 		if (startedDrag) {
 			this.render();
@@ -3216,8 +3419,15 @@ export class Sidebar {
 		if (!this.workspaceCreateDialogOpen) return nothing;
 		const filteredEmojis = this.filteredWorkspaceCreateEmojis();
 		return html`
-			<div class="sidebar-space-dialog-backdrop" @click=${() => this.closeWorkspaceCreateDialog()}>
-				<div class="sidebar-space-dialog" @click=${(event: Event) => event.stopPropagation()}>
+			<div class="sidebar-space-dialog-backdrop" role="presentation" @click=${() => this.closeWorkspaceCreateDialog()}>
+				<div
+					class="sidebar-space-dialog"
+					role="dialog"
+					aria-modal="true"
+					aria-label="Create a Space"
+					@click=${(event: Event) => event.stopPropagation()}
+					@keydown=${(event: KeyboardEvent) => event.stopPropagation()}
+				>
 					<div class="sidebar-space-dialog-title">Create a Space</div>
 					<div class="sidebar-space-dialog-copy">Spaces are used to organize your tabs and sessions.</div>
 					<div class="sidebar-space-name-row">
@@ -3338,6 +3548,22 @@ export class Sidebar {
 				</div>
 			</div>
 		`;
+	}
+
+	private ensureWorkspaceCreateDialogPortalHost(): HTMLElement | null {
+		if (typeof document === "undefined") return null;
+		if (this.workspaceCreatePortalHost && document.body.contains(this.workspaceCreatePortalHost)) return this.workspaceCreatePortalHost;
+		const host = document.createElement("div");
+		host.className = "sidebar-space-dialog-portal-host";
+		document.body.appendChild(host);
+		this.workspaceCreatePortalHost = host;
+		return host;
+	}
+
+	private renderWorkspaceCreateDialogPortal(): void {
+		const host = this.ensureWorkspaceCreateDialogPortalHost();
+		if (!host) return;
+		render(this.renderWorkspaceCreateDialog(), host);
 	}
 
 	private ensureProjectEmojiPortalHost(): HTMLElement | null {
@@ -3724,7 +3950,35 @@ export class Sidebar {
 		`;
 	}
 
+	private renderSettingsShellBody(): TemplateResult {
+		if (this.settingsNavItems.length === 0) {
+			return html`<div class="sidebar-empty">Loading settings sections…</div>`;
+		}
+
+		return html`
+			<div class="sidebar-settings-nav-list">
+				${this.settingsNavItems.map((item) => {
+					const active = item.id === this.activeSettingsNavId;
+					return html`
+						<button
+							class="sidebar-settings-nav-item ${active ? "active" : ""}"
+							?disabled=${Boolean(item.disabled)}
+							@click=${() => {
+								if (item.disabled) return;
+								this.onSettingsNavSelect?.(item.id);
+							}}
+						>
+							<span class="sidebar-settings-nav-label">${item.label}</span>
+							${item.description ? html`<span class="sidebar-settings-nav-desc">${item.description}</span>` : nothing}
+						</button>
+					`;
+				})}
+			</div>
+		`;
+	}
+
 	private renderModeBody(): TemplateResult {
+		if (this.settingsShellActive) return this.renderSettingsShellBody();
 		if (this.mode === "files") return this.renderFilesMode();
 		return this.renderProjectsMode();
 	}
@@ -3861,67 +4115,80 @@ export class Sidebar {
 				${this.renderWorkspaceWindowRow()}
 
 				<div class="sidebar-topbar" data-tauri-drag-region>
-					${this.renderWorkspaceHeader()}
-					${this.desktopUpdateAvailable
+					${this.settingsShellActive ? nothing : this.renderWorkspaceHeader()}
+					${this.settingsShellActive
 						? html`
-							<button class="sidebar-cli-update-banner sidebar-desktop-update-banner" @click=${() => this.onOpenSettings?.()}>
-								<span>
-									Desktop update available${this.desktopUpdateLatestVersion ? ` · v${this.desktopUpdateLatestVersion}` : ""}
-								</span>
-								<span class="sidebar-cli-update-cta">Open settings</span>
-							</button>
+							<div class="sidebar-settings-shell-header">
+								<div class="sidebar-mode-current">Settings</div>
+								<div class="sidebar-settings-shell-subtitle">Choose a section</div>
+							</div>
 						`
-						: nothing}
-					${this.cliUpdateAvailable
-						? html`
-							<button class="sidebar-cli-update-banner" @click=${() => this.onOpenSettings?.()}>
-								<span>
-									CLI update available${this.cliUpdateLatestVersion ? ` · v${this.cliUpdateLatestVersion}` : ""}
-								</span>
-								<span class="sidebar-cli-update-cta">Open settings</span>
-							</button>
-						`
-						: nothing}
-					<div class="sidebar-top-actions sidebar-top-actions-primary">
-						<button
-							class="sidebar-top-action-btn"
-							title=${this.mode === "files" ? "New file" : "New session"}
-							?disabled=${!hasActiveProject}
-							@click=${() => void this.triggerPrimaryTopAction()}
-						>
-							<span>${this.mode === "files" ? "New file" : "New session"}</span>
-						</button>
-						<button class="sidebar-top-action-btn ${this.packagesOpen ? "active" : ""}" title="Packages" @click=${() => this.onTogglePackages?.()}>
-							<span>Packages</span>
-						</button>
-					</div>
+						: html`
+							${this.desktopUpdateAvailable
+								? html`
+									<button class="sidebar-cli-update-banner sidebar-desktop-update-banner" @click=${() => this.onOpenSettings?.()}>
+										<span>
+											Desktop update available${this.desktopUpdateLatestVersion ? ` · v${this.desktopUpdateLatestVersion}` : ""}
+										</span>
+										<span class="sidebar-cli-update-cta">Open settings</span>
+									</button>
+								`
+								: nothing}
+							${this.cliUpdateAvailable
+								? html`
+									<button class="sidebar-cli-update-banner" @click=${() => this.onOpenSettings?.()}>
+										<span>
+											CLI update available${this.cliUpdateLatestVersion ? ` · v${this.cliUpdateLatestVersion}` : ""}
+										</span>
+										<span class="sidebar-cli-update-cta">Open settings</span>
+									</button>
+								`
+								: nothing}
+							<div class="sidebar-top-actions sidebar-top-actions-primary">
+								<button
+									class="sidebar-top-action-btn"
+									title=${this.mode === "files" ? "New file" : "New session"}
+									?disabled=${!hasActiveProject}
+									@click=${() => void this.triggerPrimaryTopAction()}
+								>
+									<span>${this.mode === "files" ? "New file" : "New session"}</span>
+								</button>
+								<button class="sidebar-top-action-btn ${this.packagesOpen ? "active" : ""}" title="Packages" @click=${() => this.onTogglePackages?.()}>
+									<span>Packages</span>
+								</button>
+							</div>
+						`}
 				</div>
 
 				<div class="sidebar-section-divider" aria-hidden="true"></div>
 
-				<div class="sidebar-mode-row">
-					<div class="sidebar-mode-meta">
-						<div class="sidebar-mode-current">${this.mode === "projects" ? "Sessions" : "Files"}</div>
-						<div class="sidebar-mode-switch">
-							${this.renderModeSwitch()}
+				${this.settingsShellActive
+					? nothing
+					: html`
+						<div class="sidebar-mode-row">
+							<div class="sidebar-mode-meta">
+								<div class="sidebar-mode-current">${this.mode === "projects" ? "Sessions" : "Files"}</div>
+								<div class="sidebar-mode-switch">
+									${this.renderModeSwitch()}
+								</div>
+							</div>
+							<div class="sidebar-mode-actions">
+								<button class="sidebar-mode-create-btn" title="Add project" @click=${() => void this.handleModeCreateAction()}>
+									<svg class="sidebar-icon-svg" viewBox="0 0 16 16" aria-hidden="true">
+										<path d="M2.5 4.5h4l1.3 1.5h5.7v5a1 1 0 0 1-1 1h-10a1 1 0 0 1-1-1v-5a1 1 0 0 1 1-1z" />
+										<path d="M8 7.2v3.6" />
+										<path d="M6.2 9h3.6" />
+									</svg>
+								</button>
+								<button class="sidebar-mode-filter-btn" title=${this.mode === "projects" ? "Organize sessions" : "Filter files"} @click=${() => this.toggleModeFilterMenu()}>
+									<svg class="sidebar-icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4h10"/><path d="M5 8h6"/><path d="M7 12h2"/></svg>
+								</button>
+								${this.renderModeFilterMenu()}
+							</div>
 						</div>
-					</div>
-					<div class="sidebar-mode-actions">
-						<button class="sidebar-mode-create-btn" title="Add project" @click=${() => void this.handleModeCreateAction()}>
-							<svg class="sidebar-icon-svg" viewBox="0 0 16 16" aria-hidden="true">
-								<path d="M2.5 4.5h4l1.3 1.5h5.7v5a1 1 0 0 1-1 1h-10a1 1 0 0 1-1-1v-5a1 1 0 0 1 1-1z" />
-								<path d="M8 7.2v3.6" />
-								<path d="M6.2 9h3.6" />
-							</svg>
-						</button>
-						<button class="sidebar-mode-filter-btn" title=${this.mode === "projects" ? "Organize sessions" : "Filter files"} @click=${() => this.toggleModeFilterMenu()}>
-							<svg class="sidebar-icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4h10"/><path d="M5 8h6"/><path d="M7 12h2"/></svg>
-						</button>
-						${this.renderModeFilterMenu()}
-					</div>
-				</div>
+					`}
 
-				<div class="sidebar-panel-body">
+				<div class="sidebar-panel-body ${this.settingsShellActive ? "sidebar-panel-body-settings" : ""}">
 					${this.renderModeBody()}
 				</div>
 
@@ -3929,13 +4196,13 @@ export class Sidebar {
 					${this.renderWorkspaceDock()}
 				</div>
 
-				${this.renderWorkspaceCreateDialog()}
 				${this.renderWorkspaceEmojiPicker()}
 				${this.renderContextMenu()}
 			</div>
 		`;
 
 		render(template, this.container);
+		this.renderWorkspaceCreateDialogPortal();
 		this.renderProjectEmojiPickerPortal();
 	}
 }

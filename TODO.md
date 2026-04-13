@@ -1,5 +1,160 @@
 # TODO — V1/V1.1 release cleanup plan
 
+## Session update (2026-04-10) — Terminal architecture reset (#48 auth/login follow-up)
+
+Status: **In progress (stabilization first, architecture decision next)**
+
+### Root-cause notes from investigation
+- [x] Confirmed `@tauri-apps/plugin-shell` is **process I/O**, not a full terminal emulator/PTY host by itself.
+- [x] Confirmed plugin-shell default streamed events are line-delimited; raw mode returns byte payloads and needs explicit decoding.
+- [x] Confirmed our regression came from raw payload shape mismatch in desktop runtime (`number[]`/raw payload rendered as textified numbers).
+- [x] Confirmed dedicated terminal examples (`tauri-terminal`, `Terminaux`) use **portable-pty + xterm.js** architecture, not line-mode shell streaming.
+
+### Stabilization plan (current branch)
+- [x] Hotfix raw byte decoding for interactive mode (`pi`, `pi login`) so TUI escape stream is decoded correctly.
+- [x] Restore safe xterm newline handling and viewport rendering guards (remove diagonal numeric rendering artifacts).
+- [ ] Re-run manual QA matrix for terminal dock:
+  - [ ] plain shell commands (`ls`, `pwd`, `cd`, clear)
+  - [ ] `pi` interactive render + keyboard controls
+  - [ ] `pi login <provider>` bridge => `/login` picker path
+  - [ ] clear/abort behavior (no duplicate prompt)
+  - [ ] resize behavior (no bottom clipping/black strip)
+
+### Next architecture step (after stabilization)
+- [ ] Decide terminal backend direction explicitly:
+  - [ ] **A:** keep `script` bridge (quick, minimal, known limitations)
+  - [ ] **B:** implement native Rust PTY bridge (`portable-pty`) with resize/write/read events (recommended)
+- [ ] If path **B** chosen, create dedicated implementation issue + phased rollout:
+  - [ ] Rust PTY session manager (spawn, write, resize, kill)
+  - [ ] Tauri commands/events for binary-safe stream transport
+  - [ ] xterm integration with deterministic lifecycle per workspace tab
+  - [ ] login/auth flows reused on top of PTY primitive (no one-off hacks)
+
+## Session update (2026-04-04) — Issue #70
+
+Status: **In progress, near completion**
+
+Done in this session:
+- [x] Replaced hardcoded slash “Actions” with CLI-aligned command handling + runtime command discovery (`extension`/`prompt`/`skill`).
+- [x] Fixed slash execution reliability (`/compact`, `/settings`, `/model`, etc.) so slash input no longer falls back to sending plain `/` prompts.
+- [x] Added deterministic slash selection behavior (exact match / active menu item) and unknown-command handling.
+- [x] Removed command echo noise in chat canvas for desktop-mapped slash actions.
+- [x] Reworked compaction UX to minimal workflow-style row (no heavy card), with collapsed-by-default details and timeline-stable insertion.
+- [x] Fixed workflow summary counts to report combined outcomes (e.g. complete + failed + running).
+- [x] Removed blinking streaming cursor from assistant message body.
+- [x] Removed composer status line noise beneath model picker.
+- [x] Filtered internal extension status keys (e.g. `oqto_title_changed`) so extension title-sync does not render stray text above composer controls.
+
+Remaining before closing #70:
+- [ ] Final command-by-command QA matrix pass and polish (especially less-used built-ins and extension-config command mappings).
+  - [x] Composer history polish complete (`ArrowUp`/`ArrowDown` traverses full message/command history terminal-style).
+  - [x] Slash palette keyboard UX polish complete (active row visibility + live composer command preview while navigating).
+  - [x] Command palette keyboard visibility polish complete (selected command row auto-scrolls into view).
+  - [x] User message bubble width/render regression fixed (no more squeezed `he j` wrapping artifacts on short messages).
+  - [x] Alt+Enter queued-follow-up UX polished: queued items stay in a minimal composer queue strip and no longer override the active chat canvas flow during tool runs.
+  - [x] `/name` parity pass complete (inline sidebar rename when no arg, shared rename pipeline when arg provided).
+  - [x] `/new` parity pass complete (reuses sidebar fresh-session flow via `startFreshSessionTab()`).
+  - [x] `/import` parity pass complete (supports native file picker when no path arg is provided).
+  - [x] `/export` parity pass complete (supports native save picker when no path arg is provided).
+  - [x] `/reload` parity pass complete (restarts active runtime bridge, then refreshes state/models/commands).
+  - [x] `/session` parity pass complete (renders detailed session info block in timeline, not just a toast).
+  - [x] `/share` parity pass complete (CLI-aligned secret gist flow via `gh`, exported as `session.html`, minimal clickable output).
+  - [x] `/tree` UX polish pass complete (supports prefilled `/tree <query>`, full JSONL-backed session-tree browse across branches, terminal-like inline tree connectors, active-path markers, and quick fork actions).
+  - [x] `/scoped-models` native Settings implementation complete (searchable model scope editor with provider toggles + persisted `enabledModels` save path).
+  - [x] `/login` + `/logout` polish pass complete (terminal-only guidance with compact auth row; no misleading settings mapping).
+  - [x] `/changelog` parity pass complete (loads Pi Coding Agent changelog from CLI package; shows latest sections in collapsible/scrollable row with `/changelog all` option).
+  - [x] `/fork` parity pass updated (`/fork <query>` pre-fills user-message fork selector, aligned with CLI user-only fork model).
+  - [x] `/resume` UX polish pass complete (`/resume <query>` pre-fills session-browser search).
+  - [x] `/model` UX polish pass complete (non-exact args open picker with provider-aware hinting; no noisy mismatch toast).
+- [ ] Update issue comments/changelog with final verified behavior and close #70 only after smoke checks.
+- [ ] Keep `/tree` + `/fork` minor UI polish out of #70 close criteria and track in dedicated follow-up issue (`issues/tree-fork-polish-followup.md`).
+
+## Chat interface sweep plan (new branch)
+
+Branch: `feat/chat-interface-issue-sweep` (based on `origin/dev`)
+
+Scope (deduped): **#49, #50, #52, #53, #54, #55, #63, #70, #72**
+
+Latest session recap (chat sweep):
+- [x] Workflow dropdown state stabilized (manual collapse override respected during active runs).
+- [x] Thinking/tool timeline ordering and streaming dedupe hardened.
+- [x] Code-block UX polished and assistant-level duplicate copy action removed for pure fenced-block replies.
+- [ ] Remaining: slash action audit/cleanup (#70) and final PR packaging/issue closure notes.
+
+### A) Markdown/code rendering integrity + readability
+Issues: #49, #50, #54
+
+- [x] #49 Ensure fenced code blocks always render in chat and file markdown contexts.
+  - [x] Verify `CodeBlock` component registration/import in all markdown hosts.
+  - [ ] Add regression check for language-tagged and plain fenced blocks.
+- [x] #50 Make code-block copy actions hover/focus-only (keyboard accessible).
+  - [x] No layout jump when action appears.
+  - [x] Keep inline code behavior unchanged.
+- [x] #54 Remove chat-level horizontal overflow for normal text flow.
+  - [x] Add robust wrapping (`overflow-wrap`) for long tokens/pasted formatted text.
+  - [x] Preserve horizontal scroll only inside code blocks.
+
+Acceptance gate:
+- [ ] No missing code blocks
+- [ ] No chat-level horizontal scrollbar for normal messages
+- [ ] Copy action UX matches hover/focus behavior
+
+### B) Chat canvas tool/compaction noise reduction
+Issues: #52, #55, #72
+
+- [x] #52 Compact tool rows by default with meaningful action preview text.
+  - [x] Progressive disclosure for full details.
+  - [x] Group repeated consecutive same-tool runs (`tool × N`).
+- [x] #55 Use a single collapsible compaction status element per cycle.
+  - [x] State transitions in-place (`running -> done -> error`) with no duplicate blocks.
+- [x] #72 Investigate/fix weird tool result rows after steer message.
+  - [x] Reproduce from screenshot scenario.
+  - [x] Add guard/normalization for post-steer tool event/result mapping.
+
+Acceptance gate:
+- [ ] Assistant text remains dominant in tool-heavy runs
+- [ ] No duplicate compaction/tool status boxes
+- [ ] Steer flow no longer produces malformed tool entries
+
+### C) Composer/scroll/actions behavior
+Issues: #53, #70
+
+- [x] #53 Dynamic composer offset so latest content is always visible.
+  - [x] Measure composer with `ResizeObserver`.
+  - [x] Drive chat bottom padding and jump-to-latest offset via CSS variable.
+- [ ] #70 Audit slash actions (`/`) and keep only meaningful chat-surface actions.
+  - [ ] Verify `/compact` and other supported actions are functional.
+  - [x] Remove/disable slash actions already covered by better UX entrypoints.
+
+Acceptance gate:
+- [ ] Bottom-most assistant content never hidden by tall composer
+- [ ] Slash action list is reliable and intentionally curated
+
+### D) Roadmap alignment / parity integration
+Issue: #63 (umbrella)
+
+- [ ] Keep #63 open as umbrella and close sub-issues via implementation PRs.
+- [ ] Track completed slices in issue comments + changelog after each merge.
+- [ ] Ensure clean-room parity guardrails remain documented in PR descriptions.
+
+### Execution order (recommended PR slicing)
+
+- [x] PR-1: Rendering integrity baseline (#49, #54)
+- [x] PR-2: Code block UX polish (#50)
+- [x] PR-3: Composer offset + scroll correctness (#53)
+- [x] PR-4: Tool/compaction timeline cleanup (#52, #55, #72)
+- [ ] PR-5: Slash action audit/cleanup (#70)
+- [ ] PR-6: #63 rollout summary + visual QA pass
+
+### Test matrix (must pass before closing issues)
+
+- [ ] Long markdown/code responses (tagged + untagged fenced blocks)
+- [ ] Large pasted formatted text (no chat horizontal overflow)
+- [ ] Tall composer + attachments + long streaming response
+- [ ] Steer/follow-up runs with multiple tool calls
+- [ ] Slash command smoke (`/compact`, curated list)
+- [ ] Dark/light visual regression snapshots
+
 ## Active issue (current session)
 - [x] #33 RPC reliability: fix duplicate tool cards + loading/reconnect UX
   - [x] Make RPC bridge listener setup idempotent under concurrent `ensureListeners()` calls
@@ -96,6 +251,9 @@ These should be packages/extensions/skills unless there is a very strong reason 
   - [x] simplify the Packages pane into a more minimalist list/row layout with less repeated chrome/text
   - [x] remove manual source install bar from the top-level flow; keep install action on package rows
   - [x] diagnostics/load errors where possible
+  - [x] prevent packages-page horizontal overflow from long command/status output
+  - [x] make discover-row `+` action open details modal first (no silent background install)
+  - [x] close extension modal immediately on uninstall action
 - [ ] Add proper per-resource enable/disable UX
   - [ ] do **not** shell users into the interactive `pi config` TUI
   - [ ] prefer direct config/settings-driven desktop UX
@@ -120,7 +278,7 @@ These should be packages/extensions/skills unless there is a very strong reason 
   - [ ] no default notification package
   - [x] external/recommended notification package
   - [ ] opt-in first-run “Enable notifications” flow
-- [ ] Ensure upstream `pi-desktop-notify` release is RPC-desktop-safe (`ctx.ui.notify`) without terminal-focus/stdout side effects (current npm v1.0.1 needed a local hotfix during testing)
+- [ ] Validate default recommended notification package (`pi-smart-voice-notify`) remains RPC-desktop-safe (`ctx.ui.notify`) across foreground/background runtime scenarios.
 
 ### Important note
 - [x] Verified: `pi-notify` is real and useful for terminal-hosted Pi
@@ -173,13 +331,17 @@ The app should feel native while still reflecting Pi’s actual resource model.
 - [x] Remove animated/dot unread styling; keep static unread emphasis (bold + italic)
 - [x] Add first-run onboarding card when Pi CLI is missing (install + copy command + retry)
 - [x] Add in-app Pi CLI update signaling (startup + daily reminder + sidebar hint + settings update path)
+- [x] Harden settings pane open/render lifecycle across no-project + project-switch states (#69)
+- [x] Rework Settings IA: move section navigation into the main app sidebar while Settings content becomes cleaner/simpler in the right pane (no-project-safe section fallback retained).
+- [x] Refine no-project/new-thread welcome dashboard toward clean Codex-inspired centered flow (#63, partial)
 - [ ] Final new-file draft UX polish pass
 - [ ] Final session delete/select stability polish pass
+- [x] Terminal UX baseline pass: switch from terminal-tab pane to bottom docked terminal in chat (VS Code-style), then polish into xterm-powered terminal surface with isolated shell execution (no chat-canvas leakage), `cd` cwd handling, and clear/abort keyboard controls.
 
 ### Manual smoke tests that still matter
 - [ ] Parallel runs in separate session tabs with different models
 - [ ] Legacy session restore / old session reopen after restart
-- [ ] Remove all projects => immediate clean no-project dashboard
+- [x] Remove all projects => immediate clean no-project dashboard
 - [ ] Packages pane navigation from no-project state
 - [ ] Package install/remove/update/list flow in real Tauri app
 - [ ] Command-backed resources actually reflect installed extensions/skills/prompts on machine

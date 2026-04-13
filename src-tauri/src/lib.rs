@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -209,6 +209,12 @@ fn discover_pi_from_common_locations() -> Option<PathBuf> {
             candidates.push(PathBuf::from(program_files_x86).join("nodejs").join("pi.cmd"));
         }
 
+        if let Ok(program_data) = std::env::var("ProgramData") {
+            let program_data_dir = PathBuf::from(program_data);
+            candidates.push(program_data_dir.join("npm").join("pi.cmd"));
+            candidates.push(program_data_dir.join("npm").join("pi.exe"));
+        }
+
         if let Ok(nvm_home) = std::env::var("NVM_HOME") {
             candidates.push(PathBuf::from(nvm_home).join("pi.cmd"));
         }
@@ -314,6 +320,114 @@ fn discover_npm_path(pi: Option<&PiProcess>) -> Option<PathBuf> {
     candidates.into_iter().find(|candidate| candidate.is_file())
 }
 
+fn discover_npm_global_root(pi: Option<&PiProcess>) -> Option<PathBuf> {
+    let npm_path = discover_npm_path(pi)?;
+
+    let mut cmd = Command::new(&npm_path);
+    cmd.arg("root")
+        .arg("-g")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    if let Some(parent) = npm_path.parent() {
+        prepend_bin_dir_to_path(&mut cmd, parent);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+
+    let output = cmd.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let root = stdout
+        .lines()
+        .next()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())?;
+
+    let path = PathBuf::from(root);
+    if path.is_dir() {
+        Some(path)
+    } else {
+        None
+    }
+}
+
+fn resolve_pi_changelog_candidates(pi: &PiProcess) -> Vec<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+
+    if let Ok(pkg_dir) = std::env::var("PI_PACKAGE_DIR") {
+        let trimmed = pkg_dir.trim();
+        if !trimmed.is_empty() {
+            candidates.push(PathBuf::from(trimmed).join("CHANGELOG.md"));
+        }
+    }
+
+    match pi {
+        PiProcess::DevNode { script } => {
+            let script_path = PathBuf::from(script);
+            if let Some(dist_dir) = script_path.parent() {
+                candidates.push(dist_dir.join("..").join("CHANGELOG.md"));
+            }
+        }
+        PiProcess::PathBinary { path } | PiProcess::SidecarBinary { path } => {
+            let mut binaries = vec![path.clone()];
+            if let Ok(canonical) = fs::canonicalize(path) {
+                binaries.push(canonical);
+            }
+            for binary in binaries {
+                if let Some(parent) = binary.parent() {
+                    candidates.push(
+                        parent
+                            .join("..")
+                            .join("lib")
+                            .join("node_modules")
+                            .join("@mariozechner")
+                            .join("pi-coding-agent")
+                            .join("CHANGELOG.md"),
+                    );
+                    candidates.push(
+                        parent
+                            .join("..")
+                            .join("node_modules")
+                            .join("@mariozechner")
+                            .join("pi-coding-agent")
+                            .join("CHANGELOG.md"),
+                    );
+                    candidates.push(
+                        parent
+                            .join("..")
+                            .join("..")
+                            .join("lib")
+                            .join("node_modules")
+                            .join("@mariozechner")
+                            .join("pi-coding-agent")
+                            .join("CHANGELOG.md"),
+                    );
+                }
+            }
+        }
+    }
+
+    if let Some(global_root) = discover_npm_global_root(Some(pi)) {
+        candidates.push(
+            global_root
+                .join("@mariozechner")
+                .join("pi-coding-agent")
+                .join("CHANGELOG.md"),
+        );
+    }
+
+    candidates
+}
+
 fn discover_pi_from_env_override() -> Option<PathBuf> {
     for key in ["PI_DESKTOP_PI_PATH", "PI_CLI_PATH"] {
         if let Ok(raw) = std::env::var(key) {
@@ -331,6 +445,20 @@ fn discover_pi_from_env_override() -> Option<PathBuf> {
         }
     }
     None
+}
+
+fn missing_pi_cli_error(additional: Option<String>) -> String {
+    let mut message = String::from(
+        "Could not find the pi CLI.\n\nInstall it with:\n  npm install -g @mariozechner/pi-coding-agent\n\nThen restart the app.",
+    );
+    if let Some(extra) = additional {
+        let trimmed = extra.trim();
+        if !trimmed.is_empty() {
+            message.push_str("\n\n");
+            message.push_str(trimmed);
+        }
+    }
+    message
 }
 
 /// Discover the pi binary. Strategy:
@@ -380,10 +508,7 @@ fn discover_pi(app: &AppHandle, options: &RpcStartOptions) -> Result<PiProcess, 
         return Ok(PiProcess::PathBinary { path });
     }
 
-    Err("Could not find the pi CLI.\n\n\
-         Install it with:\n  npm install -g @mariozechner/pi-coding-agent\n\n\
-         Then restart the app."
-        .to_string())
+    Err(missing_pi_cli_error(None))
 }
 
 /// Build a Command for the discovered pi process
@@ -481,9 +606,19 @@ async fn rpc_start(
     let discovery_label = format!("{:?}", pi);
 
     let mut cmd = build_command(&pi, &options);
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("Failed to spawn pi process ({:?}): {}", pi, e))?;
+    let mut child = cmd.spawn().map_err(|e| {
+        let lower = e.to_string().to_lowercase();
+        let missing_executable = matches!(e.raw_os_error(), Some(2) | Some(3))
+            || e.kind() == std::io::ErrorKind::NotFound
+            || (lower.contains("createprocess") && lower.contains("cannot find"));
+        if missing_executable {
+            return missing_pi_cli_error(Some(format!(
+                "Discovery details: {:?}\nSpawn error: {}",
+                pi, e
+            )));
+        }
+        format!("Failed to spawn pi process ({:?}): {}", pi, e)
+    })?;
 
     let stdin = child.stdin.take().ok_or("Failed to get stdin")?;
     let stdout = child.stdout.take().ok_or("Failed to get stdout")?;
@@ -883,6 +1018,43 @@ struct PiAuthStatus {
     configured_providers: Vec<PiAuthProviderStatus>,
 }
 
+fn provider_env_var_map() -> [(&'static str, &'static str); 16] {
+    [
+        ("anthropic", "ANTHROPIC_API_KEY"),
+        ("azure-openai-responses", "AZURE_OPENAI_API_KEY"),
+        ("openai", "OPENAI_API_KEY"),
+        ("google", "GEMINI_API_KEY"),
+        ("mistral", "MISTRAL_API_KEY"),
+        ("groq", "GROQ_API_KEY"),
+        ("cerebras", "CEREBRAS_API_KEY"),
+        ("xai", "XAI_API_KEY"),
+        ("openrouter", "OPENROUTER_API_KEY"),
+        ("vercel-ai-gateway", "AI_GATEWAY_API_KEY"),
+        ("zai", "ZAI_API_KEY"),
+        ("opencode", "OPENCODE_API_KEY"),
+        ("huggingface", "HF_TOKEN"),
+        ("kimi-coding", "KIMI_API_KEY"),
+        ("minimax", "MINIMAX_API_KEY"),
+        ("minimax-cn", "MINIMAX_CN_API_KEY"),
+    ]
+}
+
+fn provider_env_var(provider: &str) -> Option<&'static str> {
+    for (name, env_key) in provider_env_var_map() {
+        if name == provider {
+            return Some(env_key);
+        }
+    }
+    None
+}
+
+fn provider_env_var_is_set(provider: &str) -> bool {
+    provider_env_var(provider)
+        .and_then(|env_key| std::env::var_os(env_key))
+        .map(|value| !value.is_empty())
+        .unwrap_or(false)
+}
+
 /// Inspect PI auth configuration from auth.json + environment variables.
 #[tauri::command]
 async fn get_pi_auth_status() -> Result<PiAuthStatus, String> {
@@ -927,26 +1099,7 @@ async fn get_pi_auth_status() -> Result<PiAuthStatus, String> {
     }
 
     // Known provider env var mapping from docs/providers.md (core API key providers)
-    let provider_env_map = [
-        ("anthropic", "ANTHROPIC_API_KEY"),
-        ("azure-openai-responses", "AZURE_OPENAI_API_KEY"),
-        ("openai", "OPENAI_API_KEY"),
-        ("google", "GEMINI_API_KEY"),
-        ("mistral", "MISTRAL_API_KEY"),
-        ("groq", "GROQ_API_KEY"),
-        ("cerebras", "CEREBRAS_API_KEY"),
-        ("xai", "XAI_API_KEY"),
-        ("openrouter", "OPENROUTER_API_KEY"),
-        ("vercel-ai-gateway", "AI_GATEWAY_API_KEY"),
-        ("zai", "ZAI_API_KEY"),
-        ("opencode", "OPENCODE_API_KEY"),
-        ("huggingface", "HF_TOKEN"),
-        ("kimi-coding", "KIMI_API_KEY"),
-        ("minimax", "MINIMAX_API_KEY"),
-        ("minimax-cn", "MINIMAX_CN_API_KEY"),
-    ];
-
-    for (provider, env_key) in provider_env_map {
+    for (provider, env_key) in provider_env_var_map() {
         let env_present = std::env::var_os(env_key)
             .map(|v| !v.is_empty())
             .unwrap_or(false);
@@ -974,6 +1127,388 @@ async fn get_pi_auth_status() -> Result<PiAuthStatus, String> {
         auth_file_exists,
         configured_providers,
     })
+}
+
+#[derive(Debug, Serialize)]
+struct PiProviderAuthClearResult {
+    provider: String,
+    removed: bool,
+    source: String,
+}
+
+/// Remove provider credentials from ~/.pi/agent/auth.json when present.
+#[tauri::command]
+async fn clear_pi_provider_auth(provider: String) -> Result<PiProviderAuthClearResult, String> {
+    let normalized = provider.trim().to_lowercase();
+    if normalized.is_empty() {
+        return Err("Provider cannot be empty".to_string());
+    }
+
+    let agent_dir = get_pi_agent_dir();
+    let auth_file_path = agent_dir.as_ref().map(|dir| dir.join("auth.json"));
+    let mut removed = false;
+
+    if let Some(path) = &auth_file_path {
+        if path.exists() && path.is_file() {
+            let content = fs::read_to_string(path)
+                .map_err(|e| format!("Failed to read auth file: {}", e))?;
+            let mut parsed = serde_json::from_str::<serde_json::Value>(&content)
+                .unwrap_or_else(|_| serde_json::json!({}));
+
+            if !parsed.is_object() {
+                parsed = serde_json::json!({});
+            }
+
+            if let Some(map) = parsed.as_object_mut() {
+                if map.remove(&normalized).is_some() {
+                    removed = true;
+                    let serialized = serde_json::to_string_pretty(&parsed)
+                        .map_err(|e| format!("Failed to serialize auth file: {}", e))?;
+                    fs::write(path, format!("{}\n", serialized))
+                        .map_err(|e| format!("Failed to write auth file: {}", e))?;
+
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+                    }
+                }
+            }
+        }
+    }
+
+    let source = if removed {
+        "auth_file"
+    } else if provider_env_var_is_set(&normalized) {
+        "environment"
+    } else {
+        "missing"
+    }
+    .to_string();
+
+    Ok(PiProviderAuthClearResult {
+        provider: normalized,
+        removed,
+        source,
+    })
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct PiOAuthProviderInfo {
+    id: String,
+    name: String,
+    source: String,
+}
+
+fn builtin_oauth_provider_info() -> Vec<PiOAuthProviderInfo> {
+    vec![
+        PiOAuthProviderInfo {
+            id: "anthropic".to_string(),
+            name: "Anthropic".to_string(),
+            source: "built_in".to_string(),
+        },
+        PiOAuthProviderInfo {
+            id: "github-copilot".to_string(),
+            name: "GitHub Copilot".to_string(),
+            source: "built_in".to_string(),
+        },
+        PiOAuthProviderInfo {
+            id: "google-gemini-cli".to_string(),
+            name: "Google Gemini CLI".to_string(),
+            source: "built_in".to_string(),
+        },
+        PiOAuthProviderInfo {
+            id: "google-antigravity".to_string(),
+            name: "Google Antigravity".to_string(),
+            source: "built_in".to_string(),
+        },
+        PiOAuthProviderInfo {
+            id: "openai-codex".to_string(),
+            name: "OpenAI Codex".to_string(),
+            source: "built_in".to_string(),
+        },
+    ]
+}
+
+fn humanize_provider_id(provider_id: &str) -> String {
+    provider_id
+        .split(|ch: char| ch == '-' || ch == '_' || ch.is_whitespace())
+        .filter(|part| !part.trim().is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(first) => format!("{}{}", first.to_uppercase(), chars.as_str()),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<String>>()
+        .join(" ")
+}
+
+fn parse_package_paths_from_pi_list_output(output: &str) -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let candidate = PathBuf::from(trimmed);
+        if !candidate.is_absolute() || !candidate.exists() || !candidate.is_dir() {
+            continue;
+        }
+
+        let key = candidate.to_string_lossy().to_string();
+        if seen.insert(key) {
+            paths.push(candidate);
+        }
+    }
+
+    paths
+}
+
+fn package_extension_entry_files(package_root: &Path) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = Vec::new();
+
+    let package_json_path = package_root.join("package.json");
+    if package_json_path.is_file() {
+        if let Ok(content) = fs::read_to_string(&package_json_path) {
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&content) {
+                if let Some(extensions) = parsed
+                    .get("pi")
+                    .and_then(|pi| pi.get("extensions"))
+                    .and_then(|value| value.as_array())
+                {
+                    for entry in extensions {
+                        let Some(raw) = entry.as_str() else {
+                            continue;
+                        };
+                        let normalized = raw.trim().trim_start_matches("./").trim_start_matches(".\\");
+                        if normalized.is_empty() {
+                            continue;
+                        }
+                        let candidate = package_root.join(normalized);
+                        if candidate.is_file() {
+                            files.push(candidate);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if files.is_empty() {
+        for fallback in ["index.ts", "index.js", "src/index.ts", "src/index.js", "src/index.mjs", "index.mjs"] {
+            let candidate = package_root.join(fallback);
+            if candidate.is_file() {
+                files.push(candidate);
+            }
+        }
+    }
+
+    files
+}
+
+fn parse_quoted_string(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut index = 0usize;
+
+    while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+        index += 1;
+    }
+    if index >= bytes.len() {
+        return None;
+    }
+
+    let quote = bytes[index];
+    if quote != b'"' && quote != b'\'' {
+        return None;
+    }
+    index += 1;
+    let start = index;
+
+    while index < bytes.len() {
+        if bytes[index] == quote {
+            return Some(value[start..index].to_string());
+        }
+        index += 1;
+    }
+
+    None
+}
+
+fn extract_oauth_name_from_segment(segment: &str, provider_id: &str) -> String {
+    let oauth_pos = segment.find("oauth").unwrap_or(0);
+    let oauth_segment = &segment[oauth_pos..];
+
+    if let Some(name_pos) = oauth_segment.find("name") {
+        let tail = &oauth_segment[name_pos + "name".len()..];
+        if let Some(colon_pos) = tail.find(':') {
+            let candidate = &tail[colon_pos + 1..];
+            if let Some(name) = parse_quoted_string(candidate) {
+                let trimmed = name.trim();
+                if !trimmed.is_empty() {
+                    return trimmed.to_string();
+                }
+            }
+        }
+    }
+
+    humanize_provider_id(provider_id)
+}
+
+fn extract_oauth_providers_from_source(source: &str) -> Vec<(String, String)> {
+    let mut providers: Vec<(String, String)> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    let needle = "registerProvider(";
+    let mut cursor = 0usize;
+
+    while cursor < source.len() {
+        let Some(rel) = source[cursor..].find(needle) else {
+            break;
+        };
+        let start = cursor + rel;
+        let mut index = start + needle.len();
+        let bytes = source.as_bytes();
+
+        while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+            index += 1;
+        }
+        if index >= bytes.len() {
+            break;
+        }
+
+        let quote = bytes[index];
+        if quote != b'"' && quote != b'\'' {
+            cursor = index.saturating_add(1);
+            continue;
+        }
+
+        index += 1;
+        let provider_start = index;
+        while index < bytes.len() && bytes[index] != quote {
+            index += 1;
+        }
+        if index >= bytes.len() {
+            break;
+        }
+
+        let provider_id = source[provider_start..index].trim().to_lowercase();
+        if provider_id.is_empty() {
+            cursor = index.saturating_add(1);
+            continue;
+        }
+
+        let segment_start = index;
+        let mut scan_limit = (segment_start + 9000).min(source.len());
+        while scan_limit > segment_start && !source.is_char_boundary(scan_limit) {
+            scan_limit -= 1;
+        }
+        let segment_end = source[segment_start..scan_limit]
+            .find(needle)
+            .map(|next_rel| segment_start + next_rel)
+            .unwrap_or(scan_limit);
+
+        let segment = &source[segment_start..segment_end];
+        if !segment.contains("oauth") {
+            cursor = index.saturating_add(1);
+            continue;
+        }
+
+        if seen.insert(provider_id.clone()) {
+            let provider_name = extract_oauth_name_from_segment(segment, &provider_id);
+            providers.push((provider_id, provider_name));
+        }
+
+        cursor = index.saturating_add(1);
+    }
+
+    providers
+}
+
+fn extract_oauth_providers_from_package(package_root: &Path) -> Vec<PiOAuthProviderInfo> {
+    let mut providers: Vec<PiOAuthProviderInfo> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    for file in package_extension_entry_files(package_root) {
+        let Ok(content) = fs::read_to_string(&file) else {
+            continue;
+        };
+        for (id, name) in extract_oauth_providers_from_source(&content) {
+            if !seen.insert(id.clone()) {
+                continue;
+            }
+            providers.push(PiOAuthProviderInfo {
+                id,
+                name,
+                source: "package".to_string(),
+            });
+        }
+    }
+
+    providers
+}
+
+/// Discover OAuth providers the same way users see in CLI /login:
+/// built-ins + package-registered OAuth providers.
+#[tauri::command]
+async fn get_pi_oauth_providers(app: AppHandle) -> Result<Vec<PiOAuthProviderInfo>, String> {
+    let mut providers = builtin_oauth_provider_info();
+    let mut seen: HashSet<String> = providers.iter().map(|provider| provider.id.clone()).collect();
+
+    let discovery_opts = RpcStartOptions {
+        cli_path: None,
+        cwd: ".".to_string(),
+        provider: None,
+        model: None,
+        env: None,
+    };
+
+    let Ok(pi) = discover_pi(&app, &discovery_opts) else {
+        return Ok(providers);
+    };
+
+    let list_opts = PiCliCommandOptions {
+        args: vec!["list".to_string()],
+        cwd: Some(".".to_string()),
+        env: None,
+        cli_path: None,
+    };
+
+    let output = match build_plain_command(&pi, &list_opts).output() {
+        Ok(output) => output,
+        Err(_) => return Ok(providers),
+    };
+
+    if !output.status.success() {
+        return Ok(providers);
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let package_paths = parse_package_paths_from_pi_list_output(&stdout);
+    let mut custom_providers: Vec<PiOAuthProviderInfo> = Vec::new();
+
+    for package_path in package_paths {
+        for provider in extract_oauth_providers_from_package(&package_path) {
+            if !seen.insert(provider.id.clone()) {
+                continue;
+            }
+            custom_providers.push(provider);
+        }
+    }
+
+    custom_providers.sort_by(|a, b| {
+        let name_cmp = a.name.to_lowercase().cmp(&b.name.to_lowercase());
+        if name_cmp != std::cmp::Ordering::Equal {
+            return name_cmp;
+        }
+        a.id.cmp(&b.id)
+    });
+
+    providers.extend(custom_providers);
+    Ok(providers)
 }
 
 /// Settings structure
@@ -1086,6 +1621,12 @@ struct CliUpdateStatus {
 }
 
 #[derive(Debug, Serialize)]
+struct PiChangelogResult {
+    path: String,
+    content: String,
+}
+
+#[derive(Debug, Serialize)]
 struct NpmCommandResult {
     stdout: String,
     stderr: String,
@@ -1105,6 +1646,20 @@ struct GitCommandResult {
     exit_code: i32,
 }
 
+#[derive(Debug, Deserialize)]
+struct ShareGistOptions {
+    html_path: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ShareGistResult {
+    gist_url: String,
+    gist_id: String,
+    preview_url: String,
+    stdout: String,
+    stderr: String,
+}
+
 #[derive(Debug, Serialize)]
 struct DesktopRuntimeInfo {
     platform: String,
@@ -1118,6 +1673,78 @@ fn npm_executable() -> &'static str {
     } else {
         "npm"
     }
+}
+
+fn discover_gh_path() -> Option<PathBuf> {
+    if let Ok(path) = which::which("gh") {
+        return Some(path);
+    }
+
+    let mut candidates: Vec<PathBuf> = Vec::new();
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(app_data) = std::env::var("APPDATA") {
+            candidates.push(PathBuf::from(app_data).join("GitHub CLI").join("gh.exe"));
+            candidates.push(PathBuf::from(app_data).join("npm").join("gh.cmd"));
+        }
+        if let Ok(program_files) = std::env::var("ProgramFiles") {
+            candidates.push(PathBuf::from(program_files).join("GitHub CLI").join("gh.exe"));
+        }
+        if let Ok(program_files_x86) = std::env::var("ProgramFiles(x86)") {
+            candidates.push(PathBuf::from(program_files_x86).join("GitHub CLI").join("gh.exe"));
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        candidates.push(PathBuf::from("/opt/homebrew/bin/gh"));
+        candidates.push(PathBuf::from("/usr/local/bin/gh"));
+        candidates.push(PathBuf::from("/usr/bin/gh"));
+        if let Some(home_dir) = resolve_home_dir() {
+            candidates.push(home_dir.join(".local/bin/gh"));
+            candidates.push(home_dir.join(".nvm/versions/node/current/bin/gh"));
+        }
+    }
+
+    candidates.into_iter().find(|candidate| candidate.is_file())
+}
+
+fn parse_gist_url_from_output(output: &str) -> Option<String> {
+    for token in output.split_whitespace() {
+        let Some(start) = token.find("https://gist.github.com/") else {
+            continue;
+        };
+        let mut url = token[start..]
+            .trim_matches(|c: char| c == '"' || c == '\'' || c == '`' || c == '(' || c == '[' || c == '{')
+            .to_string();
+
+        while let Some(last) = url.chars().last() {
+            if matches!(last, ')' | ']' | '}' | ',' | ';' | '.') {
+                url.pop();
+                continue;
+            }
+            break;
+        }
+
+        if !url.is_empty() {
+            return Some(url);
+        }
+    }
+    None
+}
+
+fn parse_gist_id_from_url(url: &str) -> Option<String> {
+    let clean = url.trim().trim_end_matches('/');
+    let parts: Vec<&str> = clean.split('/').filter(|entry| !entry.trim().is_empty()).collect();
+    let gist_id = parts.last()?.trim();
+    if gist_id.len() < 20 {
+        return None;
+    }
+    if !gist_id.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some(gist_id.to_string())
 }
 
 fn sanitize_version_token(raw: &str) -> String {
@@ -1393,6 +2020,57 @@ async fn get_cli_update_status(
     })
 }
 
+#[tauri::command]
+async fn get_pi_changelog(
+    app: AppHandle,
+    options: Option<CliStatusOptions>,
+) -> Result<PiChangelogResult, String> {
+    let opts = options.unwrap_or(CliStatusOptions {
+        cli_path: None,
+        cwd: Some(".".to_string()),
+        env: None,
+    });
+
+    let discovery_opts = RpcStartOptions {
+        cli_path: opts.cli_path.clone(),
+        cwd: opts.cwd.clone().unwrap_or_else(|| ".".to_string()),
+        provider: None,
+        model: None,
+        env: opts.env.clone(),
+    };
+
+    let pi = discover_pi(&app, &discovery_opts)?;
+    let candidates = resolve_pi_changelog_candidates(&pi);
+    let mut seen = HashSet::new();
+
+    for candidate in candidates {
+        let raw = candidate.to_string_lossy().to_string();
+        if raw.trim().is_empty() || !seen.insert(raw.clone()) {
+            continue;
+        }
+        if !candidate.is_file() {
+            continue;
+        }
+
+        match fs::read_to_string(&candidate) {
+            Ok(content) => {
+                return Ok(PiChangelogResult {
+                    path: raw,
+                    content,
+                });
+            }
+            Err(_) => {
+                continue;
+            }
+        }
+    }
+
+    Err(format!(
+        "Could not locate Pi Coding Agent changelog for discovery: {:?}",
+        pi
+    ))
+}
+
 /// Update globally installed pi CLI via npm.
 #[tauri::command]
 async fn update_cli_via_npm() -> Result<NpmCommandResult, String> {
@@ -1460,6 +2138,98 @@ async fn run_git_command(options: GitCommandOptions) -> Result<GitCommandResult,
         stdout: String::from_utf8_lossy(&output.stdout).to_string(),
         stderr: String::from_utf8_lossy(&output.stderr).to_string(),
         exit_code: output.status.code().unwrap_or(-1),
+    })
+}
+
+#[tauri::command]
+async fn create_share_gist(options: ShareGistOptions) -> Result<ShareGistResult, String> {
+    let html_path_raw = options.html_path.trim();
+    if html_path_raw.is_empty() {
+        return Err("No export file path provided".to_string());
+    }
+
+    let html_path = PathBuf::from(html_path_raw);
+    if !html_path.is_file() {
+        return Err(format!("Exported session file not found: {}", html_path_raw));
+    }
+
+    let gh_path = discover_gh_path().ok_or_else(|| {
+        "GitHub CLI (gh) is not installed. Install it from https://cli.github.com/".to_string()
+    })?;
+
+    let mut auth_cmd = Command::new(&gh_path);
+    auth_cmd
+        .arg("auth")
+        .arg("status")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        auth_cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+
+    let auth_output = auth_cmd
+        .output()
+        .map_err(|e| format!("Failed to run gh auth status: {}", e))?;
+
+    if !auth_output.status.success() {
+        return Err("GitHub CLI is not logged in. Run 'gh auth login' first.".to_string());
+    }
+
+    let mut gist_cmd = Command::new(&gh_path);
+    gist_cmd
+        .arg("gist")
+        .arg("create")
+        .arg("--public=false")
+        .arg(&html_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    if let Some(parent) = html_path.parent() {
+        gist_cmd.current_dir(parent);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        gist_cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+
+    let gist_output = gist_cmd
+        .output()
+        .map_err(|e| format!("Failed to run gh gist create: {}", e))?;
+
+    let stdout = String::from_utf8_lossy(&gist_output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&gist_output.stderr).to_string();
+
+    if !gist_output.status.success() {
+        let message = if !stderr.trim().is_empty() {
+            stderr.trim().to_string()
+        } else if !stdout.trim().is_empty() {
+            stdout.trim().to_string()
+        } else {
+            format!("gh gist create failed with exit code {}", gist_output.status.code().unwrap_or(-1))
+        };
+        return Err(format!("Failed to create gist: {}", message));
+    }
+
+    let combined = format!("{}\n{}", stdout, stderr);
+    let gist_url = parse_gist_url_from_output(&combined)
+        .ok_or_else(|| "Failed to parse gist URL from gh output".to_string())?;
+    let gist_id = parse_gist_id_from_url(&gist_url)
+        .ok_or_else(|| "Failed to parse gist ID from gh output".to_string())?;
+    let preview_url = format!("https://pi.dev/session/#{}", gist_id);
+
+    Ok(ShareGistResult {
+        gist_url,
+        gist_id,
+        preview_url,
+        stdout,
+        stderr,
     })
 }
 
@@ -1597,13 +2367,17 @@ pub fn run() {
             list_sessions,
             get_session_content,
             get_pi_auth_status,
+            get_pi_oauth_providers,
+            clear_pi_provider_auth,
             save_settings,
             load_settings,
             open_file_dialog,
             run_pi_cli_command,
             get_cli_update_status,
+            get_pi_changelog,
             update_cli_via_npm,
             run_git_command,
+            create_share_gist,
             get_desktop_runtime_info,
             open_path_in_default_app,
         ])

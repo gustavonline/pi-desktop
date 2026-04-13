@@ -6,6 +6,9 @@ import { html, nothing, render, type TemplateResult } from "lit";
 import { normalizeRecommendedSource, RECOMMENDED_PACKAGES, type RecommendedPackageDefinition } from "../recommended-packages.js";
 import { RECOMMENDED_SKILLS, type RecommendedSkillDefinition } from "../recommended-skills.js";
 import { rpcBridge } from "../rpc/bridge.js";
+import { collectBuiltInOAuthProviderIds } from "../auth/provider-auth.js";
+import { isExtensionConfigIntent } from "../extensions/extension-command-intent.js";
+import { extensionCommandUsageHint, withExtensionCommandUsageHint } from "../extensions/extension-command-hints.js";
 import { getBundledThemesStatus, isBundledThemeId, removeBundledThemes, restoreBundledThemes } from "../theme/bundled-themes.js";
 
 interface CatalogPackageItem {
@@ -31,6 +34,25 @@ interface PackageConfigCommand {
 	name: string;
 	description: string;
 	path: string;
+}
+
+interface PackageProjectOption {
+	id: string;
+	name: string;
+	path: string;
+}
+
+interface AutoRenameConfigDraft {
+	enabled: boolean;
+	modelSelection: "current" | "cheapest";
+	model: string;
+	fallbackModel: string;
+	fallbackDeterministic: "truncate" | "words" | "none" | "readable-id";
+	prefix: string;
+	prefixCommand: string;
+	prefixOnly: boolean;
+	readableIdSuffix: boolean;
+	debug: boolean;
 }
 
 interface ModelOption {
@@ -107,6 +129,37 @@ const PACKAGES_SEARCH_URL = "https://registry.npmjs.org/-/v1/search?text=keyword
 const RESOURCE_CREATOR_SKILL_NAME = "creatorskill";
 const DESKTOP_THEMES_PACKAGE_SOURCE = "local:pi-desktop-themes";
 const DESKTOP_THEMES_DOC_URL = "https://github.com/gustavonline/pi-desktop/blob/dev/docs/THEMES_DESKTOP_MAPPING.md";
+const AUTO_RENAME_PRIMARY_SOURCE = normalizeRecommendedSource("npm:@byteowlz/pi-auto-rename");
+const AUTO_RENAME_LEGACY_SOURCE = normalizeRecommendedSource("npm:pi-session-auto-rename");
+const AUTO_RENAME_COMMAND_NAMES = new Set(["auto-rename", "name-ai-config"]);
+const AUTO_RENAME_SCHEMA_RELATIVE = "./auto-rename.schema.json";
+const SMART_NOTIFY_COMMAND_NAMES = new Set(["voice-notify"]);
+const SMART_NOTIFY_PRIMARY_SOURCE = normalizeRecommendedSource("npm:pi-smart-voice-notify");
+const SMART_NOTIFY_LEGACY_SOURCE = normalizeRecommendedSource("npm:pi-desktop-notify");
+const SMART_NOTIFY_INSTALL_SOURCE = "npm:pi-smart-voice-notify";
+const PROVIDER_AUTH_CLEANUP_HINTS = new Map<string, string[]>([
+	["pi-cursor-agent", ["cursor-agent"]],
+	["cursor-agent", ["cursor-agent"]],
+	["pi-kilocode", ["kilo"]],
+	["kilocode", ["kilo"]],
+	["kilo-pi-provider", ["kilo"]],
+	["pi-kilo", ["kilo"]],
+]);
+
+function defaultAutoRenameConfigDraft(): AutoRenameConfigDraft {
+	return {
+		enabled: true,
+		modelSelection: "current",
+		model: "",
+		fallbackModel: "",
+		fallbackDeterministic: "readable-id",
+		prefix: "",
+		prefixCommand: "",
+		prefixOnly: false,
+		readableIdSuffix: false,
+		debug: false,
+	};
+}
 
 function uniqueBy<T>(items: T[], getKey: (item: T) => string): T[] {
 	const seen = new Set<string>();
@@ -173,8 +226,20 @@ function normalizeFsPath(path: string | null | undefined): string {
 
 function isLikelyConfigCommand(name: string, description: string): boolean {
 	const haystack = `${name} ${description}`.toLowerCase();
-	return /(^|[-_\s])config(?:$|[-_\s])/.test(haystack) ||
+	return /\bconfig\b/.test(haystack) ||
 		/(^|\b)(configure|settings|setup)(\b|$)/.test(haystack);
+}
+
+function normalizeCommandNameForMatch(name: string): string {
+	const normalized = name.trim().toLowerCase();
+	return normalized.startsWith("/") ? normalized.slice(1) : normalized;
+}
+
+function commandNamesMatch(left: string, right: string): boolean {
+	const leftName = normalizeCommandNameForMatch(left);
+	const rightName = normalizeCommandNameForMatch(right);
+	if (!leftName || !rightName) return false;
+	return leftName === rightName;
 }
 
 function npmPackageNameFromSource(source: string): string {
@@ -191,8 +256,56 @@ function pathMatchesNpmPackage(normalizedPath: string, source: string): boolean 
 }
 
 function commandLikelyNeedsModelArg(command: PackageConfigCommand): boolean {
+	const normalizedName = normalizeCommandNameForMatch(command.name);
+	if (AUTO_RENAME_COMMAND_NAMES.has(normalizedName)) return true;
 	const haystack = `${command.name} ${command.description}`.toLowerCase();
 	return /(^|\b)(model|provider)(\b|$)/.test(haystack) || haystack.includes("provider/model");
+}
+
+function normalizeAutoRenameConfigDraft(raw: Record<string, unknown>): AutoRenameConfigDraft {
+	const defaults = defaultAutoRenameConfigDraft();
+	let model = "";
+	const modelRaw = raw.model;
+	if (typeof modelRaw === "string" && splitModelRef(modelRaw)) {
+		model = modelRaw.trim();
+	} else if (modelRaw && typeof modelRaw === "object" && !Array.isArray(modelRaw)) {
+		const modelObj = modelRaw as Record<string, unknown>;
+		const provider = readString(modelObj.provider);
+		const id = readString(modelObj.id);
+		if (provider && id) model = modelRef(provider, id);
+	}
+	if (!model) {
+		model = readModelRefFromConfigObject(raw) || "";
+	}
+
+	let fallbackModel = "";
+	const fallbackRaw = raw.fallbackModel;
+	if (typeof fallbackRaw === "string" && splitModelRef(fallbackRaw)) {
+		fallbackModel = fallbackRaw.trim();
+	} else if (fallbackRaw && typeof fallbackRaw === "object" && !Array.isArray(fallbackRaw)) {
+		const fallbackObj = fallbackRaw as Record<string, unknown>;
+		const provider = readString(fallbackObj.provider);
+		const id = readString(fallbackObj.id);
+		if (provider && id) fallbackModel = modelRef(provider, id);
+	}
+	return {
+		enabled: readBoolean(raw.enabled) ?? defaults.enabled,
+		modelSelection: readString(raw.modelSelection) === "cheapest" ? "cheapest" : "current",
+		model,
+		fallbackModel,
+		fallbackDeterministic:
+			readString(raw.fallbackDeterministic) === "truncate" ||
+			readString(raw.fallbackDeterministic) === "words" ||
+			readString(raw.fallbackDeterministic) === "none" ||
+			readString(raw.fallbackDeterministic) === "readable-id"
+				? (readString(raw.fallbackDeterministic) as AutoRenameConfigDraft["fallbackDeterministic"])
+				: defaults.fallbackDeterministic,
+		prefix: readString(raw.prefix),
+		prefixCommand: readString(raw.prefixCommand),
+		prefixOnly: readBoolean(raw.prefixOnly) ?? defaults.prefixOnly,
+		readableIdSuffix: readBoolean(raw.readableIdSuffix) ?? defaults.readableIdSuffix,
+		debug: readBoolean(raw.debug) ?? defaults.debug,
+	};
 }
 
 function modelRef(provider: string, id: string): string {
@@ -383,6 +496,10 @@ function readString(value: unknown): string {
 	return typeof value === "string" ? value.trim() : "";
 }
 
+function readBoolean(value: unknown): boolean | null {
+	return typeof value === "boolean" ? value : null;
+}
+
 function normalizeSourceScope(value: string): "user" | "project" | null {
 	const normalized = value.trim().toLowerCase();
 	if (normalized === "user" || normalized === "global") return "user";
@@ -458,6 +575,7 @@ export class PackagesView {
 	private configError = "";
 	private commandStatus = "";
 	private commandOutput = "";
+	private smartNotifyMigrationAttempted = false;
 	private packageScope: "global" | "local" = "global";
 	private query = "";
 	private currentProjectPath: string | null = null;
@@ -470,6 +588,19 @@ export class PackagesView {
 	private packageConfigStatus = "";
 	private packageConfigCommandArgs = new Map<string, string>();
 	private packageConfigLoadedModelBySource = new Map<string, string>();
+	private autoRenameConfig = defaultAutoRenameConfigDraft();
+	private autoRenameConfigRaw: Record<string, unknown> = {};
+	private autoRenameConfigPath = "";
+	private autoRenameConfigScopeLabel = "";
+	private autoRenameConfigSaveScope: "global" | "project" = "global";
+	private autoRenameConfigTargetProjectId = "";
+	private autoRenameConfigTargetProjectPath = "";
+	private autoRenameProjectOptions: PackageProjectOption[] = [];
+	private projectOptionsProvider: (() => PackageProjectOption[]) | null = null;
+	private autoRenameConfigLoading = false;
+	private autoRenameConfigSaving = false;
+	private autoRenameConfigLoadedSource = "";
+	private autoRenameConfigError = "";
 	private configModels: ModelOption[] = [];
 	private configModelsLoading = false;
 	private configModelsLoaded = false;
@@ -503,7 +634,7 @@ export class PackagesView {
 	private activeSkillContentNotice = "";
 	private desktopThemesInstalled = false;
 	private desktopThemesInstalledCount = 0;
-	private desktopThemesTotal = 8;
+	private desktopThemesTotal = 10;
 	private desktopThemesRootPath = "";
 
 	constructor(container: HTMLElement) {
@@ -518,7 +649,54 @@ export class PackagesView {
 			this.resourceEditorScope = "global";
 		}
 		this.resourceCreatorScope = "global";
+		this.refreshAutoRenameProjectOptions();
 		this.render();
+	}
+
+	setProjectOptionsProvider(cb: (() => PackageProjectOption[]) | null): void {
+		this.projectOptionsProvider = cb;
+		this.refreshAutoRenameProjectOptions();
+		this.render();
+	}
+
+	private refreshAutoRenameProjectOptions(): void {
+		const providerItems = this.projectOptionsProvider ? this.projectOptionsProvider() : [];
+		const merged = uniqueBy(
+			[
+				...providerItems
+					.filter((item) => item && item.id && item.path)
+					.map((item) => ({ id: item.id, name: item.name || item.path, path: item.path })),
+				...(this.currentProjectPath
+					? [{ id: `current:${normalizeFsPath(this.currentProjectPath)}`, name: pathBaseName(this.currentProjectPath), path: this.currentProjectPath }]
+					: []),
+			],
+			(item) => normalizeFsPath(item.path),
+		).sort((a, b) => a.name.localeCompare(b.name));
+		this.autoRenameProjectOptions = merged;
+
+		if (this.autoRenameConfigSaveScope === "project") {
+			const selected = this.autoRenameProjectOptions.find((item) => item.id === this.autoRenameConfigTargetProjectId)
+				?? this.autoRenameProjectOptions.find((item) => normalizeFsPath(item.path) === normalizeFsPath(this.autoRenameConfigTargetProjectPath))
+				?? (this.currentProjectPath
+					? this.autoRenameProjectOptions.find((item) => normalizeFsPath(item.path) === normalizeFsPath(this.currentProjectPath))
+					: null)
+				?? this.autoRenameProjectOptions[0]
+				?? null;
+			if (selected) {
+				this.autoRenameConfigTargetProjectId = selected.id;
+				this.autoRenameConfigTargetProjectPath = selected.path;
+			} else {
+				this.autoRenameConfigSaveScope = "global";
+				this.autoRenameConfigTargetProjectId = "";
+				this.autoRenameConfigTargetProjectPath = "";
+			}
+		} else if (!this.autoRenameConfigTargetProjectPath && this.currentProjectPath) {
+			const currentMatch = this.autoRenameProjectOptions.find((item) => normalizeFsPath(item.path) === normalizeFsPath(this.currentProjectPath));
+			if (currentMatch) {
+				this.autoRenameConfigTargetProjectId = currentMatch.id;
+				this.autoRenameConfigTargetProjectPath = currentMatch.path;
+			}
+		}
 	}
 
 	setOnBack(cb: () => void): void {
@@ -564,6 +742,21 @@ export class PackagesView {
 			this.desktopThemesInstalled = false;
 			this.desktopThemesInstalledCount = 0;
 			this.desktopThemesRootPath = "";
+		}
+	}
+
+	private updateBundledThemeInstallStateFromResources(resources: DiscoveredThemeItem[]): void {
+		const bundledResources = resources.filter((item) => isBundledThemeId(item.id));
+		if (bundledResources.length === 0) return;
+		this.desktopThemesInstalledCount = Math.max(this.desktopThemesInstalledCount, bundledResources.length);
+		if (!this.desktopThemesRootPath) {
+			const samplePath = bundledResources[0]?.path ?? "";
+			if (samplePath) {
+				this.desktopThemesRootPath = pathDirName(samplePath);
+			}
+		}
+		if (bundledResources.length >= this.desktopThemesTotal) {
+			this.desktopThemesInstalled = true;
 		}
 	}
 
@@ -769,6 +962,15 @@ export class PackagesView {
 
 			this.installedUser = uniqueBy([...parsedUser.user], (item) => item.source);
 			this.installedProject = [];
+
+			const migratedNotifyPackage = await this.migrateLegacyNotifyPackageIfNeeded();
+			if (migratedNotifyPackage) {
+				const refreshedListResult = await rpcBridge.runPiCliCommand(["list"], { cwd: "/" });
+				const refreshedParsed = parsePiListOutput(refreshedListResult.stdout ?? "");
+				this.installedUser = uniqueBy([...refreshedParsed.user], (item) => item.source);
+				this.installedProject = [];
+			}
+
 			await this.refreshPackageConfigCommands();
 			if (this.activePackageConfigSource && !this.isNormalizedSourceInstalled(this.activePackageConfigSource)) {
 				this.closeActivePackageConfig();
@@ -779,6 +981,49 @@ export class PackagesView {
 			this.loadingConfig = false;
 			this.render();
 		}
+	}
+
+	private async migrateLegacyNotifyPackageIfNeeded(): Promise<boolean> {
+		if (this.smartNotifyMigrationAttempted) return false;
+		const legacyInstalled = this.installedUser.find((item) => normalizeRecommendedSource(item.source) === SMART_NOTIFY_LEGACY_SOURCE) ?? null;
+		if (!legacyInstalled) return false;
+		this.smartNotifyMigrationAttempted = true;
+
+		const hasPreferred = this.installedUser.some((item) => normalizeRecommendedSource(item.source) === SMART_NOTIFY_PRIMARY_SOURCE);
+		let changed = false;
+
+		if (!hasPreferred) {
+			const installOk = await this.executePackageCommand(["install", SMART_NOTIFY_INSTALL_SOURCE], {
+				scope: "global",
+				appendLocalFlag: false,
+				statusText: `Installing ${SMART_NOTIFY_INSTALL_SOURCE}…`,
+				refreshOnSuccess: false,
+			});
+			if (!installOk) {
+				this.commandStatus = `Failed to install ${SMART_NOTIFY_INSTALL_SOURCE}.`;
+				return false;
+			}
+			changed = true;
+		}
+
+		const removeSource = legacyInstalled.source || "npm:pi-desktop-notify";
+		const removeOk = await this.executePackageCommand(["remove", removeSource], {
+			scope: "global",
+			appendLocalFlag: false,
+			statusText: `Removing ${removeSource}…`,
+			refreshOnSuccess: false,
+		});
+		if (!removeOk) {
+			if (changed) {
+				this.commandStatus = `Installed ${SMART_NOTIFY_INSTALL_SOURCE}, but failed to remove legacy ${removeSource}.`;
+			}
+			return changed;
+		}
+
+		this.commandStatus = hasPreferred
+			? `Removed legacy notifications package: ${removeSource}`
+			: `Migrated notifications package to ${SMART_NOTIFY_INSTALL_SOURCE}.`;
+		return true;
 	}
 
 	private async refreshPackageConfigCommands(): Promise<void> {
@@ -805,9 +1050,10 @@ export class PackagesView {
 		for (const raw of commands) {
 			const source = readString(raw.source).toLowerCase();
 			const name = readString(raw.name);
-			const description = readString(raw.description);
+			const baseDescription = readString(raw.description);
 			const sourceInfo = readCommandSourceInfo(raw);
 			if (source !== "extension" || !name) continue;
+			const description = withExtensionCommandUsageHint(name, baseDescription);
 			if (!isLikelyConfigCommand(name, description)) continue;
 
 			const matchedPackage = this.findInstalledItemForCommand(
@@ -1096,6 +1342,7 @@ export class PackagesView {
 				globalThemes,
 				(item) => `${item.id}:${normalizeFsPath(item.path)}`,
 			).sort((a, b) => a.name.localeCompare(b.name));
+			this.updateBundledThemeInstallStateFromResources(this.themeResources);
 		} catch (err) {
 			this.promptTemplateResources = [];
 			this.skillResources = [];
@@ -1250,6 +1497,316 @@ export class PackagesView {
 		return this.getInstalledItems(false).some((item) => normalizeRecommendedSource(item.source) === normalizedSource);
 	}
 
+	private isAutoRenameSource(source: string): boolean {
+		const normalized = normalizeRecommendedSource(source);
+		return normalized === AUTO_RENAME_PRIMARY_SOURCE || normalized === AUTO_RENAME_LEGACY_SOURCE;
+	}
+
+	private isAutoRenameConfigCommand(source: string, command: PackageConfigCommand): boolean {
+		const normalizedName = normalizeCommandNameForMatch(command.name);
+		if (AUTO_RENAME_COMMAND_NAMES.has(normalizedName)) return true;
+		return this.isAutoRenameSource(source);
+	}
+
+	private resolveAutoRenameCommandForSource(source: string): PackageConfigCommand | null {
+		const commands = this.packageConfigCommands.get(source) ?? [];
+		for (const command of commands) {
+			if (this.isAutoRenameConfigCommand(source, command)) return command;
+		}
+		return null;
+	}
+
+	private resolveGlobalAutoRenameConfigPath(): string {
+		if (!this.homePath) return "";
+		return joinFsPath(joinFsPath(joinFsPath(this.homePath, ".pi"), "agent"), "auto-rename.json");
+	}
+
+	private resolveProjectOptionForPath(path: string): PackageProjectOption | null {
+		const normalized = normalizeFsPath(path);
+		if (!normalized) return null;
+		const sorted = [...this.autoRenameProjectOptions]
+			.sort((a, b) => normalizeFsPath(b.path).length - normalizeFsPath(a.path).length);
+		for (const option of sorted) {
+			const projectPath = normalizeFsPath(option.path);
+			if (!projectPath) continue;
+			if (normalized === projectPath || normalized.startsWith(`${projectPath}/`)) {
+				return option;
+			}
+		}
+		return null;
+	}
+
+	private async findExistingProjectAutoRenameConfig(projectPath: string): Promise<{ path: string; scopeLabel: string } | null> {
+		const normalizedProjectPath = projectPath.trim();
+		if (!normalizedProjectPath) return null;
+		const { exists } = await import("@tauri-apps/plugin-fs");
+		const option = this.resolveProjectOptionForPath(normalizedProjectPath);
+		const projectLabel = option?.name || pathBaseName(normalizedProjectPath) || "Project";
+		const candidates = [
+			joinFsPath(normalizedProjectPath, "auto-rename.json"),
+			joinFsPath(joinFsPath(normalizedProjectPath, ".pi"), "auto-rename.json"),
+		];
+		for (const candidate of candidates) {
+			try {
+				if (await exists(candidate)) {
+					return { path: candidate, scopeLabel: `Project · ${projectLabel}` };
+				}
+			} catch {
+				// ignore path errors
+			}
+		}
+		return null;
+	}
+
+	private async resolveProjectAutoRenameConfigPath(projectPath: string): Promise<{ path: string; scopeLabel: string }> {
+		const normalizedProjectPath = projectPath.trim();
+		if (!normalizedProjectPath) return { path: "", scopeLabel: "" };
+		const existing = await this.findExistingProjectAutoRenameConfig(normalizedProjectPath);
+		if (existing) return existing;
+		const option = this.resolveProjectOptionForPath(normalizedProjectPath);
+		const projectLabel = option?.name || pathBaseName(normalizedProjectPath) || "Project";
+		return {
+			path: joinFsPath(joinFsPath(normalizedProjectPath, ".pi"), "auto-rename.json"),
+			scopeLabel: `Project · ${projectLabel}`,
+		};
+	}
+
+	private applyAutoRenameScopeFromPath(path: string): void {
+		const normalized = normalizeFsPath(path);
+		const globalPath = normalizeFsPath(this.resolveGlobalAutoRenameConfigPath());
+		if (normalized && globalPath && normalized === globalPath) {
+			this.autoRenameConfigSaveScope = "global";
+			this.autoRenameConfigTargetProjectId = "";
+			this.autoRenameConfigTargetProjectPath = "";
+			return;
+		}
+		const projectOption = this.resolveProjectOptionForPath(path)
+			?? this.autoRenameProjectOptions.find((item) => normalizeFsPath(item.path) === normalizeFsPath(this.currentProjectPath))
+			?? this.autoRenameProjectOptions[0]
+			?? null;
+		if (projectOption) {
+			this.autoRenameConfigSaveScope = "project";
+			this.autoRenameConfigTargetProjectId = projectOption.id;
+			this.autoRenameConfigTargetProjectPath = projectOption.path;
+		}
+	}
+
+	private async resolveAutoRenameConfigPathPreference(options?: {
+		scope?: "global" | "project";
+		projectPath?: string | null;
+	}): Promise<{ path: string; scopeLabel: string }> {
+		await this.ensureHomePath();
+		this.refreshAutoRenameProjectOptions();
+
+		const requestedScope = options?.scope;
+		const requestedProjectPath = options?.projectPath?.trim() || "";
+		const globalPath = this.resolveGlobalAutoRenameConfigPath();
+
+		if (requestedScope === "global") {
+			return { path: globalPath, scopeLabel: "Global" };
+		}
+
+		if (requestedScope === "project") {
+			const projectPath = requestedProjectPath || this.autoRenameConfigTargetProjectPath || this.currentProjectPath || "";
+			if (!projectPath) {
+				throw new Error("No project selected for project-scoped auto-rename settings.");
+			}
+			return await this.resolveProjectAutoRenameConfigPath(projectPath);
+		}
+
+		const preferredProjectPaths = uniqueBy(
+			[this.autoRenameConfigTargetProjectPath, this.currentProjectPath || ""].filter((entry) => entry && entry.trim().length > 0),
+			(entry) => normalizeFsPath(entry),
+		);
+		for (const projectPath of preferredProjectPaths) {
+			const existing = await this.findExistingProjectAutoRenameConfig(projectPath);
+			if (existing) return existing;
+		}
+
+		if (globalPath) {
+			const { exists } = await import("@tauri-apps/plugin-fs");
+			try {
+				if (await exists(globalPath)) {
+					return { path: globalPath, scopeLabel: "Global" };
+				}
+			} catch {
+				// ignore exists errors
+			}
+		}
+
+		if (preferredProjectPaths.length > 0) {
+			return await this.resolveProjectAutoRenameConfigPath(preferredProjectPaths[0]);
+		}
+		if (globalPath) {
+			return { path: globalPath, scopeLabel: "Global" };
+		}
+		return { path: "", scopeLabel: "" };
+	}
+
+	private async ensureAutoRenameConfigLoaded(
+		source: string,
+		force = false,
+		options?: { scope?: "global" | "project"; projectPath?: string | null },
+	): Promise<void> {
+		const normalizedSource = normalizeRecommendedSource(source);
+		const preferred = await this.resolveAutoRenameConfigPathPreference(options);
+		if (!force && this.autoRenameConfigLoadedSource === normalizedSource && normalizeFsPath(this.autoRenameConfigPath) === normalizeFsPath(preferred.path)) {
+			return;
+		}
+		if (this.autoRenameConfigLoading) return;
+		this.autoRenameConfigLoading = true;
+		this.autoRenameConfigError = "";
+		this.render();
+		try {
+			this.autoRenameConfigPath = preferred.path;
+			this.autoRenameConfigScopeLabel = preferred.scopeLabel;
+			this.autoRenameConfigRaw = {};
+			this.autoRenameConfig = defaultAutoRenameConfigDraft();
+
+			if (preferred.path) {
+				const { exists, readTextFile } = await import("@tauri-apps/plugin-fs");
+				if (await exists(preferred.path)) {
+					const rawText = await readTextFile(preferred.path);
+					const parsedUnknown = JSON.parse(rawText) as unknown;
+					if (parsedUnknown && typeof parsedUnknown === "object" && !Array.isArray(parsedUnknown)) {
+						const parsed = parsedUnknown as Record<string, unknown>;
+						this.autoRenameConfigRaw = parsed;
+						this.autoRenameConfig = normalizeAutoRenameConfigDraft(parsed);
+					}
+				}
+			}
+			this.applyAutoRenameScopeFromPath(preferred.path);
+			if (options?.scope === "project" && options.projectPath?.trim()) {
+				const selected = this.resolveProjectOptionForPath(options.projectPath.trim());
+				if (selected) {
+					this.autoRenameConfigTargetProjectId = selected.id;
+					this.autoRenameConfigTargetProjectPath = selected.path;
+				}
+			}
+			if (options?.scope === "global") {
+				this.autoRenameConfigSaveScope = "global";
+			}
+			this.autoRenameConfigLoadedSource = normalizedSource;
+		} catch (err) {
+			this.autoRenameConfigRaw = {};
+			this.autoRenameConfig = defaultAutoRenameConfigDraft();
+			this.autoRenameConfigError = err instanceof Error ? err.message : String(err);
+		} finally {
+			this.autoRenameConfigLoading = false;
+			this.render();
+		}
+	}
+
+	private async setAutoRenameSaveScope(source: string, scope: "global" | "project"): Promise<void> {
+		this.autoRenameConfigSaveScope = scope;
+		if (scope === "project") {
+			this.refreshAutoRenameProjectOptions();
+			const selected = this.autoRenameProjectOptions.find((item) => item.id === this.autoRenameConfigTargetProjectId)
+				?? this.autoRenameProjectOptions.find((item) => normalizeFsPath(item.path) === normalizeFsPath(this.currentProjectPath))
+				?? this.autoRenameProjectOptions[0]
+				?? null;
+			if (!selected) {
+				this.autoRenameConfigError = "No opened project is available for project-scoped save.";
+				this.render();
+				return;
+			}
+			this.autoRenameConfigTargetProjectId = selected.id;
+			this.autoRenameConfigTargetProjectPath = selected.path;
+			await this.ensureAutoRenameConfigLoaded(source, true, { scope: "project", projectPath: selected.path });
+			return;
+		}
+		this.autoRenameConfigTargetProjectId = "";
+		this.autoRenameConfigTargetProjectPath = "";
+		await this.ensureAutoRenameConfigLoaded(source, true, { scope: "global" });
+	}
+
+	private async setAutoRenameTargetProject(source: string, projectId: string): Promise<void> {
+		const selected = this.autoRenameProjectOptions.find((item) => item.id === projectId) ?? null;
+		if (!selected) return;
+		this.autoRenameConfigTargetProjectId = selected.id;
+		this.autoRenameConfigTargetProjectPath = selected.path;
+		this.autoRenameConfigSaveScope = "project";
+		await this.ensureAutoRenameConfigLoaded(source, true, { scope: "project", projectPath: selected.path });
+	}
+
+	private setAutoRenameConfigField<K extends keyof AutoRenameConfigDraft>(key: K, value: AutoRenameConfigDraft[K]): void {
+		this.autoRenameConfig = {
+			...this.autoRenameConfig,
+			[key]: value,
+		};
+		this.render();
+	}
+
+	private async saveAutoRenameConfig(source: string): Promise<void> {
+		if (this.autoRenameConfigSaving || this.runningConfigCommand || this.runningCommand) return;
+		this.autoRenameConfigSaving = true;
+		this.autoRenameConfigError = "";
+		this.packageConfigStatus = "Saving auto-rename settings…";
+		this.render();
+		try {
+			const targetScope = this.autoRenameConfigSaveScope;
+			const targetProjectPath = targetScope === "project" ? this.autoRenameConfigTargetProjectPath : "";
+			if (targetScope === "project" && !targetProjectPath) {
+				throw new Error("Choose a project for project-scoped save.");
+			}
+			const preferred = await this.resolveAutoRenameConfigPathPreference({
+				scope: targetScope,
+				projectPath: targetProjectPath,
+			});
+			const configPath = preferred.path;
+			const scopeLabel = preferred.scopeLabel;
+			this.autoRenameConfigPath = configPath;
+			this.autoRenameConfigScopeLabel = scopeLabel;
+			if (!configPath) {
+				throw new Error("Could not resolve auto-rename config path.");
+			}
+
+			const primaryModelValue = this.autoRenameConfig.model.trim();
+			const fallbackModelValue = this.autoRenameConfig.fallbackModel.trim();
+			const primaryModel = primaryModelValue ? splitModelRef(primaryModelValue) : null;
+			const fallbackModel = fallbackModelValue ? splitModelRef(fallbackModelValue) : null;
+
+			if (primaryModelValue && !primaryModel) {
+				throw new Error("Primary model must use provider/model format.");
+			}
+			if (fallbackModelValue && !fallbackModel) {
+				throw new Error("Fallback model must use provider/model format.");
+			}
+
+			const nextDoc: Record<string, unknown> = {
+				...this.autoRenameConfigRaw,
+				$schema: readString(this.autoRenameConfigRaw.$schema) || AUTO_RENAME_SCHEMA_RELATIVE,
+				model: primaryModel ? { provider: primaryModel.provider, id: primaryModel.id } : null,
+				fallbackModel: fallbackModel ? { provider: fallbackModel.provider, id: fallbackModel.id } : null,
+				modelSelection: this.autoRenameConfig.modelSelection,
+				fallbackDeterministic: this.autoRenameConfig.fallbackDeterministic,
+				prefix: this.autoRenameConfig.prefix,
+				prefixCommand: this.autoRenameConfig.prefixCommand.trim() ? this.autoRenameConfig.prefixCommand.trim() : null,
+				prefixOnly: this.autoRenameConfig.prefixOnly,
+				readableIdSuffix: this.autoRenameConfig.readableIdSuffix,
+				enabled: this.autoRenameConfig.enabled,
+				debug: this.autoRenameConfig.debug,
+			};
+
+			const { mkdir, writeTextFile } = await import("@tauri-apps/plugin-fs");
+			await mkdir(pathDirName(configPath), { recursive: true });
+			await writeTextFile(configPath, `${JSON.stringify(nextDoc, null, 2)}\n`);
+
+			this.autoRenameConfigRaw = nextDoc;
+			this.autoRenameConfigLoadedSource = normalizeRecommendedSource(source);
+			this.packageConfigStatus = `Saved auto-rename settings to ${configPath}${scopeLabel ? ` (${scopeLabel})` : ""}.`;
+			this.commandStatus = "Saved auto-rename settings.";
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			this.autoRenameConfigError = message;
+			this.packageConfigStatus = `Failed to save auto-rename settings: ${message}`;
+			this.commandStatus = `Auto-rename settings failed: ${message}`;
+		} finally {
+			this.autoRenameConfigSaving = false;
+			this.render();
+		}
+	}
+
 	private async openPackageConfig(item: InstalledDisplayItem): Promise<void> {
 		const source = normalizeRecommendedSource(item.source);
 		const commands = this.getConfigCommandsForItem(item);
@@ -1265,6 +1822,171 @@ export class PackagesView {
 		// attempt to read existing package config files and seed args from disk (native only)
 		void this.loadPackageConfigFromPackage(source, commands).catch(() => {});
 		this.render();
+	}
+
+	async openExtensionConfigBySource(source: string): Promise<boolean> {
+		const normalized = normalizeRecommendedSource(source);
+		const installed = this.findInstalledItemForSource(normalized, "global");
+		if (!installed) return false;
+		const item: ExtensionSurfaceItem = {
+			id: `installed:${normalized}`,
+			displayName: installed.displayName,
+			source: installed.source,
+			description: "Installed extension package",
+			note: installed.location || installed.source,
+			openUrl: installed.openUrl,
+			sourceKind: inferSourceKindFromSource(installed.source),
+			installState: this.extensionInstallState(installed.source),
+			installedItemForScope: installed,
+		};
+		await this.openPackagesItemModal({ kind: "extension", item });
+		return true;
+	}
+
+	private async findInstalledItemForExtensionCommand(commandName: string): Promise<InstalledDisplayItem | null> {
+		const normalizedCommand = normalizeCommandNameForMatch(commandName);
+		if (!normalizedCommand) return null;
+		const installedItems = this.getInstalledItems(false);
+		if (installedItems.length === 0) return null;
+
+		let commands: Array<Record<string, unknown>> = [];
+		try {
+			commands = await rpcBridge.getCommands();
+		} catch {
+			return null;
+		}
+
+		for (const raw of commands) {
+			const source = readString(raw.source).toLowerCase();
+			const name = readString(raw.name);
+			if (source !== "extension" || !name) continue;
+			if (!commandNamesMatch(name, normalizedCommand)) continue;
+
+			const sourceInfo = readCommandSourceInfo(raw);
+			const matchedPackage = this.findInstalledItemForCommand(
+				{
+					path: sourceInfo.path,
+					sourceHint: sourceInfo.source,
+					baseDir: sourceInfo.baseDir,
+				},
+				installedItems,
+			);
+			if (matchedPackage) return matchedPackage;
+		}
+
+		return null;
+	}
+
+	private ensureSyntheticExtensionConfigCommand(
+		source: string,
+		commandName: string,
+		args: string,
+		installed: InstalledDisplayItem | null,
+	): void {
+		const normalizedSource = normalizeRecommendedSource(source);
+		const normalizedCommand = normalizeCommandNameForMatch(commandName);
+		if (!normalizedSource || !normalizedCommand) return;
+
+		const currentCommands = [...(this.packageConfigCommands.get(normalizedSource) ?? [])];
+		if (!currentCommands.some((command) => commandNamesMatch(command.name, normalizedCommand))) {
+			const hintedDescription = withExtensionCommandUsageHint(
+				normalizedCommand,
+				"Run extension config command",
+			);
+			currentCommands.push({
+				name: normalizedCommand,
+				description: hintedDescription,
+				path: installed?.location || "",
+			});
+			currentCommands.sort((a, b) => a.name.localeCompare(b.name));
+			this.packageConfigCommands.set(normalizedSource, currentCommands);
+		}
+
+		if (args.trim()) {
+			this.setPackageConfigCommandArg(normalizedSource, normalizedCommand, args.trim());
+		}
+	}
+
+	async openExtensionConfigByCommand(commandName: string, args = ""): Promise<boolean> {
+		const normalizedCommand = normalizeCommandNameForMatch(commandName);
+		if (!normalizedCommand) return false;
+
+		if (!isExtensionConfigIntent(normalizedCommand, args)) return false;
+
+		await this.refreshPackageConfigCommands();
+
+		for (const [source, commands] of this.packageConfigCommands.entries()) {
+			if (!commands.some((command) => commandNamesMatch(command.name, normalizedCommand))) continue;
+			if (args.trim()) {
+				this.setPackageConfigCommandArg(source, normalizedCommand, args.trim());
+			}
+			return await this.openExtensionConfigBySource(source);
+		}
+
+		const installed = await this.findInstalledItemForExtensionCommand(normalizedCommand);
+		if (installed) {
+			const source = normalizeRecommendedSource(installed.source);
+			this.ensureSyntheticExtensionConfigCommand(source, normalizedCommand, args, installed);
+			return await this.openExtensionConfigBySource(source);
+		}
+
+		const heuristicMatches = this.getInstalledItems(false).filter((item) => {
+			const normalizedSource = normalizeRecommendedSource(item.source);
+			const sourceName = normalizedSource.startsWith("npm:") ? normalizedSource.slice(4) : normalizedSource;
+			const sourceTail = sourceName.split("/").filter(Boolean).pop() || sourceName;
+			const display = item.displayName.toLowerCase();
+			return display.includes(normalizedCommand) || sourceName.includes(normalizedCommand) || sourceTail.includes(normalizedCommand);
+		});
+		if (heuristicMatches.length === 1) {
+			const match = heuristicMatches[0];
+			const source = normalizeRecommendedSource(match.source);
+			this.ensureSyntheticExtensionConfigCommand(source, normalizedCommand, args, match);
+			return await this.openExtensionConfigBySource(source);
+		}
+
+		return false;
+	}
+
+	async openExtensionConfigByProvider(provider: string): Promise<boolean> {
+		const providerToken = normalizeCommandNameForMatch(provider);
+		if (!providerToken) return false;
+		await this.refreshPackageConfigCommands();
+
+		const tokenParts = providerToken.split(/[-_.]/).filter((part) => part.length > 1);
+		const scoreText = (value: string): number => {
+			const haystack = value.toLowerCase();
+			let score = 0;
+			if (haystack.includes(providerToken)) score += 6;
+			for (const part of tokenParts) {
+				if (haystack.includes(part)) score += 1;
+			}
+			return score;
+		};
+
+		let bestSource: string | null = null;
+		let bestScore = 0;
+		for (const item of this.getInstalledItems(false)) {
+			const normalizedSource = normalizeRecommendedSource(item.source);
+			const sourceName = normalizedSource.startsWith("npm:") ? normalizedSource.slice(4) : normalizedSource;
+			const sourceTail = sourceName.split("/").filter(Boolean).pop() || sourceName;
+			const commands = this.packageConfigCommands.get(normalizedSource) ?? [];
+			let score = 0;
+			score += scoreText(item.displayName);
+			score += scoreText(sourceName);
+			score += scoreText(sourceTail);
+			for (const command of commands) {
+				score += scoreText(command.name) * 2;
+				score += scoreText(command.description);
+			}
+			if (commands.length > 0) score += 1;
+			if (score > bestScore) {
+				bestScore = score;
+				bestSource = normalizedSource;
+			}
+		}
+
+		if (!bestSource || bestScore <= 0) return false;
+		return await this.openExtensionConfigBySource(bestSource);
 	}
 
 	private closeActivePackageConfig(): void {
@@ -1363,7 +2085,7 @@ export class PackagesView {
 								value = modelFromObject;
 							} else {
 								for (const k of Object.keys(parsed)) {
-									if (!/model|name-ai-config/i.test(k)) continue;
+									if (!/model|name-ai-config|auto-rename/i.test(k)) continue;
 									const raw = parsed[k];
 									if (typeof raw === "string" && raw.trim()) {
 										value = raw.trim();
@@ -1407,8 +2129,10 @@ export class PackagesView {
 		const trimmedArgs = args.trim();
 		const promptText = trimmedArgs ? `${slashCommand} ${trimmedArgs}` : slashCommand;
 		const supportsModelPicker = commandLikelyNeedsModelArg(command);
-		const actionVerb = supportsModelPicker ? "save" : "apply";
-		const actionVerbPast = supportsModelPicker ? "Saved" : "Applied";
+		const parsedModelArg = splitModelRef(trimmedArgs);
+		const isModelSave = supportsModelPicker && Boolean(parsedModelArg || !trimmedArgs);
+		const actionVerb = isModelSave ? "save" : "run";
+		const actionVerbPast = isModelSave ? "Saved" : "Ran";
 		this.packageConfigStatus = `${actionVerb[0].toUpperCase()}${actionVerb.slice(1)} package setting…`;
 		this.render();
 		try {
@@ -1417,18 +2141,18 @@ export class PackagesView {
 			this.commandStatus = `${actionVerbPast} package setting for ${this.activePackageConfigLabel || "package"}.`;
 			this.commandOutput += `${this.commandOutput ? "\n" : ""}[package-config] ${promptText}\n`;
 
-			if (supportsModelPicker && this.activePackageConfigSource && trimmedArgs) {
+			if (supportsModelPicker && this.activePackageConfigSource && parsedModelArg) {
 				this.packageConfigLoadedModelBySource.set(normalizeRecommendedSource(this.activePackageConfigSource), trimmedArgs);
 			}
 
 			// Persist model-picker changes to canonical extension config file when possible.
-			if (supportsModelPicker && this.activePackageConfigSource) {
+			if (supportsModelPicker && this.activePackageConfigSource && parsedModelArg) {
 				try {
 					const normalized = this.activePackageConfigSource;
 					const installed = this.findInstalledItemForSource(normalized, "global");
 					const basePath = installed?.location?.trim() || command.path?.trim() || "";
 					const key = command.name.startsWith("/") ? command.name.slice(1) : command.name;
-					const parsedModel = splitModelRef(trimmedArgs);
+					const parsedModel = parsedModelArg;
 					const pkgName = this.getDisplayName(normalized);
 					await this.ensureHomePath();
 					const { exists, readTextFile, writeTextFile, stat, mkdir } = await import("@tauri-apps/plugin-fs");
@@ -1510,19 +2234,34 @@ export class PackagesView {
 	}
 
 	private renderPackageConfigCommandEditor(source: string, command: PackageConfigCommand): TemplateResult {
+		if (this.isAutoRenameConfigCommand(source, command)) {
+			return this.renderAutoRenameConfigEditor(source, command);
+		}
 		const supportsModelPicker = commandLikelyNeedsModelArg(command);
+		const normalizedCommandName = normalizeCommandNameForMatch(command.name);
+		const isSmartNotifyCommand = SMART_NOTIFY_COMMAND_NAMES.has(normalizedCommandName);
 		const sourceLoadedModel = this.packageConfigLoadedModelBySource.get(normalizeRecommendedSource(source)) || "";
 		const currentArgs = this.getPackageConfigCommandArg(source, command.name) || (supportsModelPicker ? sourceLoadedModel : "");
 		const selectedModel = this.configModels.some((model) => modelRef(model.provider, model.id) === currentArgs) ? currentArgs : "";
 		const modelSelectValue = selectedModel || currentArgs || "";
 		const title = command.description?.trim() || "Package setting";
+		const defaultDescription = supportsModelPicker ? "Choose model and save." : "Apply command arguments.";
+		const commandDescription = isSmartNotifyCommand && !supportsModelPicker
+			? "No args opens settings. Add args to run slash subcommands directly."
+			: defaultDescription;
+		const argsPlaceholder = isSmartNotifyCommand
+			? "status | reload | on | off | test idle|permission|question|error"
+			: "Optional command arguments";
 		const buttonLabel = supportsModelPicker ? "Save" : "Apply";
 		const buttonBusyLabel = supportsModelPicker ? "Saving…" : "Applying…";
 
 		return html`
 			<div class="packages-config-command-card">
 				<div class="packages-config-command-name">${title}</div>
-				<div class="packages-config-command-desc">${supportsModelPicker ? "Choose model and save." : "Apply command arguments."}</div>
+				<div class="packages-config-command-desc">${commandDescription}</div>
+				${isSmartNotifyCommand && !supportsModelPicker
+					? html`<div class="packages-section-submeta">Examples: status · reload · on · off · test idle|permission|question|error</div>`
+					: nothing}
 
 				${supportsModelPicker
 					? html`
@@ -1554,7 +2293,7 @@ export class PackagesView {
 							<input
 								class="packages-config-input"
 								type="text"
-								placeholder="Optional command arguments"
+								placeholder=${argsPlaceholder}
 								.value=${currentArgs}
 								?disabled=${this.runningConfigCommand || this.runningCommand}
 								@input=${(event: Event) => {
@@ -1575,6 +2314,312 @@ export class PackagesView {
 						${this.runningConfigCommand ? buttonBusyLabel : buttonLabel}
 					</button>
 				</div>
+			</div>
+		`;
+	}
+
+	private renderAutoRenameConfigEditor(source: string, command: PackageConfigCommand): TemplateResult {
+		const busy = this.runningConfigCommand || this.runningCommand || this.autoRenameConfigSaving;
+		const modelOptions = this.configModels;
+		const modelValue = this.autoRenameConfig.model;
+		const fallbackModelValue = this.autoRenameConfig.fallbackModel;
+		const usageHint = extensionCommandUsageHint(command.name) || "Args: config, test, init, regen, <name>";
+		const supportsProjectScope = Boolean(this.currentProjectPath);
+		const configScopeLabel = this.autoRenameConfigScopeLabel || (supportsProjectScope ? "Project (.pi)" : "Global");
+		const projectOptions = this.autoRenameProjectOptions;
+		const canUseProjectScope = projectOptions.length > 0;
+		const saveScope = this.autoRenameConfigSaveScope;
+		const activeProjectTarget = projectOptions.find((item) => item.id === this.autoRenameConfigTargetProjectId)
+			?? projectOptions.find((item) => normalizeFsPath(item.path) === normalizeFsPath(this.autoRenameConfigTargetProjectPath))
+			?? null;
+		const hasPrimaryModel = modelValue.trim().length > 0;
+		const hasFallbackModel = fallbackModelValue.trim().length > 0;
+		const primaryInOptions = modelOptions.some((model) => modelRef(model.provider, model.id) === modelValue);
+		const fallbackInOptions = modelOptions.some((model) => modelRef(model.provider, model.id) === fallbackModelValue);
+		const hasExplicitModels = hasPrimaryModel || hasFallbackModel;
+		const extensionDisabled = !this.autoRenameConfig.enabled;
+		const prefixOnlyActive = this.autoRenameConfig.prefixOnly;
+
+		const modelControlsDisabled = busy || extensionDisabled || prefixOnlyActive;
+		const modeControlsDisabled = busy || extensionDisabled || prefixOnlyActive || hasExplicitModels;
+		const basicControlsDisabled = busy || extensionDisabled;
+		const targetProjectMissing = saveScope === "project" && !activeProjectTarget;
+		const saveDisabled = busy || this.autoRenameConfigLoading || targetProjectMissing;
+
+		const autoModeHelper = extensionDisabled
+			? "Auto mode is disabled while auto-rename is turned off."
+			: prefixOnlyActive
+				? "Auto mode is disabled in prefix-only mode."
+				: hasExplicitModels
+					? "Auto mode is locked while Primary/Fallback model is set. Clear those to use auto mode."
+					: this.autoRenameConfig.modelSelection === "current"
+						? "Auto mode: use the currently selected chat model first."
+						: "Auto mode: use the cheapest available model first.";
+
+		const resolutionOrder = [
+			hasPrimaryModel ? `Primary (${modelValue})` : null,
+			hasFallbackModel ? `Fallback (${fallbackModelValue})` : null,
+			`Auto (${this.autoRenameConfig.modelSelection})`,
+		]
+			.filter((entry): entry is string => Boolean(entry))
+			.join(" → ");
+
+		const boolSelect = (value: boolean): string => (value ? "true" : "false");
+
+		return html`
+			<div class="packages-config-command-card">
+				<div class="packages-config-command-name">Auto-rename settings</div>
+				<div class="packages-config-command-desc">${usageHint}</div>
+				<div class="packages-section-submeta">Resolution order: ${resolutionOrder}</div>
+
+				${this.autoRenameConfigLoading
+					? html`<div class="packages-section-submeta">Loading auto-rename configuration…</div>`
+					: html`
+						<div class="packages-config-field-grid">
+							<div class="packages-config-toggle-row ${busy ? "disabled" : ""}">
+								<span class="packages-config-field-label">Enabled</span>
+								<label class="packages-config-toggle-switch" aria-label="Enabled">
+									<input
+										type="checkbox"
+										class="packages-config-toggle-input"
+										?checked=${this.autoRenameConfig.enabled}
+										?disabled=${busy}
+										@change=${(event: Event) => {
+											const value = (event.target as HTMLInputElement).checked;
+											this.setAutoRenameConfigField("enabled", value);
+										}}
+									/>
+									<span class="packages-config-toggle-slider"></span>
+								</label>
+							</div>
+							<div class="packages-config-toggle-row ${busy || extensionDisabled ? "disabled" : ""}">
+								<span class="packages-config-field-label">Prefix-only mode</span>
+								<label class="packages-config-toggle-switch" aria-label="Prefix-only mode">
+									<input
+										type="checkbox"
+										class="packages-config-toggle-input"
+										?checked=${this.autoRenameConfig.prefixOnly}
+										?disabled=${busy || extensionDisabled}
+										@change=${(event: Event) => {
+											const value = (event.target as HTMLInputElement).checked;
+											this.setAutoRenameConfigField("prefixOnly", value);
+										}}
+									/>
+									<span class="packages-config-toggle-slider"></span>
+								</label>
+							</div>
+						</div>
+
+						<div class="packages-config-field-grid">
+							<div class="packages-config-field">
+								<label class="packages-config-field-label">Primary model</label>
+								<select
+									class="packages-config-select"
+									.value=${modelValue}
+									?disabled=${modelControlsDisabled || this.configModelsLoading}
+									@change=${(event: Event) => {
+										const value = (event.target as HTMLSelectElement).value;
+										this.setAutoRenameConfigField("model", value);
+									}}
+								>
+									<option value="">None (use auto mode)</option>
+									${hasPrimaryModel && !primaryInOptions ? html`<option value=${modelValue}>${modelValue} (saved)</option>` : nothing}
+									${modelOptions.map((model) => {
+										const ref = modelRef(model.provider, model.id);
+										return html`<option value=${ref} ?selected=${modelValue === ref}>${model.label}</option>`;
+									})}
+								</select>
+							</div>
+							<div class="packages-config-field">
+								<label class="packages-config-field-label">Fallback model</label>
+								<select
+									class="packages-config-select"
+									.value=${fallbackModelValue}
+									?disabled=${modelControlsDisabled || this.configModelsLoading}
+									@change=${(event: Event) => {
+										const value = (event.target as HTMLSelectElement).value;
+										this.setAutoRenameConfigField("fallbackModel", value);
+									}}
+								>
+									<option value="">None</option>
+									${hasFallbackModel && !fallbackInOptions ? html`<option value=${fallbackModelValue}>${fallbackModelValue} (saved)</option>` : nothing}
+									${modelOptions.map((model) => {
+										const ref = modelRef(model.provider, model.id);
+										return html`<option value=${ref} ?selected=${fallbackModelValue === ref}>${model.label}</option>`;
+									})}
+								</select>
+							</div>
+						</div>
+
+						<div class="packages-config-field-grid">
+							<div class="packages-config-field">
+								<label class="packages-config-field-label">Auto mode</label>
+								<select
+									class="packages-config-select"
+									.value=${this.autoRenameConfig.modelSelection}
+									?disabled=${modeControlsDisabled}
+									@change=${(event: Event) => {
+										const value = (event.target as HTMLSelectElement).value === "cheapest" ? "cheapest" : "current";
+										this.setAutoRenameConfigField("modelSelection", value);
+									}}
+								>
+									<option value="current">Prefer current model</option>
+									<option value="cheapest">Prefer cheapest model</option>
+								</select>
+							</div>
+							<div class="packages-config-field">
+								<label class="packages-config-field-label">Prefix</label>
+								<input
+									class="packages-config-input"
+									type="text"
+									placeholder="Optional static prefix"
+									.value=${this.autoRenameConfig.prefix}
+									?disabled=${basicControlsDisabled}
+									@input=${(event: Event) => {
+										const value = (event.target as HTMLInputElement).value;
+										this.setAutoRenameConfigField("prefix", value);
+									}}
+								/>
+							</div>
+						</div>
+
+						<div class="packages-section-submeta">${autoModeHelper}</div>
+
+						<details class="packages-config-advanced">
+							<summary>More options (optional)</summary>
+							<div class="packages-config-field-grid">
+								<div class="packages-config-field">
+									<label class="packages-config-field-label">Deterministic fallback</label>
+									<select
+										class="packages-config-select"
+										.value=${this.autoRenameConfig.fallbackDeterministic}
+										?disabled=${busy || extensionDisabled || prefixOnlyActive}
+										@change=${(event: Event) => {
+											const value = (event.target as HTMLSelectElement).value as AutoRenameConfigDraft["fallbackDeterministic"];
+											this.setAutoRenameConfigField("fallbackDeterministic", value);
+										}}
+									>
+										<option value="readable-id">readable-id</option>
+										<option value="words">words</option>
+										<option value="truncate">truncate</option>
+										<option value="none">none</option>
+									</select>
+								</div>
+								<div class="packages-config-field">
+									<label class="packages-config-field-label">Prefix command</label>
+									<input
+										class="packages-config-input"
+										type="text"
+										placeholder="Optional shell command"
+										.value=${this.autoRenameConfig.prefixCommand}
+										?disabled=${basicControlsDisabled}
+										@input=${(event: Event) => {
+											const value = (event.target as HTMLInputElement).value;
+											this.setAutoRenameConfigField("prefixCommand", value);
+										}}
+									/>
+								</div>
+							</div>
+							<div class="packages-config-field-grid">
+								<div class="packages-config-field">
+									<label class="packages-config-field-label">Readable-id suffix</label>
+									<select
+										class="packages-config-select"
+										.value=${boolSelect(this.autoRenameConfig.readableIdSuffix)}
+										?disabled=${basicControlsDisabled}
+										@change=${(event: Event) => {
+											const value = (event.target as HTMLSelectElement).value === "true";
+											this.setAutoRenameConfigField("readableIdSuffix", value);
+										}}
+									>
+										<option value="false">Off</option>
+										<option value="true">On</option>
+									</select>
+								</div>
+								<div class="packages-config-field">
+									<label class="packages-config-field-label">Debug notifications</label>
+									<select
+										class="packages-config-select"
+										.value=${boolSelect(this.autoRenameConfig.debug)}
+										?disabled=${basicControlsDisabled}
+										@change=${(event: Event) => {
+											const value = (event.target as HTMLSelectElement).value === "true";
+											this.setAutoRenameConfigField("debug", value);
+										}}
+									>
+										<option value="false">Off</option>
+										<option value="true">On</option>
+									</select>
+								</div>
+							</div>
+						</details>
+					`}
+
+				<div class="packages-config-command-actions">
+					<div class="packages-config-save-inline">
+						<span class="packages-config-field-label">Save to</span>
+						<select
+							class="packages-config-select"
+							.value=${saveScope}
+							?disabled=${busy}
+							@change=${(event: Event) => {
+								const value = (event.target as HTMLSelectElement).value === "project" ? "project" : "global";
+								if (value === "project" && !canUseProjectScope) {
+									this.autoRenameConfigError = "No opened projects available for project-scoped save.";
+									this.render();
+									return;
+								}
+								void this.setAutoRenameSaveScope(source, value);
+							}}
+						>
+							<option value="global">Global</option>
+							<option value="project" ?disabled=${!canUseProjectScope}>Project</option>
+						</select>
+						${saveScope === "project"
+							? html`
+								<select
+									class="packages-config-select"
+									.value=${activeProjectTarget?.id || ""}
+									?disabled=${busy || !canUseProjectScope}
+									@change=${(event: Event) => {
+										const nextId = (event.target as HTMLSelectElement).value;
+										void this.setAutoRenameTargetProject(source, nextId);
+									}}
+								>
+									<option value="" ?selected=${!activeProjectTarget}>Select project…</option>
+									${projectOptions.map((item) => html`<option value=${item.id} ?selected=${activeProjectTarget?.id === item.id}>${item.name}</option>`)}
+								</select>
+							`
+							: nothing}
+					</div>
+					<button
+						class="ghost-btn"
+						?disabled=${saveDisabled}
+						@click=${() => void this.saveAutoRenameConfig(source)}
+					>
+						${this.autoRenameConfigSaving ? "Saving…" : "Save settings"}
+					</button>
+					<button
+						class="ghost-btn"
+						?disabled=${this.runningConfigCommand || this.runningCommand || this.autoRenameConfigLoading}
+						@click=${() => void this.runPackageConfigCommand(command, "config")}
+					>
+						Show config
+					</button>
+					<button
+						class="ghost-btn"
+						?disabled=${this.runningConfigCommand || this.runningCommand || this.autoRenameConfigLoading || extensionDisabled}
+						@click=${() => void this.runPackageConfigCommand(command, "test")}
+					>
+						Run test
+					</button>
+				</div>
+
+				${this.autoRenameConfigPath
+					? html`<div class="packages-section-submeta">Config file: ${this.autoRenameConfigPath}${configScopeLabel ? ` (${configScopeLabel})` : ""}</div>`
+					: nothing}
+				${targetProjectMissing ? html`<div class="packages-config-inline-error">Choose a project for project-scoped save.</div>` : nothing}
+				${this.autoRenameConfigError ? html`<div class="packages-config-inline-error">${this.autoRenameConfigError}</div>` : nothing}
 			</div>
 		`;
 	}
@@ -1838,11 +2883,28 @@ export class PackagesView {
 		return this.skillResources.find((item) => item.name.trim().toLowerCase() === normalized) ?? null;
 	}
 
+	private isRecommendedSkillInstalled(
+		definition: RecommendedSkillDefinition,
+		resource: DiscoveredResourceItem | null,
+		packageInstalled: boolean,
+	): boolean {
+		if (packageInstalled) return true;
+		if (!resource) return false;
+
+		const normalizedPackageSource = normalizeRecommendedSource(definition.packageSource);
+		const isLocalRecommendedSkill = normalizedPackageSource.startsWith("local:");
+		if (isLocalRecommendedSkill) return true;
+
+		const resourceSource = (resource.packageSource || "").trim();
+		if (!resourceSource) return false;
+		return this.sourceMatchesInstalled(definition.packageSource, resourceSource);
+	}
+
 	private buildRecommendedSkillItems(): RecommendedSkillSurfaceItem[] {
 		return RECOMMENDED_SKILLS.map((definition) => {
 			const resource = this.findSkillResourceByName(definition.skillName);
 			const packageInstalled = this.isSourceInstalledForScope(definition.packageSource, "global");
-			const installed = Boolean(resource || packageInstalled);
+			const installed = this.isRecommendedSkillInstalled(definition, resource, packageInstalled);
 			return {
 				id: `recommended-skill:${definition.id}`,
 				definition,
@@ -1857,13 +2919,144 @@ export class PackagesView {
 		return new Set(items.map((item) => item.definition.skillName.toLowerCase()));
 	}
 
+	private shouldSkipPackagedSkillDir(name: string): boolean {
+		const normalized = name.trim().toLowerCase();
+		return normalized === ".git" || normalized === "node_modules";
+	}
+
+	private async copyFilePreservingMode(sourcePath: string, targetPath: string): Promise<void> {
+		const { readFile, writeFile, stat } = await import("@tauri-apps/plugin-fs");
+		const data = await readFile(sourcePath);
+		let mode: number | undefined;
+		try {
+			const sourceInfo = await stat(sourcePath);
+			if (typeof sourceInfo.mode === "number" && Number.isFinite(sourceInfo.mode)) {
+				mode = sourceInfo.mode;
+			}
+		} catch {
+			// ignore mode fallback
+		}
+		await writeFile(targetPath, data, {
+			append: false,
+			create: true,
+			mode,
+		});
+	}
+
+	private async copyDirectoryRecursive(fromPath: string, toPath: string): Promise<void> {
+		const { mkdir, readDir, stat } = await import("@tauri-apps/plugin-fs");
+		await mkdir(toPath, { recursive: true });
+		const entries = await readDir(fromPath);
+		for (const entry of entries) {
+			const sourcePath = joinFsPath(fromPath, entry.name);
+			const targetPath = joinFsPath(toPath, entry.name);
+
+			let isDirectory = entry.isDirectory;
+			let isFile = entry.isFile;
+			if (!isDirectory && !isFile) {
+				try {
+					const sourceInfo = await stat(sourcePath);
+					isDirectory = sourceInfo.isDirectory;
+					isFile = sourceInfo.isFile;
+				} catch {
+					continue;
+				}
+			}
+
+			if (isDirectory) {
+				if (this.shouldSkipPackagedSkillDir(entry.name)) continue;
+				await this.copyDirectoryRecursive(sourcePath, targetPath);
+				continue;
+			}
+			if (!isFile) continue;
+			await this.copyFilePreservingMode(sourcePath, targetPath);
+		}
+	}
+
+	private async resolveSkillDirectoryFromPackage(basePath: string, skillName: string): Promise<string | null> {
+		const normalizedSkill = skillName.trim().toLowerCase();
+		if (!normalizedSkill) return null;
+		try {
+			const { exists, readDir } = await import("@tauri-apps/plugin-fs");
+			const directCandidates = [
+				joinFsPath(basePath, skillName),
+				joinFsPath(joinFsPath(basePath, "skills"), skillName),
+			];
+			for (const candidate of directCandidates) {
+				if (await exists(joinFsPath(candidate, "SKILL.md"))) return candidate;
+			}
+
+			const queue: Array<{ path: string; depth: number }> = [{ path: basePath, depth: 0 }];
+			while (queue.length > 0) {
+				const next = queue.shift()!;
+				if (next.depth > 3) continue;
+				const entries = await readDir(next.path).catch(() => []);
+				for (const entry of entries) {
+					if (!entry.isDirectory || this.shouldSkipPackagedSkillDir(entry.name)) continue;
+					const fullPath = joinFsPath(next.path, entry.name);
+					const normalizedName = entry.name.trim().toLowerCase();
+					if (normalizedName === normalizedSkill && await exists(joinFsPath(fullPath, "SKILL.md"))) {
+						return fullPath;
+					}
+					queue.push({ path: fullPath, depth: next.depth + 1 });
+				}
+			}
+		} catch {
+			// ignore
+		}
+		return null;
+	}
+
+	private async materializeRecommendedSkillFromPackage(item: RecommendedSkillSurfaceItem): Promise<string | null> {
+		if (item.definition.sourceKind === "local") return item.resource?.path || null;
+		await this.ensureHomePath();
+		const skillsRoot = this.resourceRootPath("skill", "global");
+		if (!skillsRoot) return null;
+
+		const targetDir = joinFsPath(skillsRoot, item.definition.skillName);
+		const targetSkillPath = joinFsPath(targetDir, "SKILL.md");
+		const { exists, mkdir, readTextFile, writeTextFile } = await import("@tauri-apps/plugin-fs");
+		if (await exists(targetSkillPath)) return targetSkillPath;
+
+		const installedPackage = this.findInstalledItemForSource(item.definition.packageSource, "global");
+		const basePath = installedPackage?.location?.trim();
+		if (!basePath) return null;
+
+		const sourceDir = await this.resolveSkillDirectoryFromPackage(basePath, item.definition.skillName);
+		if (!sourceDir) return null;
+		const sourceSkillPath = joinFsPath(sourceDir, "SKILL.md");
+		await mkdir(skillsRoot, { recursive: true });
+
+		let copyError: string | null = null;
+		try {
+			await this.copyDirectoryRecursive(sourceDir, targetDir);
+		} catch (err) {
+			copyError = err instanceof Error ? err.message : String(err);
+		}
+
+		if (!(await exists(targetSkillPath)) && await exists(sourceSkillPath)) {
+			await mkdir(targetDir, { recursive: true });
+			const sourceSkillContent = await readTextFile(sourceSkillPath);
+			await writeTextFile(targetSkillPath, sourceSkillContent, { append: false, create: true });
+		}
+
+		if (!(await exists(targetSkillPath))) {
+			throw new Error(`Missing SKILL.md for ${item.definition.skillName} after install.${copyError ? ` ${copyError}` : ""}`);
+		}
+		return targetSkillPath;
+	}
+
 	private async resolvePackageSkillContentPath(skillName: string, packageSource: string | null): Promise<string | null> {
 		if (!packageSource) return null;
 		const installedPackage = this.findInstalledItemForSource(packageSource, "global");
 		const basePath = installedPackage?.location?.trim();
 		if (!basePath) return null;
+
+		const skillDir = await this.resolveSkillDirectoryFromPackage(basePath, skillName);
+		if (skillDir) return joinFsPath(skillDir, "SKILL.md");
+
 		const candidates = [
-			joinFsPath(joinFsPath(joinFsPath(basePath, "skills"), skillName), "SKILL.md"),
+			joinFsPath(basePath, `${skillName}.md`),
 			joinFsPath(joinFsPath(basePath, "skills"), `${skillName}.md`),
 		];
 		try {
@@ -1978,6 +3171,95 @@ export class PackagesView {
 		}
 	}
 
+	private inferRemovedPackageAuthProviderCandidates(source: string): string[] {
+		const normalized = normalizeRecommendedSource(source);
+		if (!normalized.startsWith("npm:")) return [];
+		const packageName = normalized.slice(4);
+		if (!packageName) return [];
+		const packageTail = packageName.split("/").filter(Boolean).pop() || packageName;
+		const candidates = new Set<string>();
+		const hinted = [...(PROVIDER_AUTH_CLEANUP_HINTS.get(packageName) ?? []), ...(PROVIDER_AUTH_CLEANUP_HINTS.get(packageTail) ?? [])];
+		for (const provider of hinted) {
+			const normalizedProvider = provider.trim().toLowerCase();
+			if (normalizedProvider) candidates.add(normalizedProvider);
+		}
+		if (packageName.includes("cursor") || packageTail.includes("cursor")) {
+			candidates.add("cursor-agent");
+		}
+		if (packageName.includes("kilo") || packageTail.includes("kilo")) {
+			candidates.add("kilo");
+		}
+		const withoutPiPrefix = packageTail.startsWith("pi-") ? packageTail.slice(3) : packageTail;
+		if (withoutPiPrefix) {
+			candidates.add(withoutPiPrefix);
+			if (withoutPiPrefix.endsWith("-provider")) {
+				candidates.add(withoutPiPrefix.slice(0, -"-provider".length));
+			}
+		}
+		return [...candidates].filter(Boolean);
+	}
+
+	private async cleanupProviderAuthForRemovedPackage(source: string): Promise<string[]> {
+		const candidates = this.inferRemovedPackageAuthProviderCandidates(source);
+		if (candidates.length === 0) return [];
+		let authProviders: Array<{ provider: string; source: string; kind: string }> = [];
+		try {
+			const status = await rpcBridge.getPiAuthStatus();
+			authProviders = Array.isArray(status?.configured_providers)
+				? status.configured_providers.map((item) => ({
+					provider: String(item.provider || "").trim().toLowerCase(),
+					source: String(item.source || "").trim().toLowerCase(),
+					kind: String(item.kind || "").trim().toLowerCase(),
+				})).filter((item) => item.provider.length > 0)
+				: [];
+		} catch {
+			return [];
+		}
+
+		const packageTokens = normalizeRecommendedSource(source)
+			.replace(/^npm:/, "")
+			.split(/[\/_-]+/)
+			.map((token) => token.trim().toLowerCase())
+			.filter((token) => token.length >= 4 && token !== "provider" && token !== "package");
+
+		let builtInOAuthProviders = collectBuiltInOAuthProviderIds([]);
+		try {
+			const oauthProviders = await rpcBridge.getPiOAuthProviders();
+			builtInOAuthProviders = collectBuiltInOAuthProviderIds(oauthProviders);
+		} catch {
+			// keep fallback built-in IDs only
+		}
+
+		const targets = new Set<string>();
+		for (const auth of authProviders) {
+			if (auth.source === "environment") continue;
+			if (auth.kind !== "oauth") continue;
+			if (builtInOAuthProviders.has(auth.provider)) continue;
+			const directMatch = candidates.some((candidate) => auth.provider === candidate || auth.provider.includes(candidate) || candidate.includes(auth.provider));
+			const tokenMatch = packageTokens.some((token) => auth.provider.includes(token));
+			if (directMatch || tokenMatch) {
+				targets.add(auth.provider);
+			}
+		}
+
+		if (targets.size === 0) return [];
+		const removed: string[] = [];
+		for (const provider of targets) {
+			try {
+				const result = await rpcBridge.clearPiProviderAuth(provider);
+				if (result.removed) {
+					removed.push(provider);
+				}
+			} catch {
+				// best-effort cleanup
+			}
+		}
+		if (removed.length > 0) {
+			this.commandOutput = `${this.commandOutput ? `${this.commandOutput}\n` : ""}[auth-cleanup] removed oauth credentials for: ${removed.join(", ")}\n`;
+		}
+		return removed;
+	}
+
 	private async removePackage(source: string, scope: "global" | "local"): Promise<void> {
 		const trimmed = source.trim();
 		if (!trimmed) return;
@@ -1989,7 +3271,12 @@ export class PackagesView {
 			refreshOnSuccess: true,
 		});
 		if (success) {
-			this.commandStatus = `Removed: ${trimmed}`;
+			const removedProviders = await this.cleanupProviderAuthForRemovedPackage(trimmed);
+			if (removedProviders.length > 0) {
+				this.commandStatus = `Removed: ${trimmed} · Cleared auth for ${removedProviders.join(", ")}`;
+			} else {
+				this.commandStatus = `Removed: ${trimmed}`;
+			}
 		}
 	}
 
@@ -2078,8 +3365,36 @@ export class PackagesView {
 		if (!item.installed) {
 			await this.installPackage(item.definition.packageSource, "global");
 		}
-		const commandText = `/skill:${item.definition.skillName}`;
-		await this.stageResourceCommandInChat(commandText, `Prepared ${commandText} in chat. Press Enter to run.`);
+
+		await this.refreshDiscoveredResources();
+		const packageInstalled = this.isSourceInstalledForScope(item.definition.packageSource, "global");
+		if (item.definition.sourceKind !== "local" && !packageInstalled) {
+			this.commandStatus = `Failed to install ${item.definition.name}.`;
+			this.render();
+			return;
+		}
+
+		let materializedSkillPath: string | null = null;
+		try {
+			materializedSkillPath = await this.materializeRecommendedSkillFromPackage(item);
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			this.commandStatus = `Installed ${item.definition.name}, but failed to prepare local skill files: ${message}`;
+			this.render();
+		}
+
+		await this.refreshDiscoveredResources();
+		const resolvedSkill = this.findSkillResourceByName(item.definition.skillName);
+		if (!resolvedSkill) {
+			this.commandStatus = `Installed ${item.definition.name}, but no SKILL.md was discovered for ${item.definition.skillName} in ~/.pi/agent/skills.`;
+			this.render();
+			return;
+		}
+		const commandText = resolvedSkill.commandText;
+		const setupSuffix = item.definition.setupHint ? ` Setup: ${item.definition.setupHint}` : "";
+		const skillPath = materializedSkillPath || resolvedSkill.path;
+		const locationSuffix = skillPath ? ` Skill files at ${pathDirName(skillPath)}.` : "";
+		await this.stageResourceCommandInChat(commandText, `Prepared ${commandText} in chat. Press Enter to run.${locationSuffix}${setupSuffix}`);
 		if (this.activePackagesModal?.kind === "recommended-skill") {
 			this.closePackagesItemModal();
 		}
@@ -2874,15 +4189,28 @@ Execute the required file creation/edits directly, then summarize exactly which 
 		this.activeSkillContentLoading = false;
 		if (modal.kind === "extension") {
 			const source = normalizeRecommendedSource(modal.item.source);
-			const commands = this.packageConfigCommands.get(source) ?? [];
+			let commands = this.packageConfigCommands.get(source) ?? [];
+			if (commands.length === 0 && this.isAutoRenameSource(source)) {
+				this.ensureSyntheticExtensionConfigCommand(source, "auto-rename", "config", modal.item.installedItemForScope ?? null);
+				commands = this.packageConfigCommands.get(source) ?? [];
+			}
 			this.activePackageConfigSource = source;
 			this.activePackageConfigLabel = modal.item.displayName;
 			this.packageConfigStatus = "";
+			this.autoRenameConfigError = "";
+			this.refreshAutoRenameProjectOptions();
+			this.autoRenameConfigSaveScope = "global";
+			this.autoRenameConfigTargetProjectId = "";
+			this.autoRenameConfigTargetProjectPath = "";
 			this.render();
 
 			await this.loadPackageConfigFromPackage(source, commands).catch(() => {});
 			if (commands.some((command) => commandLikelyNeedsModelArg(command))) {
 				await this.ensureConfigModelsLoaded();
+			}
+			const autoRenameCommand = this.resolveAutoRenameCommandForSource(source);
+			if (autoRenameCommand) {
+				await this.ensureAutoRenameConfigLoaded(source, false, { scope: "global" }).catch(() => {});
 			}
 			this.seedModelArgsForSource(source, commands);
 			this.render();
@@ -2916,6 +4244,17 @@ Execute the required file creation/edits directly, then summarize exactly which 
 		this.activePackageConfigSource = null;
 		this.activePackageConfigLabel = "";
 		this.packageConfigStatus = "";
+		this.autoRenameConfigError = "";
+		this.autoRenameConfigLoading = false;
+		this.autoRenameConfigSaving = false;
+		this.autoRenameConfigPath = "";
+		this.autoRenameConfigScopeLabel = "";
+		this.autoRenameConfigSaveScope = "global";
+		this.autoRenameConfigTargetProjectId = "";
+		this.autoRenameConfigTargetProjectPath = "";
+		this.autoRenameConfigLoadedSource = "";
+		this.autoRenameConfigRaw = {};
+		this.autoRenameConfig = defaultAutoRenameConfigDraft();
 		this.activeSkillContent = "";
 		this.activeSkillContentPath = null;
 		this.activeSkillContentLoading = false;
@@ -2969,7 +4308,7 @@ Execute the required file creation/edits directly, then summarize exactly which 
 			try {
 				const result = await restoreBundledThemes();
 				await this.refreshBundledThemesStatus();
-				this.commandStatus = `Installed Pi Desktop Themes (${result.created} created, ${result.renamed} renamed).`;
+				this.commandStatus = `Installed Pi Desktop Themes (${result.created} created, ${result.updated} updated, ${result.renamed} renamed).`;
 			} catch (err) {
 				this.commandStatus = `Failed to install Pi Desktop Themes: ${err instanceof Error ? err.message : String(err)}`;
 			} finally {
@@ -2983,8 +4322,9 @@ Execute the required file creation/edits directly, then summarize exactly which 
 	}
 
 	private async uninstallExtensionItem(item: ExtensionSurfaceItem): Promise<void> {
+		if (this.runningCommand || this.runningConfigCommand) return;
+		this.closePackagesItemModal();
 		if (normalizeRecommendedSource(item.source) === DESKTOP_THEMES_PACKAGE_SOURCE) {
-			if (this.runningCommand || this.runningConfigCommand) return;
 			this.runningCommand = true;
 			this.commandStatus = "Uninstalling Pi Desktop Themes…";
 			this.render();
@@ -3464,8 +4804,8 @@ Execute the required file creation/edits directly, then summarize exactly which 
 					<button
 						class="packages-row-install add"
 						?disabled=${this.runningCommand}
-						title="Install"
-						@click=${() => void this.installExtensionItem(item)}
+						title="Open"
+						@click=${() => void this.openPackagesItemModal({ kind: "extension", item })}
 					>
 						+
 					</button>
@@ -3486,8 +4826,8 @@ Execute the required file creation/edits directly, then summarize exactly which 
 					<button
 						class="packages-row-install add"
 						?disabled=${this.runningCommand}
-						title="Install"
-						@click=${() => void this.installExtensionItem(item)}
+						title="Open"
+						@click=${() => void this.openPackagesItemModal({ kind: "extension", item })}
 					>
 						+
 					</button>
@@ -3507,8 +4847,8 @@ Execute the required file creation/edits directly, then summarize exactly which 
 					<button
 						class="packages-row-install add"
 						?disabled=${this.runningCommand}
-						title="Install"
-						@click=${() => void this.installExtensionItem(item)}
+						title="Open"
+						@click=${() => void this.openPackagesItemModal({ kind: "extension", item })}
 					>
 						+
 					</button>

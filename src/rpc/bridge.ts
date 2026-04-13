@@ -63,6 +63,18 @@ export interface PiAuthStatus {
 	configured_providers: PiAuthProviderStatus[];
 }
 
+export interface PiProviderAuthClearResult {
+	provider: string;
+	removed: boolean;
+	source: "auth_file" | "environment" | "missing";
+}
+
+export interface PiOAuthProviderInfo {
+	id: string;
+	name: string;
+	source: "built_in" | "package";
+}
+
 export interface CliUpdateStatus {
 	discovery: string;
 	current_version: string | null;
@@ -72,6 +84,11 @@ export interface CliUpdateStatus {
 	npm_available: boolean;
 	update_command: string;
 	note: string | null;
+}
+
+export interface PiChangelogResult {
+	path: string;
+	content: string;
 }
 
 export interface NpmCommandResult {
@@ -84,6 +101,14 @@ export interface GitCommandResult {
 	stdout: string;
 	stderr: string;
 	exit_code: number;
+}
+
+export interface ShareGistResult {
+	gist_url: string;
+	gist_id: string;
+	preview_url: string;
+	stdout: string;
+	stderr: string;
 }
 
 export interface RpcCompatibilityReport {
@@ -446,6 +471,10 @@ export class RpcBridge {
 		return data.text;
 	}
 
+	async getSessionContent(sessionPath: string): Promise<string> {
+		return invoke<string>("get_session_content", { sessionPath });
+	}
+
 	async sendExtensionUiResponse(response: Record<string, unknown>): Promise<void> {
 		await invoke("rpc_ui_response", {
 			response: JSON.stringify(response),
@@ -478,12 +507,38 @@ export class RpcBridge {
 		});
 	}
 
+	async createShareGist(htmlPath: string): Promise<ShareGistResult> {
+		return invoke<ShareGistResult>("create_share_gist", {
+			options: {
+				html_path: htmlPath,
+			},
+		});
+	}
+
 	async getPiAuthStatus(): Promise<PiAuthStatus> {
 		return invoke<PiAuthStatus>("get_pi_auth_status");
 	}
 
+	async clearPiProviderAuth(provider: string): Promise<PiProviderAuthClearResult> {
+		return invoke<PiProviderAuthClearResult>("clear_pi_provider_auth", { provider });
+	}
+
+	async getPiOAuthProviders(): Promise<PiOAuthProviderInfo[]> {
+		return invoke<PiOAuthProviderInfo[]>("get_pi_oauth_providers");
+	}
+
 	async getCliUpdateStatus(): Promise<CliUpdateStatus> {
 		return invoke<CliUpdateStatus>("get_cli_update_status", {
+			options: {
+				cli_path: this.lastStartOptions?.cliPath ?? null,
+				cwd: this.lastStartOptions?.cwd ?? null,
+				env: this.lastStartOptions?.env ?? null,
+			},
+		});
+	}
+
+	async getPiChangelog(): Promise<PiChangelogResult> {
+		return invoke<PiChangelogResult>("get_pi_changelog", {
 			options: {
 				cli_path: this.lastStartOptions?.cliPath ?? null,
 				cwd: this.lastStartOptions?.cwd ?? null,
@@ -654,18 +709,29 @@ export class RpcBridge {
 		this.emitToListeners(data);
 	}
 
+	private timeoutMsForCommand(command: Record<string, unknown>): number {
+		const type = typeof command.type === "string" ? command.type.trim().toLowerCase() : "";
+		switch (type) {
+			case "compact":
+				return 5 * 60_000;
+			default:
+				return 35_000;
+		}
+	}
+
 	private async send(command: Record<string, unknown>): Promise<Record<string, unknown>> {
 		await this.ensureListeners();
 		const id = `req_${++this.requestId}`;
 		const fullCommand = { ...command, id };
 
 		return new Promise((resolve, reject) => {
-			traceBridge(`send instance=${this.instanceId} id=${id} command=${String(command.type)}`);
+			const timeoutMs = this.timeoutMsForCommand(command);
+			traceBridge(`send instance=${this.instanceId} id=${id} command=${String(command.type)} timeoutMs=${timeoutMs}`);
 			const timeout = setTimeout(() => {
 				this.pendingRequests.delete(id);
-				traceBridge(`timeout instance=${this.instanceId} id=${id} command=${String(command.type)}`);
+				traceBridge(`timeout instance=${this.instanceId} id=${id} command=${String(command.type)} timeoutMs=${timeoutMs}`);
 				reject(new Error(`Timeout waiting for response to ${String(command.type)}`));
-			}, 35000);
+			}, timeoutMs);
 
 			this.pendingRequests.set(id, {
 				resolve: (response) => {
@@ -897,6 +963,10 @@ class ActiveRpcBridgeProxy {
 		return this.activeBridge.getLastAssistantText();
 	}
 
+	async getSessionContent(sessionPath: string): Promise<string> {
+		return this.activeBridge.getSessionContent(sessionPath);
+	}
+
 	async sendExtensionUiResponse(response: Record<string, unknown>): Promise<void> {
 		return this.activeBridge.sendExtensionUiResponse(response);
 	}
@@ -912,12 +982,28 @@ class ActiveRpcBridgeProxy {
 		return this.activeBridge.runGitCommand(args, options);
 	}
 
+	async createShareGist(htmlPath: string): Promise<ShareGistResult> {
+		return this.activeBridge.createShareGist(htmlPath);
+	}
+
 	async getPiAuthStatus(): Promise<PiAuthStatus> {
 		return this.activeBridge.getPiAuthStatus();
 	}
 
+	async clearPiProviderAuth(provider: string): Promise<PiProviderAuthClearResult> {
+		return this.activeBridge.clearPiProviderAuth(provider);
+	}
+
+	async getPiOAuthProviders(): Promise<PiOAuthProviderInfo[]> {
+		return this.activeBridge.getPiOAuthProviders();
+	}
+
 	async getCliUpdateStatus(): Promise<CliUpdateStatus> {
 		return this.activeBridge.getCliUpdateStatus();
+	}
+
+	async getPiChangelog(): Promise<PiChangelogResult> {
+		return this.activeBridge.getPiChangelog();
 	}
 
 	async updateCliViaNpm(): Promise<NpmCommandResult> {

@@ -16,6 +16,7 @@ const SHORTCUTS: Shortcut[] = [
 	{ keys: ["Ctrl/Cmd+Shift+H"], description: "Open session history viewer", category: "Session" },
 	{ keys: ["Ctrl/Cmd+K"], description: "Open command palette", category: "Navigation" },
 	{ keys: ["/"], description: "Open command palette (when editor not focused)", category: "Navigation" },
+	{ keys: ["Ctrl+`", "Cmd+Alt+T"], description: "Toggle terminal dock", category: "Navigation" },
 	{ keys: ["Ctrl/Cmd+L"], description: "Focus composer", category: "Input" },
 	{ keys: ["Enter"], description: "Send message / steer when streaming", category: "Input" },
 	{ keys: ["Alt+Enter"], description: "Queue follow-up message", category: "Input" },

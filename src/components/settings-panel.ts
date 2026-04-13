@@ -22,6 +22,7 @@ import {
 	rpcBridge,
 } from "../rpc/bridge.js";
 import { applyDesktopTheme, getResolvedDesktopTheme, readStoredDesktopTheme, type DesktopThemeMode } from "../theme/theme-manager.js";
+import { buildPiThemeDocument } from "../theme/pi-theme-document.js";
 
 interface ThemeOption {
 	id: string;
@@ -50,6 +51,31 @@ interface SettingsState {
 	followUpMode: QueueMode;
 }
 
+interface ScopedModelOption {
+	fullId: string;
+	provider: string;
+	id: string;
+	name: string;
+}
+
+export type SettingsSectionId = "general" | "appearance" | "account" | "updates";
+
+export interface SettingsSectionNavItem {
+	id: SettingsSectionId;
+	label: string;
+	description: string;
+	runtimeRequired?: boolean;
+}
+
+export interface SettingsSectionNavState extends SettingsSectionNavItem {
+	disabled: boolean;
+}
+
+export interface SettingsNavigationState {
+	activeSection: SettingsSectionId;
+	items: SettingsSectionNavState[];
+}
+
 export class SettingsPanel {
 	private container: HTMLElement;
 	private isOpen = false;
@@ -61,6 +87,7 @@ export class SettingsPanel {
 		followUpMode: "one-at-a-time",
 	};
 	private onClose: (() => void) | null = null;
+	private onRequestAddProject: (() => void) | null = null;
 	private saving = false;
 	private authStatus: PiAuthStatus | null = null;
 	private authLoading = false;
@@ -74,6 +101,7 @@ export class SettingsPanel {
 	private cliUpdating = false;
 	private cliActionMessage = "";
 	private onCliStatusChange: ((status: CliUpdateStatus | null) => void) | null = null;
+	private onNavigationStateChange: ((state: SettingsNavigationState) => void) | null = null;
 	private compatibilityReport: RpcCompatibilityReport | null = null;
 	private compatibilityLoading = false;
 	private appearanceProfiles: DesktopAppearanceProfiles = loadDesktopAppearanceProfiles();
@@ -86,18 +114,46 @@ export class SettingsPanel {
 	private createThemeDialogName = "";
 	private createThemeDialogSaving = false;
 	private createThemeDialogError = "";
+	private runtimeProjectPath: string | null = null;
 	private colorDrafts: Record<ThemeVariant, ThemeColorDraft> = {
 		light: { accent: "", background: "", foreground: "" },
 		dark: { accent: "", background: "", foreground: "" },
 	};
+	private scopedModelsLoading = false;
+	private scopedModelsSaving = false;
+	private scopedModelsError = "";
+	private scopedModelsMessage = "";
+	private scopedModelsSearch = "";
+	private scopedModels: ScopedModelOption[] = [];
+	private scopedModelsHasFilter = false;
+	private scopedModelsEnabledIds: string[] = [];
+	private scopedModelsSavedSnapshot = "";
+	private scopedModelsSettingsPath: string | null = null;
+	private scopedModelsUnknownPatterns: string[] = [];
+	private activeSection: SettingsSectionId = "general";
 
 	constructor(container: HTMLElement) {
 		this.container = container;
 		this.loadTheme();
 	}
 
+	setContainer(container: HTMLElement): void {
+		if (this.container === container) return;
+		const wasOpen = this.isOpen;
+		this.container = container;
+		if (wasOpen) this.render();
+	}
+
+	hasRenderedContent(): boolean {
+		return this.container.childElementCount > 0;
+	}
+
 	setOnClose(callback: () => void): void {
 		this.onClose = callback;
+	}
+
+	setOnRequestAddProject(callback: () => void): void {
+		this.onRequestAddProject = callback;
 	}
 
 	setOnDesktopStatusChange(callback: (status: DesktopUpdateStatus | null) => void): void {
@@ -108,12 +164,73 @@ export class SettingsPanel {
 		this.onCliStatusChange = callback;
 	}
 
+	setOnNavigationStateChange(callback: ((state: SettingsNavigationState) => void) | null): void {
+		this.onNavigationStateChange = callback;
+		if (callback) callback(this.getNavigationState());
+	}
+
+	getActiveSection(): SettingsSectionId {
+		return this.getNavigationState().activeSection;
+	}
+
+	setActiveSection(section: SettingsSectionId): void {
+		const navItems = this.getSettingsNavItems();
+		const target = navItems.find((item) => item.id === section);
+		if (!target) return;
+		const runtimeControlsEnabled = this.isRuntimeControlsEnabled();
+		if (target.runtimeRequired && !runtimeControlsEnabled) return;
+		if (this.activeSection === section) return;
+		this.activeSection = section;
+		this.emitNavigationState(runtimeControlsEnabled);
+		if (this.isOpen) this.render();
+	}
+
+	getNavigationState(): SettingsNavigationState {
+		const runtimeControlsEnabled = this.isRuntimeControlsEnabled();
+		const activeSection = this.normalizeActiveSection(runtimeControlsEnabled);
+		const items = this.getSettingsNavItems().map((item) => ({
+			...item,
+			disabled: Boolean(item.runtimeRequired && !runtimeControlsEnabled),
+		}));
+		return { activeSection, items };
+	}
+
+	setRuntimeProjectPath(projectPath: string | null): void {
+		this.runtimeProjectPath = typeof projectPath === "string" && projectPath.trim().length > 0 ? projectPath : null;
+		this.emitNavigationState();
+	}
+
+	private isRuntimeControlsEnabled(): boolean {
+		return Boolean(this.runtimeProjectPath) && rpcBridge.isConnected;
+	}
+
+	private normalizeActiveSection(runtimeControlsEnabled = this.isRuntimeControlsEnabled()): SettingsSectionId {
+		const navItems = this.getSettingsNavItems();
+		const requested = navItems.find((item) => item.id === this.activeSection) ?? navItems[0];
+		if (requested?.runtimeRequired && !runtimeControlsEnabled) {
+			this.activeSection = "appearance";
+		}
+		return (this.activeSection ?? "appearance") as SettingsSectionId;
+	}
+
+	private emitNavigationState(runtimeControlsEnabled = this.isRuntimeControlsEnabled()): void {
+		if (!this.onNavigationStateChange) return;
+		this.onNavigationStateChange({
+			activeSection: this.normalizeActiveSection(runtimeControlsEnabled),
+			items: this.getSettingsNavItems().map((item) => ({
+				...item,
+				disabled: Boolean(item.runtimeRequired && !runtimeControlsEnabled),
+			})),
+		});
+	}
+
 	isVisible(): boolean {
 		return this.isOpen;
 	}
 
 	async open(): Promise<void> {
 		this.isOpen = true;
+		this.emitNavigationState();
 		this.appearanceProfiles = loadDesktopAppearanceProfiles();
 		this.resetColorDrafts();
 		this.createThemeDialogOpen = false;
@@ -126,6 +243,7 @@ export class SettingsPanel {
 		await this.loadState();
 		if (!this.isOpen) return;
 		this.render();
+		this.emitNavigationState();
 	}
 
 	close(notify = true): void {
@@ -136,7 +254,17 @@ export class SettingsPanel {
 		this.applyAppearanceProfileForCurrentResolvedTheme();
 		this.isOpen = false;
 		this.render();
+		this.emitNavigationState();
 		if (notify) this.onClose?.();
+	}
+
+	hideWithoutClearing(): void {
+		this.resetColorDrafts();
+		this.createThemeDialogOpen = false;
+		this.createThemeDialogSaving = false;
+		this.createThemeDialogError = "";
+		this.applyAppearanceProfileForCurrentResolvedTheme();
+		this.isOpen = false;
 	}
 
 	private loadTheme(): void {
@@ -161,6 +289,11 @@ export class SettingsPanel {
 	}
 
 	private getProfile(theme: ThemeVariant): DesktopAppearanceProfile {
+		const candidate = theme === "light" ? this.appearanceProfiles?.light : this.appearanceProfiles?.dark;
+		if (candidate && typeof candidate === "object") {
+			return candidate;
+		}
+		this.appearanceProfiles = loadDesktopAppearanceProfiles();
 		return theme === "light" ? this.appearanceProfiles.light : this.appearanceProfiles.dark;
 	}
 
@@ -467,10 +600,16 @@ export class SettingsPanel {
 		return this.availableThemes.filter((entry) => entry.variant === theme);
 	}
 
-	private lookupThemeOption(themeName: string): ThemeOption | null {
+	private lookupThemeOption(themeName: unknown): ThemeOption | null {
+		if (typeof themeName !== "string") return null;
 		const normalized = themeName.trim().toLowerCase();
 		if (!normalized) return null;
-		return this.availableThemes.find((entry) => entry.id.toLowerCase() === normalized || entry.label.toLowerCase() === normalized) ?? null;
+		if (!Array.isArray(this.availableThemes)) return null;
+		return this.availableThemes.find((entry) => {
+			const id = typeof entry?.id === "string" ? entry.id.toLowerCase() : "";
+			const label = typeof entry?.label === "string" ? entry.label.toLowerCase() : "";
+			return id === normalized || label === normalized;
+		}) ?? null;
 	}
 
 	private resolveDefaultThemeId(theme: ThemeVariant): string {
@@ -573,7 +712,8 @@ export class SettingsPanel {
 		this.render();
 	}
 
-	private normalizeHex6(value: string): string | null {
+	private normalizeHex6(value: unknown): string | null {
+		if (typeof value !== "string") return null;
 		const trimmed = value.trim();
 		const short = trimmed.match(/^#([0-9a-f]{3})$/i);
 		if (short) {
@@ -585,11 +725,11 @@ export class SettingsPanel {
 		return null;
 	}
 
-	private coercePickerColor(value: string): string {
+	private coercePickerColor(value: unknown): string {
 		return this.normalizeHex6(value) ?? "#7A818F";
 	}
 
-	private setProfileColor(theme: ThemeVariant, key: "accent" | "background" | "foreground", value: string): void {
+	private setProfileColor(theme: ThemeVariant, key: "accent" | "background" | "foreground", value: unknown): void {
 		const normalized = this.normalizeHex6(value);
 		if (!normalized) return;
 		this.colorDrafts[theme][key] = normalized;
@@ -599,7 +739,8 @@ export class SettingsPanel {
 		this.render();
 	}
 
-	private setProfileFont(theme: ThemeVariant, key: "uiFont" | "codeFont", value: string): void {
+	private setProfileFont(theme: ThemeVariant, key: "uiFont" | "codeFont", value: unknown): void {
+		if (typeof value !== "string") return;
 		const next = value.trim();
 		if (!next) return;
 		const profile = this.getProfile(theme);
@@ -664,40 +805,20 @@ export class SettingsPanel {
 		const accent = preview.accent;
 		const background = preview.background;
 		const foreground = preview.foreground;
-		const doc = {
+		const doc = buildPiThemeDocument({
 			name: normalizedName,
-			vars: {
-				accent,
-				background,
-				foreground,
+			variant: theme,
+			accent,
+			surface: background,
+			ink: foreground,
+			contrast: profile.contrast,
+			fonts: {
+				ui: profile.uiFont || null,
+				code: profile.codeFont || null,
 			},
-			colors: {
-				accent: "accent",
-				text: "foreground",
-				muted: "foreground",
-				dim: "foreground",
-				selectedBg: "background",
-				userMessageBg: "background",
-				userMessageText: "foreground",
-				customMessageBg: "background",
-				customMessageText: "foreground",
-				toolPendingBg: "background",
-				toolSuccessBg: "background",
-				toolErrorBg: "background",
-				toolTitle: "accent",
-				toolOutput: "foreground",
-			},
-			piDesktop: {
-				source: "pi-desktop-theme-v1",
-				variant: theme,
-				contrast: profile.contrast,
-				fonts: {
-					ui: profile.uiFont || null,
-					code: profile.codeFont || null,
-				},
-				opaqueWindows: !profile.translucentSidebar,
-			},
-		};
+			opaqueWindows: !profile.translucentSidebar,
+			source: "pi-desktop-theme-v1",
+		});
 
 		const safeBase = normalizedName
 			.toLowerCase()
@@ -735,13 +856,32 @@ export class SettingsPanel {
 	}
 
 	private async loadState(): Promise<void> {
-		try {
-			const sessionState = await rpcBridge.getState();
-			this.state.autoCompactionEnabled = sessionState.autoCompactionEnabled;
-			this.state.steeringMode = sessionState.steeringMode;
-			this.state.followUpMode = sessionState.followUpMode;
-		} catch {
-			// ignore
+		const runtimeReady = Boolean(this.runtimeProjectPath) && rpcBridge.isConnected;
+		if (runtimeReady) {
+			try {
+				const sessionState = await rpcBridge.getState();
+				this.state.autoCompactionEnabled = Boolean(sessionState.autoCompactionEnabled);
+				this.state.steeringMode = sessionState.steeringMode === "all" ? "all" : "one-at-a-time";
+				this.state.followUpMode = sessionState.followUpMode === "all" ? "all" : "one-at-a-time";
+			} catch {
+				// ignore
+			}
+		} else {
+			this.authStatus = null;
+			this.compatibilityReport = null;
+			this.authLoading = false;
+			this.compatibilityLoading = false;
+			this.scopedModelsLoading = false;
+			this.scopedModelsSaving = false;
+			this.scopedModelsError = "";
+			this.scopedModelsMessage = "";
+			this.scopedModelsSearch = "";
+			this.scopedModels = [];
+			this.scopedModelsHasFilter = false;
+			this.scopedModelsEnabledIds = [];
+			this.scopedModelsSavedSnapshot = "";
+			this.scopedModelsSettingsPath = null;
+			this.scopedModelsUnknownPatterns = [];
 		}
 
 		try {
@@ -761,13 +901,20 @@ export class SettingsPanel {
 			// ignore missing persisted settings
 		}
 
-		await Promise.all([
-			this.refreshAuthStatus(),
+		const refreshTasks: Promise<void>[] = [
 			this.refreshDesktopStatus(),
 			this.refreshCliStatus(),
-			this.refreshCompatibilityStatus(),
 			this.refreshThemeCatalog(),
-		]);
+		];
+		if (runtimeReady) {
+			refreshTasks.push(
+				this.refreshAccountStatus(),
+				this.refreshCompatibilityStatus(),
+				this.refreshScopedModels(),
+			);
+		}
+
+		await Promise.all(refreshTasks);
 		this.applyAppearanceProfileForCurrentResolvedTheme(false);
 	}
 
@@ -775,13 +922,37 @@ export class SettingsPanel {
 		this.authLoading = true;
 		this.render();
 		try {
-			this.authStatus = await rpcBridge.getPiAuthStatus();
+			const raw = await rpcBridge.getPiAuthStatus();
+			const providers = Array.isArray(raw?.configured_providers)
+				? raw.configured_providers
+					.filter((entry) => entry && typeof entry === "object")
+					.map((entry) => {
+						const provider = typeof entry.provider === "string" && entry.provider.trim().length > 0 ? entry.provider.trim() : "unknown";
+						const source = entry.source === "environment" || entry.source === "auth_file_api_key" || entry.source === "auth_file_oauth"
+							? entry.source
+							: "environment";
+						const kind = entry.kind === "api_key" || entry.kind === "oauth" || entry.kind === "unknown"
+							? entry.kind
+							: "unknown";
+						return { provider, source, kind };
+					})
+				: [];
+			this.authStatus = {
+				agent_dir: typeof raw?.agent_dir === "string" ? raw.agent_dir : null,
+				auth_file: typeof raw?.auth_file === "string" ? raw.auth_file : null,
+				auth_file_exists: Boolean(raw?.auth_file_exists),
+				configured_providers: providers,
+			};
 		} catch {
 			this.authStatus = null;
 		} finally {
 			this.authLoading = false;
 			this.render();
 		}
+	}
+
+	private async refreshAccountStatus(): Promise<void> {
+		await this.refreshAuthStatus();
 	}
 
 	private async refreshDesktopStatus(): Promise<void> {
@@ -835,7 +1006,13 @@ export class SettingsPanel {
 		this.compatibilityLoading = true;
 		this.render();
 		try {
-			this.compatibilityReport = await rpcBridge.checkRpcCompatibility();
+			const raw = await rpcBridge.checkRpcCompatibility();
+			this.compatibilityReport = {
+				ok: Boolean(raw?.ok),
+				checks: Array.isArray(raw?.checks) ? raw.checks.filter((entry) => typeof entry === "string") : [],
+				error: typeof raw?.error === "string" && raw.error.trim().length > 0 ? raw.error : undefined,
+				checkedAt: typeof raw?.checkedAt === "number" && Number.isFinite(raw.checkedAt) ? raw.checkedAt : Date.now(),
+			};
 		} catch (err) {
 			this.compatibilityReport = {
 				ok: false,
@@ -922,6 +1099,417 @@ export class SettingsPanel {
 		} catch (err) {
 			console.error("Failed to set follow-up mode:", err);
 		}
+	}
+
+	private readStringPath(source: Record<string, unknown>, path: string): string | null {
+		const parts = path.split(".");
+		let current: unknown = source;
+		for (const part of parts) {
+			if (!current || typeof current !== "object") return null;
+			current = (current as Record<string, unknown>)[part];
+		}
+		if (typeof current !== "string") return null;
+		const value = current.trim();
+		return value.length > 0 ? value : null;
+	}
+
+	private pickStringPath(source: Record<string, unknown>, paths: string[]): string | null {
+		for (const path of paths) {
+			const value = this.readStringPath(source, path);
+			if (value !== null) return value;
+		}
+		return null;
+	}
+
+	private parseScopedModelOptions(rawModels: Array<Record<string, unknown>>): ScopedModelOption[] {
+		const byId = new Map<string, ScopedModelOption>();
+		for (const raw of rawModels) {
+			const provider = this.pickStringPath(raw, ["provider", "target.provider", "model.provider"]);
+			const id = this.pickStringPath(raw, ["id", "modelId", "model_id", "model", "target.id", "target.modelId"]);
+			if (!provider || !id) continue;
+			const fullId = `${provider}/${id}`;
+			const key = fullId.toLowerCase();
+			if (byId.has(key)) continue;
+			const name = this.pickStringPath(raw, ["name", "label", "target.name"]) ?? id;
+			byId.set(key, {
+				fullId,
+				provider,
+				id,
+				name,
+			});
+		}
+		return [...byId.values()].sort((a, b) => {
+			const providerCmp = a.provider.localeCompare(b.provider);
+			if (providerCmp !== 0) return providerCmp;
+			return a.id.localeCompare(b.id);
+		});
+	}
+
+	private async resolvePiSettingsPath(): Promise<string> {
+		let agentDir = "";
+		try {
+			const status = await rpcBridge.getPiAuthStatus();
+			agentDir = typeof status.agent_dir === "string" ? status.agent_dir.trim() : "";
+		} catch {
+			// ignore and fallback to default path
+		}
+		if (!agentDir) {
+			const { homeDir } = await import("@tauri-apps/api/path");
+			const home = (await homeDir()).replace(/\\/g, "/").replace(/\/+$/, "");
+			agentDir = this.joinFsPath(this.joinFsPath(home, ".pi"), "agent");
+		}
+		return this.joinFsPath(agentDir, "settings.json");
+	}
+
+	private async readPiGlobalSettingsDoc(): Promise<{ path: string; doc: Record<string, unknown> }> {
+		const { exists, readTextFile } = await import("@tauri-apps/plugin-fs");
+		const path = await this.resolvePiSettingsPath();
+		this.scopedModelsSettingsPath = path;
+		if (!(await exists(path))) {
+			return { path, doc: {} };
+		}
+		const content = await readTextFile(path);
+		if (!content.trim()) return { path, doc: {} };
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(content);
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			throw new Error(`Failed to parse ${path}: ${message}`);
+		}
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+			throw new Error(`Expected object in ${path}, but found ${Array.isArray(parsed) ? "array" : typeof parsed}`);
+		}
+		return { path, doc: parsed as Record<string, unknown> };
+	}
+
+	private patternToRegex(pattern: string): RegExp | null {
+		const trimmed = pattern.trim();
+		if (!trimmed) return null;
+		const escaped = trimmed.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
+		try {
+			return new RegExp(`^${escaped}$`, "i");
+		} catch {
+			return null;
+		}
+	}
+
+	private resolveScopedModelIdsFromPatterns(
+		patterns: string[] | undefined,
+		models: ScopedModelOption[],
+	): { hasFilter: boolean; enabledIds: string[]; unknownPatterns: string[] } {
+		const allIds = models.map((model) => model.fullId);
+		if (!patterns || patterns.length === 0) {
+			return { hasFilter: false, enabledIds: [...allIds], unknownPatterns: [] };
+		}
+
+		const idByLower = new Map(allIds.map((id) => [id.toLowerCase(), id]));
+		const enabledIds: string[] = [];
+		const seen = new Set<string>();
+		const unknownPatterns: string[] = [];
+
+		for (const rawPattern of patterns) {
+			const pattern = rawPattern.trim();
+			if (!pattern) continue;
+			const hasWildcard = pattern.includes("*");
+			if (!hasWildcard) {
+				const exact = idByLower.get(pattern.toLowerCase());
+				if (!exact) {
+					unknownPatterns.push(pattern);
+					continue;
+				}
+				if (!seen.has(exact)) {
+					seen.add(exact);
+					enabledIds.push(exact);
+				}
+				continue;
+			}
+			const regex = this.patternToRegex(pattern);
+			if (!regex) {
+				unknownPatterns.push(pattern);
+				continue;
+			}
+			let matched = false;
+			for (const id of allIds) {
+				if (!regex.test(id)) continue;
+				matched = true;
+				if (!seen.has(id)) {
+					seen.add(id);
+					enabledIds.push(id);
+				}
+			}
+			if (!matched) unknownPatterns.push(pattern);
+		}
+
+		if (enabledIds.length >= allIds.length) {
+			return { hasFilter: false, enabledIds: [...allIds], unknownPatterns };
+		}
+		return { hasFilter: true, enabledIds, unknownPatterns };
+	}
+
+	private setScopedModelsSelection(hasFilter: boolean, enabledIds: string[]): void {
+		const allIds = this.scopedModels.map((model) => model.fullId);
+		const allowed = new Set(allIds);
+		const deduped: string[] = [];
+		for (const id of enabledIds) {
+			if (!allowed.has(id)) continue;
+			if (deduped.includes(id)) continue;
+			deduped.push(id);
+		}
+
+		if (!hasFilter || deduped.length >= allIds.length) {
+			this.scopedModelsHasFilter = false;
+			this.scopedModelsEnabledIds = [...allIds];
+			return;
+		}
+
+		this.scopedModelsHasFilter = true;
+		this.scopedModelsEnabledIds = deduped;
+	}
+
+	private scopedModelsSnapshot(): string {
+		if (!this.scopedModelsHasFilter) return "all:*";
+		return `filtered:${this.scopedModelsEnabledIds.join("|")}`;
+	}
+
+	private scopedModelsDirty(): boolean {
+		return this.scopedModelsSnapshot() !== this.scopedModelsSavedSnapshot;
+	}
+
+	private isScopedModelEnabled(fullId: string): boolean {
+		return !this.scopedModelsHasFilter || this.scopedModelsEnabledIds.includes(fullId);
+	}
+
+	private allScopedModelIds(): string[] {
+		return this.scopedModels.map((model) => model.fullId);
+	}
+
+	private toggleScopedModel(fullId: string): void {
+		const allIds = this.allScopedModelIds();
+		if (allIds.length === 0) return;
+		const currentlyEnabled = this.isScopedModelEnabled(fullId);
+		if (!this.scopedModelsHasFilter) {
+			if (!currentlyEnabled) return;
+			const nextEnabled = allIds.filter((id) => id !== fullId);
+			this.setScopedModelsSelection(true, nextEnabled);
+		} else if (currentlyEnabled) {
+			this.setScopedModelsSelection(
+				true,
+				this.scopedModelsEnabledIds.filter((id) => id !== fullId),
+			);
+		} else {
+			this.setScopedModelsSelection(true, [...this.scopedModelsEnabledIds, fullId]);
+		}
+		this.scopedModelsError = "";
+		this.scopedModelsMessage = "";
+		this.render();
+	}
+
+	private enableAllScopedModels(): void {
+		this.setScopedModelsSelection(false, this.allScopedModelIds());
+		this.scopedModelsError = "";
+		this.scopedModelsMessage = "";
+		this.render();
+	}
+
+	private clearAllScopedModels(): void {
+		this.setScopedModelsSelection(true, []);
+		this.scopedModelsError = "";
+		this.scopedModelsMessage = "";
+		this.render();
+	}
+
+	private toggleScopedProvider(provider: string): void {
+		const providerIds = this.scopedModels
+			.filter((model) => model.provider === provider)
+			.map((model) => model.fullId);
+		if (providerIds.length === 0) return;
+		const allIds = this.allScopedModelIds();
+		const providerFullyEnabled = providerIds.every((id) => this.isScopedModelEnabled(id));
+		if (!this.scopedModelsHasFilter) {
+			if (providerFullyEnabled) {
+				const nextEnabled = allIds.filter((id) => !providerIds.includes(id));
+				this.setScopedModelsSelection(true, nextEnabled);
+			}
+		} else if (providerFullyEnabled) {
+			this.setScopedModelsSelection(
+				true,
+				this.scopedModelsEnabledIds.filter((id) => !providerIds.includes(id)),
+			);
+		} else {
+			const next = [...this.scopedModelsEnabledIds];
+			for (const id of providerIds) {
+				if (!next.includes(id)) next.push(id);
+			}
+			this.setScopedModelsSelection(true, next);
+		}
+		this.scopedModelsError = "";
+		this.scopedModelsMessage = "";
+		this.render();
+	}
+
+	private async refreshScopedModels(): Promise<void> {
+		this.scopedModelsLoading = true;
+		this.scopedModelsError = "";
+		this.scopedModelsMessage = "";
+		this.scopedModelsUnknownPatterns = [];
+		this.render();
+		try {
+			const raw = await rpcBridge.getAvailableModels();
+			const modelRecords = Array.isArray(raw)
+				? raw.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object")
+				: [];
+			this.scopedModels = this.parseScopedModelOptions(modelRecords);
+
+			const { path, doc } = await this.readPiGlobalSettingsDoc();
+			this.scopedModelsSettingsPath = path;
+			const patterns = Array.isArray(doc.enabledModels)
+				? doc.enabledModels
+					.filter((value): value is string => typeof value === "string")
+					.map((value) => value.trim())
+					.filter(Boolean)
+				: undefined;
+			const resolved = this.resolveScopedModelIdsFromPatterns(patterns, this.scopedModels);
+			this.scopedModelsUnknownPatterns = resolved.unknownPatterns;
+			this.setScopedModelsSelection(resolved.hasFilter, resolved.enabledIds);
+			this.scopedModelsSavedSnapshot = this.scopedModelsSnapshot();
+			if (resolved.unknownPatterns.length > 0) {
+				this.scopedModelsMessage = "Some saved model patterns are not currently available and were skipped in this view.";
+			}
+		} catch (err) {
+			this.scopedModels = [];
+			this.scopedModelsHasFilter = false;
+			this.scopedModelsEnabledIds = [];
+			this.scopedModelsSavedSnapshot = "";
+			this.scopedModelsError = err instanceof Error ? err.message : String(err);
+		} finally {
+			this.scopedModelsLoading = false;
+			this.render();
+		}
+	}
+
+	private async saveScopedModels(): Promise<void> {
+		if (this.scopedModelsSaving) return;
+		this.scopedModelsSaving = true;
+		this.scopedModelsError = "";
+		this.scopedModelsMessage = "Saving scoped models…";
+		this.render();
+		try {
+			const { mkdir, writeTextFile } = await import("@tauri-apps/plugin-fs");
+			const { path, doc } = await this.readPiGlobalSettingsDoc();
+			const nextDoc: Record<string, unknown> = { ...doc };
+			const allIds = this.allScopedModelIds();
+			const enabledIds = this.scopedModelsHasFilter ? this.scopedModelsEnabledIds : allIds;
+			const deduped = enabledIds.filter((id, index) => enabledIds.indexOf(id) === index && allIds.includes(id));
+			const shouldClearFilter = !this.scopedModelsHasFilter || deduped.length >= allIds.length;
+			if (shouldClearFilter) {
+				delete nextDoc.enabledModels;
+				this.setScopedModelsSelection(false, allIds);
+			} else {
+				nextDoc.enabledModels = deduped;
+				this.setScopedModelsSelection(true, deduped);
+			}
+
+			const dir = path.replace(/\\/g, "/").replace(/\/[^/]+$/, "");
+			if (dir) {
+				await mkdir(dir, { recursive: true });
+			}
+			await writeTextFile(path, `${JSON.stringify(nextDoc, null, 2)}\n`);
+			this.scopedModelsSettingsPath = path;
+			this.scopedModelsSavedSnapshot = this.scopedModelsSnapshot();
+			this.scopedModelsMessage = "Scoped models saved. Run /reload to apply this scope to the current runtime.";
+		} catch (err) {
+			this.scopedModelsError = err instanceof Error ? err.message : String(err);
+			this.scopedModelsMessage = "";
+		} finally {
+			this.scopedModelsSaving = false;
+			this.render();
+		}
+	}
+
+	private renderScopedModelsSection(): TemplateResult {
+		const totalModels = this.scopedModels.length;
+		const enabledCount = this.scopedModelsHasFilter ? this.scopedModelsEnabledIds.length : totalModels;
+		const query = this.scopedModelsSearch.trim().toLowerCase();
+		const visibleModels = query
+			? this.scopedModels.filter((model) => `${model.id} ${model.provider} ${model.name}`.toLowerCase().includes(query))
+			: this.scopedModels;
+		const grouped = new Map<string, ScopedModelOption[]>();
+		for (const model of visibleModels) {
+			const bucket = grouped.get(model.provider) ?? [];
+			bucket.push(model);
+			grouped.set(model.provider, bucket);
+		}
+		const providers = [...grouped.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+		const dirty = this.scopedModelsDirty();
+
+		return html`
+			<div class="settings-section">
+				<div class="settings-section-title">Scoped models</div>
+				<div class="settings-desc">Choose which models are included when cycling models with Ctrl+P. This matches CLI <code>/scoped-models</code> behavior.</div>
+				<div class="settings-row scoped-models-toolbar-row">
+					<div class="scoped-models-summary">Enabled: <strong>${enabledCount}</strong> / ${totalModels || "0"}${dirty ? html` <span class="scoped-models-unsaved">(unsaved)</span>` : nothing}</div>
+					<input
+						class="appearance-font-input scoped-models-search"
+						type="text"
+						placeholder="Search models"
+						.value=${this.scopedModelsSearch}
+						@input=${(e: Event) => {
+							this.scopedModelsSearch = (e.target as HTMLInputElement).value;
+							this.render();
+						}}
+					/>
+				</div>
+				<div class="settings-actions scoped-models-actions">
+					<button class="ghost-btn" ?disabled=${this.scopedModelsLoading || totalModels === 0} @click=${() => this.enableAllScopedModels()}>Enable all</button>
+					<button class="ghost-btn" ?disabled=${this.scopedModelsLoading || totalModels === 0} @click=${() => this.clearAllScopedModels()}>Clear all</button>
+					<button class="ghost-btn" ?disabled=${this.scopedModelsLoading || !dirty || this.scopedModelsSaving} @click=${() => this.saveScopedModels()}>
+						${this.scopedModelsSaving ? "Saving…" : "Save scoped models"}
+					</button>
+					<button class="ghost-btn" ?disabled=${this.scopedModelsLoading} @click=${() => this.refreshScopedModels()}>Refresh</button>
+				</div>
+				${this.scopedModelsLoading ? html`<div class="settings-desc">Loading available models…</div>` : nothing}
+				${this.scopedModelsError ? html`<div class="settings-desc scoped-models-error">${this.scopedModelsError}</div>` : nothing}
+				${this.scopedModelsUnknownPatterns.length > 0
+					? html`<div class="settings-desc">Unresolved saved patterns: <code>${this.scopedModelsUnknownPatterns.join(", ")}</code></div>`
+					: nothing}
+				${this.scopedModelsMessage ? html`<div class="settings-desc">${this.scopedModelsMessage}</div>` : nothing}
+				${this.scopedModelsSettingsPath ? html`<div class="settings-desc">Settings file: <code>${this.scopedModelsSettingsPath}</code></div>` : nothing}
+				${!this.scopedModelsLoading && !this.scopedModelsError
+					? providers.length === 0
+						? html`<div class="settings-desc">No models available for scoped configuration.</div>`
+						: html`
+							<div class="scoped-models-list">
+								${providers.map(([provider, models]) => {
+									const providerEnabledCount = models.filter((model) => this.isScopedModelEnabled(model.fullId)).length;
+									const providerAllEnabled = providerEnabledCount === models.length;
+									return html`
+										<div class="scoped-models-provider-header">
+											<div class="scoped-models-provider-meta">
+												<span class="settings-label">${provider}</span>
+												<span class="settings-desc">${providerEnabledCount}/${models.length} enabled</span>
+											</div>
+											<button class="ghost-btn" @click=${() => this.toggleScopedProvider(provider)}>${providerAllEnabled ? "Disable provider" : "Enable provider"}</button>
+										</div>
+										${models.map((model) => {
+											const enabled = this.isScopedModelEnabled(model.fullId);
+											return html`
+												<div class="settings-row scoped-model-row">
+													<div class="scoped-model-row-main">
+														<div class="settings-label">${model.id}</div>
+														<div class="settings-desc">${model.provider}${model.name && model.name !== model.id ? ` · ${model.name}` : ""}</div>
+													</div>
+													<button class="toggle ${enabled ? "on" : "off"}" @click=${() => this.toggleScopedModel(model.fullId)}><span></span></button>
+												</div>
+											`;
+										})}
+									`;
+								})}
+							</div>
+						`
+					: nothing}
+			</div>
+		`;
 	}
 
 	private async saveSettings(): Promise<void> {
@@ -1102,185 +1690,319 @@ export class SettingsPanel {
 		`;
 	}
 
-	render(): void {
-		if (!this.isOpen) {
-			this.container.innerHTML = "";
-			return;
-		}
-
-		const template = html`
-			<div class="settings-view-root">
-				<div class="settings-view-header">
-					<div class="settings-view-title-wrap">
-						<div class="settings-view-title">Settings</div>
-						<div class="settings-view-meta">Desktop configuration and runtime preferences.</div>
+	private renderBasicSettingsShell(runtimeMessage: string, options: { showAddProject: boolean; warning?: string } = { showAddProject: false }): void {
+		const { showAddProject, warning } = options;
+		render(
+			html`
+				<div class="settings-view-root">
+					<div class="settings-view-header">
+						<div class="settings-view-title-wrap">
+							<div class="settings-view-title">Appearance</div>
+						</div>
+						<div class="settings-view-header-actions">
+							<button class="settings-back-btn" @click=${() => this.close()}>← Back</button>
+						</div>
 					</div>
-					<div class="settings-view-header-actions">
-						<button class="settings-back-btn" @click=${() => this.close()}>← Back</button>
+					<div class="settings-view-body">
+						<div class="settings-view-grid">
+							<section class="settings-group settings-group-full">
+								<div class="settings-section">
+									<div class="settings-section-title">Appearance</div>
+									<div class="settings-label">Theme</div>
+									<div class="settings-desc">Choose light, dark, or system mode.</div>
+									<div class="theme-grid" style="margin-top:10px;">
+										<button class="theme-btn ${this.state.theme === "light" ? "active" : ""}" @click=${() => this.setTheme("light")}>Light</button>
+										<button class="theme-btn ${this.state.theme === "dark" ? "active" : ""}" @click=${() => this.setTheme("dark")}>Dark</button>
+										<button class="theme-btn ${this.state.theme === "system" ? "active" : ""}" @click=${() => this.setTheme("system")}>System</button>
+									</div>
+								</div>
+							</section>
+							<section class="settings-group settings-group-full">
+								<div class="settings-section">
+									<div class="settings-section-title">Runtime</div>
+									<div class="settings-desc">${runtimeMessage}</div>
+									${warning ? html`<div class="settings-desc" style="margin-top:8px;">${warning}</div>` : nothing}
+									${showAddProject
+										? html`
+											<div class="settings-actions" style="margin-top:10px;">
+												<button class="ghost-btn" @click=${() => this.onRequestAddProject?.()}>Add project</button>
+											</div>
+										`
+										: nothing}
+								</div>
+							</section>
+						</div>
 					</div>
 				</div>
+			`,
+			this.container,
+		);
+	}
 
-				<div class="settings-view-body">
-					<div class="settings-view-grid">
-						<section class="settings-group settings-group-full">
-							<div class="settings-section">
-								<div class="settings-section-title">Appearance</div>
-								<div class="appearance-theme-block">
-									<div class="appearance-theme-header-row">
-										<div>
-											<div class="settings-label">Theme</div>
-											<div class="settings-desc">Use light, dark, or match your system.</div>
-										</div>
-										<div class="theme-grid">
-											<button class="theme-btn ${this.state.theme === "light" ? "active" : ""}" @click=${() => this.setTheme("light")}>Light</button>
-											<button class="theme-btn ${this.state.theme === "dark" ? "active" : ""}" @click=${() => this.setTheme("dark")}>Dark</button>
-											<button class="theme-btn ${this.state.theme === "system" ? "active" : ""}" @click=${() => this.setTheme("system")}>System</button>
-										</div>
+	private getSettingsNavItems(): SettingsSectionNavItem[] {
+		return [
+			{
+				id: "general",
+				label: "General",
+				description: "Assistant behavior, model scope, and queue defaults.",
+				runtimeRequired: true,
+			},
+			{
+				id: "appearance",
+				label: "Appearance",
+				description: "Theme mode and desktop appearance profiles.",
+			},
+			{
+				id: "account",
+				label: "Account",
+				description: "Provider auth status and package config notes.",
+				runtimeRequired: true,
+			},
+			{
+				id: "updates",
+				label: "Updates",
+				description: "Desktop releases, CLI version, and runtime diagnostics.",
+			},
+		];
+	}
+
+	private renderAppearanceSection(): TemplateResult {
+		return html`
+			<div class="settings-view-grid">
+				<section class="settings-group settings-group-full">
+					<div class="settings-section">
+						<div class="settings-section-title">Appearance</div>
+						<div class="appearance-theme-block">
+							<div class="appearance-theme-header-row">
+								<div>
+									<div class="settings-label">Theme</div>
+									<div class="settings-desc">Use light, dark, or match your system.</div>
+								</div>
+								<div class="theme-grid">
+									<button class="theme-btn ${this.state.theme === "light" ? "active" : ""}" @click=${() => this.setTheme("light")}>Light</button>
+									<button class="theme-btn ${this.state.theme === "dark" ? "active" : ""}" @click=${() => this.setTheme("dark")}>Dark</button>
+									<button class="theme-btn ${this.state.theme === "system" ? "active" : ""}" @click=${() => this.setTheme("system")}>System</button>
+								</div>
+							</div>
+							${this.themeCatalogLoading ? html`<div class="settings-desc">Loading available Pi themes…</div>` : nothing}
+							${this.themeCatalogError ? html`<div class="settings-desc">Theme catalog error: ${this.themeCatalogError}</div>` : nothing}
+							${this.themeCatalogMessage ? html`<div class="settings-desc">${this.themeCatalogMessage}</div>` : nothing}
+							${this.renderThemeProfileCard("light")}
+							${this.renderThemeProfileCard("dark")}
+						</div>
+					</div>
+				</section>
+			</div>
+		`;
+	}
+
+	private renderGeneralSection(runtimeControlsEnabled: boolean, hasProjectContext: boolean): TemplateResult {
+		if (!runtimeControlsEnabled) {
+			const runtimeMessage = hasProjectContext
+				? "Runtime is still starting for this project. General controls unlock once runtime is ready."
+				: "Open a project to configure assistant behavior and scoped models.";
+			return html`
+				<div class="settings-view-grid">
+					<section class="settings-group settings-group-full">
+						<div class="settings-section">
+							<div class="settings-section-title">General</div>
+							<div class="settings-desc">${runtimeMessage}</div>
+							${!hasProjectContext
+								? html`
+									<div class="settings-actions" style="margin-top:10px;">
+										<button class="ghost-btn" @click=${() => this.onRequestAddProject?.()}>Add project</button>
 									</div>
-									${this.themeCatalogLoading ? html`<div class="settings-desc">Loading available Pi themes…</div>` : nothing}
-									${this.themeCatalogError ? html`<div class="settings-desc">Theme catalog error: ${this.themeCatalogError}</div>` : nothing}
-									${this.themeCatalogMessage ? html`<div class="settings-desc">${this.themeCatalogMessage}</div>` : nothing}
-									${this.renderThemeProfileCard("light")}
-									${this.renderThemeProfileCard("dark")}
-								</div>
-							</div>
-						</section>
+								`
+								: nothing}
+						</div>
+					</section>
+				</div>
+			`;
+		}
 
-						<section class="settings-group">
-							<div class="settings-section">
-								<div class="settings-section-title">Assistant</div>
-								${this.renderToggle(
-									"Auto-compaction",
-									"Summarize older context automatically when conversations get long.",
-									this.state.autoCompactionEnabled,
-									(v) => this.setAutoCompaction(v),
-								)}
-								${this.renderToggle(
-									"Auto-retry",
-									"Retry temporary provider errors automatically.",
-									this.state.autoRetryEnabled,
-									(v) => this.setAutoRetry(v),
-								)}
+		return html`
+			<div class="settings-view-grid">
+				<section class="settings-group">
+					<div class="settings-section">
+						<div class="settings-section-title">Assistant</div>
+						${this.renderToggle(
+							"Auto-compaction",
+							"Summarize older context automatically when conversations get long.",
+							this.state.autoCompactionEnabled,
+							(v) => this.setAutoCompaction(v),
+						)}
+						${this.renderToggle(
+							"Auto-retry",
+							"Retry temporary provider errors automatically.",
+							this.state.autoRetryEnabled,
+							(v) => this.setAutoRetry(v),
+						)}
+					</div>
+				</section>
+
+				<section class="settings-group">
+					<div class="settings-section">
+						<div class="settings-section-title">Message queue</div>
+						<div class="settings-row">
+							<div>
+								<div class="settings-label">Steering messages</div>
+								<div class="settings-desc">How queued steering messages are sent while a response is streaming.</div>
 							</div>
-							<div class="settings-section">
-								<div class="settings-section-title">Message queue</div>
-								<div class="settings-row">
-									<div>
-										<div class="settings-label">Steering messages</div>
-										<div class="settings-desc">How queued steering messages are sent while a response is streaming.</div>
+							<select class="settings-select" .value=${this.state.steeringMode} @change=${(e: Event) => this.setSteeringMode((e.target as HTMLSelectElement).value as QueueMode)}>
+								<option value="one-at-a-time">One at a time</option>
+								<option value="all">All queued</option>
+							</select>
+						</div>
+						<div class="settings-row">
+							<div>
+								<div class="settings-label">Follow-up messages</div>
+								<div class="settings-desc">How queued follow-up prompts are sent after each run.</div>
+							</div>
+							<select class="settings-select" .value=${this.state.followUpMode} @change=${(e: Event) => this.setFollowUpMode((e.target as HTMLSelectElement).value as QueueMode)}>
+								<option value="one-at-a-time">One at a time</option>
+								<option value="all">All queued</option>
+							</select>
+						</div>
+					</div>
+				</section>
+
+				<section class="settings-group settings-group-full">
+					${this.renderScopedModelsSection()}
+				</section>
+			</div>
+		`;
+	}
+
+	private renderAccountSection(
+		runtimeControlsEnabled: boolean,
+		hasProjectContext: boolean,
+		authProviders: PiAuthStatus["configured_providers"],
+	): TemplateResult {
+		const runtimeMessage = hasProjectContext
+			? "Runtime is still starting for this project. Account diagnostics unlock when runtime is ready."
+			: "Open a project to inspect account diagnostics.";
+
+		const uniqueAuthProviders = new Map<string, PiAuthStatus["configured_providers"][number]>();
+		for (const entry of authProviders) {
+			const key = (entry?.provider ?? "").trim().toLowerCase();
+			if (!key) continue;
+			const existing = uniqueAuthProviders.get(key);
+			const score = entry.source === "environment" ? 2 : 1;
+			const existingScore = existing ? (existing.source === "environment" ? 2 : 1) : -1;
+			if (!existing || score >= existingScore) {
+				uniqueAuthProviders.set(key, entry);
+			}
+		}
+		const connectedProviders = Array.from(uniqueAuthProviders.values()).sort((a, b) => a.provider.localeCompare(b.provider));
+
+		return html`
+			<div class="settings-view-grid">
+				<section class="settings-group">
+					<div class="settings-section">
+						<div class="settings-section-title">Account (work in progress)</div>
+						<div class="settings-desc">This section is being redesigned for real account features instead of model/provider login controls.</div>
+						<div class="settings-desc">Planned direction: GitHub/Google sign-in, profile/avatar in the app sidebar, and optional cloud sync for preferences.</div>
+						<div class="settings-desc">Model/provider login/logout is handled from the model picker.</div>
+						<div class="settings-desc">Package install + provider setup flows stay in <strong>Packages</strong>.</div>
+					</div>
+				</section>
+
+				<section class="settings-group">
+					<div class="settings-section">
+						<div class="settings-section-title">Current account diagnostics</div>
+						${!runtimeControlsEnabled
+							? html`<div class="settings-desc">${runtimeMessage}</div>`
+							: this.authLoading
+								? html`<div class="settings-desc">Checking account diagnostics…</div>`
+								: html`
+									<div class="settings-desc">
+										${connectedProviders.length > 0
+											? `Connected providers detected: ${connectedProviders.length}`
+											: "No provider credentials detected."}
 									</div>
-									<select class="settings-select" .value=${this.state.steeringMode} @change=${(e: Event) => this.setSteeringMode((e.target as HTMLSelectElement).value as QueueMode)}>
-										<option value="one-at-a-time">One at a time</option>
-										<option value="all">All queued</option>
-									</select>
-								</div>
-								<div class="settings-row">
-									<div>
-										<div class="settings-label">Follow-up messages</div>
-										<div class="settings-desc">How queued follow-up prompts are sent after each run.</div>
+									<div class="settings-actions">
+										<button class="ghost-btn" @click=${() => this.refreshAccountStatus()}>Refresh diagnostics</button>
 									</div>
-									<select class="settings-select" .value=${this.state.followUpMode} @change=${(e: Event) => this.setFollowUpMode((e.target as HTMLSelectElement).value as QueueMode)}>
-										<option value="one-at-a-time">One at a time</option>
-										<option value="all">All queued</option>
-									</select>
-								</div>
-							</div>
-						</section>
+									${connectedProviders.length > 0
+										? html`
+											<div class="account-chips">
+												${connectedProviders.map((provider) => html`<span class="account-chip">${provider.provider} · ${provider.source === "environment" ? "env" : provider.kind}</span>`) }
+											</div>
+										`
+										: null}
+									${this.authStatus?.auth_file
+										? html`
+											<details class="settings-advanced">
+												<summary>Advanced details</summary>
+												<div class="settings-desc">Auth file: <code>${this.authStatus.auth_file}</code></div>
+											</details>
+										`
+										: null}
+								`}
+					</div>
+				</section>
+			</div>
+		`;
+	}
 
-						<section class="settings-group">
-							<div class="settings-section">
-								<div class="settings-section-title">Account</div>
-								${this.authLoading
-									? html`<div class="settings-desc">Checking account status…</div>`
-									: html`
-										<div class="settings-desc">
-											${this.authStatus && this.authStatus.configured_providers.length > 0
-												? `Connected providers: ${this.authStatus.configured_providers.length}`
-												: "No provider connected yet."}
-										</div>
-										<div class="settings-actions">
-											<button class="ghost-btn" @click=${() => this.refreshAuthStatus()}>Refresh account status</button>
-										</div>
-										${this.authStatus && this.authStatus.configured_providers.length > 0
-											? html`
-												<div class="account-chips">
-													${this.authStatus.configured_providers.map(
-														(p) => html`<span class="account-chip">${p.provider} · ${p.source === "environment" ? "env" : p.kind}</span>`,
-													)}
-												</div>
-											`
-											: null}
-										<div class="settings-desc">Tip: run <code>/login</code> in terminal once, then restart desktop.</div>
-										${this.authStatus?.auth_file
-											? html`
-												<details class="settings-advanced">
-													<summary>Advanced account details</summary>
-													<div class="settings-desc">Auth file: <code>${this.authStatus.auth_file}</code></div>
-												</details>
-											`
-											: null}
-									`}
-							</div>
-							<div class="settings-section">
-								<div class="settings-section-title">Package configuration</div>
-								<div class="settings-desc">Package-specific settings are managed in <strong>Packages</strong> (gear icon on installed packages).</div>
-								<div class="settings-desc">Desktop stays capability-driven: packages can expose config commands, and those run via the normal chat/runtime flow.</div>
-							</div>
-						</section>
+	private renderUpdatesSection(runtimeControlsEnabled: boolean, compatibilityChecks: string[]): TemplateResult {
+		return html`
+			<div class="settings-view-grid">
+				<section class="settings-group settings-group-full">
+					<div class="settings-section">
+						<div class="settings-section-title">Desktop updates</div>
+						${this.desktopLoading
+							? html`<div class="settings-desc">Checking desktop release…</div>`
+							: html`
+								<div class="settings-desc">Current: <code>${this.desktopStatus?.currentVersion || "unknown"}</code> · Latest: <code>${this.desktopStatus?.latestVersion || "unknown"}</code></div>
+								${this.desktopStatus
+									? this.desktopStatus.updateAvailable
+										? html`<div class="settings-desc">A newer Pi Desktop release is available.</div>`
+										: html`<div class="settings-desc">No desktop update available right now.</div>`
+									: html`<div class="settings-desc">Desktop update status unavailable. Check your network and try again.</div>`}
+								${this.desktopStatus?.assetName ? html`<div class="settings-desc">Recommended installer: <code>${this.desktopStatus.assetName}</code></div>` : null}
+								${this.desktopStatus?.note ? html`<div class="settings-desc">${this.desktopStatus.note}</div>` : null}
+							`}
+						<div class="settings-actions">
+							<button class="ghost-btn" ?disabled=${this.desktopLoading} @click=${() => this.refreshDesktopStatus()}>Refresh desktop status</button>
+							<button class="ghost-btn" ?disabled=${this.desktopOpening || !this.desktopStatus?.updateAvailable} @click=${() => this.openDesktopUpdateNow()}>
+								${this.desktopOpening ? "Opening…" : this.desktopStatus?.assetUrl ? "Download desktop update" : "Open release page"}
+							</button>
+						</div>
+						${this.desktopActionMessage ? html`<div class="settings-desc">${this.desktopActionMessage}</div>` : null}
+					</div>
 
-						<section class="settings-group settings-group-full">
-							<div class="settings-section">
-								<div class="settings-section-title">Desktop updates</div>
-								${this.desktopLoading
-									? html`<div class="settings-desc">Checking desktop release…</div>`
-									: html`
-										<div class="settings-desc">Current: <code>${this.desktopStatus?.currentVersion || "unknown"}</code> · Latest: <code>${this.desktopStatus?.latestVersion || "unknown"}</code></div>
-										${this.desktopStatus
-											? this.desktopStatus.updateAvailable
-												? html`<div class="settings-desc">A newer Pi Desktop release is available.</div>`
-												: html`<div class="settings-desc">No desktop update available right now.</div>`
-											: html`<div class="settings-desc">Desktop update status unavailable. Check your network and try again.</div>`}
-										${this.desktopStatus?.assetName ? html`<div class="settings-desc">Recommended installer: <code>${this.desktopStatus.assetName}</code></div>` : null}
-										${this.desktopStatus?.note ? html`<div class="settings-desc">${this.desktopStatus.note}</div>` : null}
-									`}
-								<div class="settings-actions">
-									<button class="ghost-btn" ?disabled=${this.desktopLoading} @click=${() => this.refreshDesktopStatus()}>Refresh desktop status</button>
-									<button class="ghost-btn" ?disabled=${this.desktopOpening || !this.desktopStatus?.updateAvailable} @click=${() => this.openDesktopUpdateNow()}>
-										${this.desktopOpening ? "Opening…" : this.desktopStatus?.assetUrl ? "Download desktop update" : "Open release page"}
-									</button>
-								</div>
-								${this.desktopActionMessage ? html`<div class="settings-desc">${this.desktopActionMessage}</div>` : null}
-							</div>
-
-							<div class="settings-section">
-								<div class="settings-section-title">CLI updates</div>
-								${this.cliLoading
-									? html`<div class="settings-desc">Checking CLI version…</div>`
-									: html`
-										<div class="settings-desc">Current: <code>${this.cliStatus?.current_version || "unknown"}</code> · Latest: <code>${this.cliStatus?.latest_version || "unknown"}</code></div>
-										${this.cliStatus
-											? this.cliStatus.update_available
-												? html`<div class="settings-desc">A newer Pi CLI is available.</div>`
-												: html`<div class="settings-desc">No update available right now.</div>`
-											: html`<div class="settings-desc">CLI status unavailable. Install or reconnect CLI, then refresh.</div>`}
-										${this.cliStatus?.note ? html`<div class="settings-desc">${this.cliStatus.note}</div>` : null}
-									`}
-								<div class="settings-actions">
-									<button class="ghost-btn" ?disabled=${this.cliLoading} @click=${() => this.refreshCliStatus()}>Refresh CLI status</button>
-									<button
-										class="ghost-btn"
-										?disabled=${
-											this.cliUpdating ||
-											!this.cliStatus?.can_update_in_app ||
-											!this.cliStatus?.npm_available ||
-											!this.cliStatus?.update_available
-										}
-										@click=${() => this.updateCliNow()}
-									>
-										${this.cliUpdating ? "Updating…" : "Update CLI now"}
-									</button>
-								</div>
-								${this.cliActionMessage ? html`<div class="settings-desc">${this.cliActionMessage}</div>` : null}
+					<div class="settings-section">
+						<div class="settings-section-title">CLI updates</div>
+						${this.cliLoading
+							? html`<div class="settings-desc">Checking CLI version…</div>`
+							: html`
+								<div class="settings-desc">Current: <code>${this.cliStatus?.current_version || "unknown"}</code> · Latest: <code>${this.cliStatus?.latest_version || "unknown"}</code></div>
+								${this.cliStatus
+									? this.cliStatus.update_available
+										? html`<div class="settings-desc">A newer Pi CLI is available.</div>`
+										: html`<div class="settings-desc">No update available right now.</div>`
+									: html`<div class="settings-desc">CLI status unavailable. Install or reconnect CLI, then refresh.</div>`}
+								${this.cliStatus?.note ? html`<div class="settings-desc">${this.cliStatus.note}</div>` : null}
+							`}
+						<div class="settings-actions">
+							<button class="ghost-btn" ?disabled=${this.cliLoading} @click=${() => this.refreshCliStatus()}>Refresh CLI status</button>
+							<button
+								class="ghost-btn"
+								?disabled=${
+									this.cliUpdating ||
+									!this.cliStatus?.can_update_in_app ||
+									!this.cliStatus?.npm_available ||
+									!this.cliStatus?.update_available
+								}
+								@click=${() => this.updateCliNow()}
+							>
+								${this.cliUpdating ? "Updating…" : "Update CLI now"}
+							</button>
+						</div>
+						${this.cliActionMessage ? html`<div class="settings-desc">${this.cliActionMessage}</div>` : null}
+						${runtimeControlsEnabled
+							? html`
 								<details class="settings-advanced">
 									<summary>Advanced CLI diagnostics</summary>
 									<div class="settings-desc">Discovery: <code>${this.cliStatus?.discovery || rpcBridge.discoveryInfo || "unknown"}</code></div>
@@ -1294,24 +2016,121 @@ export class SettingsPanel {
 										? html`
 											<div class="settings-desc">
 												RPC compatibility: ${this.compatibilityReport.ok ? "OK" : "Failed"}
-												${this.compatibilityReport.checks.length > 0 ? html` (${this.compatibilityReport.checks.join(", ")})` : null}
+												${compatibilityChecks.length > 0 ? html` (${compatibilityChecks.join(", ")})` : null}
 											</div>
 											${this.compatibilityReport.error ? html`<div class="settings-desc">${this.compatibilityReport.error}</div>` : null}
 										`
 										: null}
 								</details>
+							`
+							: html`<div class="settings-desc">Open a project to enable CLI runtime diagnostics.</div>`}
+					</div>
+				</section>
+			</div>
+		`;
+	}
+
+	private renderActiveSection(
+		section: SettingsSectionId,
+		runtimeControlsEnabled: boolean,
+		hasProjectContext: boolean,
+		authProviders: PiAuthStatus["configured_providers"],
+		compatibilityChecks: string[],
+	): TemplateResult {
+		switch (section) {
+			case "appearance":
+				return this.renderAppearanceSection();
+			case "account":
+				return this.renderAccountSection(runtimeControlsEnabled, hasProjectContext, authProviders);
+			case "updates":
+				return this.renderUpdatesSection(runtimeControlsEnabled, compatibilityChecks);
+			case "general":
+			default:
+				return this.renderGeneralSection(runtimeControlsEnabled, hasProjectContext);
+		}
+	}
+
+	private renderActiveSectionSafe(
+		section: SettingsSectionId,
+		runtimeControlsEnabled: boolean,
+		hasProjectContext: boolean,
+		authProviders: PiAuthStatus["configured_providers"],
+		compatibilityChecks: string[],
+	): TemplateResult {
+		try {
+			return this.renderActiveSection(section, runtimeControlsEnabled, hasProjectContext, authProviders, compatibilityChecks);
+		} catch (err) {
+			console.error("Settings section render failed:", err);
+			const message = err instanceof Error ? err.message : String(err);
+			return html`
+				<div class="settings-view-grid">
+					<section class="settings-group settings-group-full">
+						<div class="settings-section">
+							<div class="settings-section-title">Section error</div>
+							<div class="settings-desc">Could not render this settings section.</div>
+							<div class="settings-desc"><code>${message}</code></div>
+						</div>
+					</section>
+				</div>
+			`;
+		}
+	}
+
+	render(): void {
+		if (!this.isOpen) {
+			return;
+		}
+
+		const authProviders = Array.isArray(this.authStatus?.configured_providers) ? this.authStatus.configured_providers : [];
+		const compatibilityChecks = Array.isArray(this.compatibilityReport?.checks) ? this.compatibilityReport.checks : [];
+		const hasProjectContext = Boolean(this.runtimeProjectPath);
+		const runtimeControlsEnabled = this.isRuntimeControlsEnabled();
+		const navigation = this.getNavigationState();
+		const activeSection = navigation.activeSection;
+		const activeItem = navigation.items.find((item) => item.id === activeSection) ?? navigation.items[0];
+		this.emitNavigationState(runtimeControlsEnabled);
+
+		try {
+			const template = html`
+				<div class="settings-view-root">
+					<div class="settings-view-header">
+						<div class="settings-view-title-wrap">
+							<div class="settings-view-title">${activeItem?.label ?? "Settings"}</div>
+						</div>
+						<div class="settings-view-header-actions">
+							<button class="settings-back-btn" @click=${() => this.close()}>← Back</button>
+						</div>
+					</div>
+
+					<div class="settings-view-body settings-view-body-flat">
+						<section class="settings-main" aria-live="polite">
+							<div class="settings-main-content settings-main-content-flat">
+								${this.renderActiveSectionSafe(activeSection, runtimeControlsEnabled, hasProjectContext, authProviders, compatibilityChecks)}
 							</div>
 						</section>
 					</div>
+					${this.renderCreateThemeDialog()}
 				</div>
-				${this.renderCreateThemeDialog()}
-			</div>
-		`;
+			`;
 
-		render(template, this.container);
+			render(template, this.container);
+		} catch (err) {
+			console.error("Settings panel render failed:", err);
+			try {
+				this.renderBasicSettingsShell(
+					"Advanced runtime settings are temporarily unavailable. You can still use appearance settings.",
+					{ showAddProject: false, warning: "Open another session or reopen settings once runtime stabilizes." },
+				);
+			} catch {
+				render(
+					html`<div class="settings-view-root"><div class="settings-view-body"><div class="settings-desc">Unable to render settings right now.</div></div></div>`,
+					this.container,
+				);
+			}
+		}
 	}
 
 	destroy(): void {
-		this.container.innerHTML = "";
+		render(nothing, this.container);
 	}
 }

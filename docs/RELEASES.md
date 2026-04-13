@@ -22,14 +22,14 @@ Pi Desktop uses GitHub Actions for CI and cross-platform release bundling.
 
 ## 2) Pick version
 
-Example: `v0.1.0`
+Example: `v1.0.0`
 
 ## 3) Tag and push
 
 ```bash
 git checkout main
 git pull --ff-only
-git tag v0.1.0
+git tag v1.0.0
 git push origin main --tags
 ```
 
@@ -74,8 +74,15 @@ For production distribution, configure platform signing:
 - Linux: optional signature strategy depending on distro/channel
 
 Without macOS signing/notarization, some users may see Gatekeeper warnings (“app is damaged”).
-Include this workaround in release notes while unsigned builds are shipped:
+Include these workarounds in release notes while unsigned builds are shipped:
+
+1. Terminal workaround:
 
 ```bash
 xattr -cr /Applications/Pi\ Desktop.app
 ```
+
+2. System Settings workaround:
+   - Open **System Settings → Privacy & Security**
+   - Find the blocked Pi Desktop launch warning
+   - Click **Open Anyway** and confirm

@@ -2,7 +2,9 @@
 	"$schema": "../gen/schemas/desktop-schema.json",
 	"identifier": "default",
 	"description": "Default capability for the Pi Desktop app",
-	"windows": ["main"],
+	"windows": [
+		"main"
+	],
 	"permissions": [
 		"core:default",
 		"core:window:default",
@@ -24,14 +26,23 @@
 		"core:event:default",
 		"shell:default",
 		"shell:allow-open",
+		"shell:allow-kill",
 		"fs:default",
 		{
 			"identifier": "fs:allow-home-read-recursive",
-			"allow": ["$HOME/**", "$HOME/**/.*", "$HOME/**/.*/**"]
+			"allow": [
+				"$HOME/**",
+				"$HOME/**/.*",
+				"$HOME/**/.*/**"
+			]
 		},
 		{
 			"identifier": "fs:allow-home-write-recursive",
-			"allow": ["$HOME/**", "$HOME/**/.*", "$HOME/**/.*/**"]
+			"allow": [
+				"$HOME/**",
+				"$HOME/**/.*",
+				"$HOME/**/.*/**"
+			]
 		},
 		"dialog:default",
 		"dialog:allow-open",
@@ -42,6 +53,176 @@
 				{
 					"name": "binaries/pi",
 					"sidecar": true,
+					"args": true
+				},
+				{
+					"name": "terminal-zsh-path",
+					"cmd": "/bin/zsh",
+					"args": true
+				},
+				{
+					"name": "terminal-zsh",
+					"cmd": "zsh",
+					"args": true
+				},
+				{
+					"name": "terminal-bash-path",
+					"cmd": "/bin/bash",
+					"args": true
+				},
+				{
+					"name": "terminal-bash",
+					"cmd": "bash",
+					"args": true
+				},
+				{
+					"name": "terminal-sh-path",
+					"cmd": "/bin/sh",
+					"args": true
+				},
+				{
+					"name": "terminal-sh",
+					"cmd": "sh",
+					"args": true
+				},
+				{
+					"name": "terminal-pwsh-exe",
+					"cmd": "pwsh.exe",
+					"args": true
+				},
+				{
+					"name": "terminal-pwsh",
+					"cmd": "pwsh",
+					"args": true
+				},
+				{
+					"name": "terminal-cmd-exe",
+					"cmd": "cmd.exe",
+					"args": true
+				},
+				{
+					"name": "terminal-cmd",
+					"cmd": "cmd",
+					"args": true
+				}
+			]
+		},
+		{
+			"identifier": "shell:allow-spawn",
+			"allow": [
+				{
+					"name": "binaries/pi",
+					"sidecar": true,
+					"args": true
+				},
+				{
+					"name": "terminal-zsh-path",
+					"cmd": "/bin/zsh",
+					"args": true
+				},
+				{
+					"name": "terminal-zsh",
+					"cmd": "zsh",
+					"args": true
+				},
+				{
+					"name": "terminal-bash-path",
+					"cmd": "/bin/bash",
+					"args": true
+				},
+				{
+					"name": "terminal-bash",
+					"cmd": "bash",
+					"args": true
+				},
+				{
+					"name": "terminal-sh-path",
+					"cmd": "/bin/sh",
+					"args": true
+				},
+				{
+					"name": "terminal-sh",
+					"cmd": "sh",
+					"args": true
+				},
+				{
+					"name": "terminal-pwsh-exe",
+					"cmd": "pwsh.exe",
+					"args": true
+				},
+				{
+					"name": "terminal-pwsh",
+					"cmd": "pwsh",
+					"args": true
+				},
+				{
+					"name": "terminal-cmd-exe",
+					"cmd": "cmd.exe",
+					"args": true
+				},
+				{
+					"name": "terminal-cmd",
+					"cmd": "cmd",
+					"args": true
+				}
+			]
+		},
+		{
+			"identifier": "shell:allow-stdin-write",
+			"allow": [
+				{
+					"name": "binaries/pi",
+					"sidecar": true,
+					"args": true
+				},
+				{
+					"name": "terminal-zsh-path",
+					"cmd": "/bin/zsh",
+					"args": true
+				},
+				{
+					"name": "terminal-zsh",
+					"cmd": "zsh",
+					"args": true
+				},
+				{
+					"name": "terminal-bash-path",
+					"cmd": "/bin/bash",
+					"args": true
+				},
+				{
+					"name": "terminal-bash",
+					"cmd": "bash",
+					"args": true
+				},
+				{
+					"name": "terminal-sh-path",
+					"cmd": "/bin/sh",
+					"args": true
+				},
+				{
+					"name": "terminal-sh",
+					"cmd": "sh",
+					"args": true
+				},
+				{
+					"name": "terminal-pwsh-exe",
+					"cmd": "pwsh.exe",
+					"args": true
+				},
+				{
+					"name": "terminal-pwsh",
+					"cmd": "pwsh",
+					"args": true
+				},
+				{
+					"name": "terminal-cmd-exe",
+					"cmd": "cmd.exe",
+					"args": true
+				},
+				{
+					"name": "terminal-cmd",
+					"cmd": "cmd",
 					"args": true
 				}
 			]

@@ -2,7 +2,7 @@
  * Pi Desktop - app bootstrap
  */
 
-import { html, render } from "lit";
+import { html, nothing, render } from "lit";
 import { ChatView } from "./components/chat-view.js";
 import { CommandPalette } from "./components/command-palette.js";
 import { ContentTabs } from "./components/content-tabs.js";
@@ -10,7 +10,7 @@ import { ExtensionUiHandler, normalizeExtensionUiRequest, type NotificationActio
 import { FileViewer } from "./components/file-viewer.js";
 import { PackagesView } from "./components/packages-view.js";
 import { SessionBrowser } from "./components/session-browser.js";
-import { SettingsPanel } from "./components/settings-panel.js";
+import { SettingsPanel, type SettingsSectionId } from "./components/settings-panel.js";
 import { ShortcutsPanel } from "./components/shortcuts-panel.js";
 import { Sidebar, type SidebarMode, type SidebarWorkspaceItem } from "./components/sidebar.js";
 import { TerminalPanel } from "./components/terminal-panel.js";
@@ -25,6 +25,10 @@ import {
 import { syncDesktopThemeWithPiTheme } from "./theme/pi-theme-bridge.js";
 import { DESKTOP_THEME_CHANGED_EVENT, getResolvedDesktopTheme, initializeDesktopTheme, toggleDesktopTheme } from "./theme/theme-manager.js";
 import { ensureBundledThemesInstalled } from "./theme/bundled-themes.js";
+import { ensureDesktopNotifyBridgeExtensionInstalled } from "./extensions/desktop-notify-bridge-extension.js";
+import { isExtensionConfigIntent, normalizeExtensionCommandName } from "./extensions/extension-command-intent.js";
+import { ensureDesktopSdkCompatExtensionInstalled } from "./extensions/sdk-compat-extension.js";
+import { ensureSmartVoiceNotifyDesktopHostMode } from "./extensions/smart-voice-notify-config.js";
 import "./styles/app.css";
 
 interface WorkspaceSessionTab {
@@ -92,13 +96,29 @@ const SIDEBAR_WIDTH_KEY = "pi-desktop.sidebar.width.v1";
 const SIDEBAR_COLLAPSED_STATE_KEY = "pi-desktop.sidebar.collapsed.v1";
 const SIDEBAR_WIDTH_MIN = 240;
 const SIDEBAR_WIDTH_MAX = 540;
+const TERMINAL_DOCK_HEIGHT_KEY = "pi-desktop.terminal-dock-height.v1";
+const TERMINAL_DOCK_MIN_HEIGHT = 180;
+const TERMINAL_DOCK_MAX_HEIGHT = 640;
+const TERMINAL_DOCK_DEFAULT_HEIGHT = 280;
+const FILE_SPLIT_WIDTH_KEY = "pi-desktop.file-split-width.v1";
+const FILE_SPLIT_MIN_WIDTH = 300;
+const FILE_SPLIT_MIN_CHAT_WIDTH = 420;
+const FILE_SPLIT_MIN_COMPOSER_GAP = 16;
+const FILE_SPLIT_DEFAULT_WIDTH = 520;
 const NEW_SESSION_TAB_TITLE = "New session";
 const NEW_FILE_TAB_TITLE = "New file";
+const NEW_GENERIC_TAB_TITLE = "New tab";
+const DEFAULT_AUTO_CONTENT_TAB_LIMIT = 2;
 const DEBUG_OVERLAY_STORAGE_KEY = "pi-desktop.debug-overlay.v1";
 const CLI_UPDATE_NOTICE_STORAGE_KEY = "pi-desktop.cli-update-notice-at.v1";
 const DESKTOP_UPDATE_NOTICE_STORAGE_KEY = "pi-desktop.desktop-update-notice-at.v1";
 const UPDATE_NOTICE_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const AUTH_CONFIG_RELOAD_DEBOUNCE_MS = 550;
+const AUTH_CONFIG_FALLBACK_POLL_MS = 2_500;
+const AUTH_CONFIG_SNAPSHOT_MISSING = "__pi-desktop-auth-missing__";
+const AUTH_CONFIG_SNAPSHOT_ERROR = "__pi-desktop-auth-read-error__";
 const CLI_INSTALL_COMMAND = "npm install -g @mariozechner/pi-coding-agent";
+const WINDOWS_NODE_INSTALL_COMMAND = "winget install --id OpenJS.NodeJS.LTS";
 const SESSION_ATTENTION_MESSAGES = [
 	"I’m waiting for you — Pi",
 	"Ready when you are — Pi",
@@ -130,6 +150,17 @@ let desktopUpdateChecking = false;
 
 let projectSwitchTask: Promise<void> = Promise.resolve();
 let projectSwitchVersion = 0;
+let workspacePaneApplyVersion = 0;
+let settingsPaneRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
+let terminalCommandRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+let authConfigWatchUnlisten: (() => void) | null = null;
+let authConfigPollTimer: ReturnType<typeof setInterval> | null = null;
+let authConfigReloadDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+let authConfigPath: string | null = null;
+let authConfigSnapshot = "";
+let authConfigReloadInFlight = false;
+let authConfigReloadQueued = false;
+let authConfigReloadPendingUntilIdle = false;
 
 class StaleProjectTaskError extends Error {
 	constructor() {
@@ -141,6 +172,10 @@ let workspaces: WorkspaceState[] = [];
 let activeWorkspaceId: string | null = null;
 let sidebarWidth = 320;
 let removeSidebarResizeHandlers: (() => void) | null = null;
+let removeTerminalDockResizeHandlers: (() => void) | null = null;
+let removeFileSplitResizeHandlers: (() => void) | null = null;
+let terminalDockHeightPx = loadTerminalDockHeight();
+let fileSplitWidthPx = loadFileSplitWidth();
 let sidebarSessionsRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 let sidebarSessionsWarmInterval: ReturnType<typeof setInterval> | null = null;
 let sidebarSessionsWarmStopTimer: ReturnType<typeof setTimeout> | null = null;
@@ -151,6 +186,9 @@ let runningSessionPollInFlight = false;
 let debugOverlayInterval: ReturnType<typeof setInterval> | null = null;
 let debugTraceLines: string[] = [];
 let notificationAttentionListenersBound = false;
+let runtimeRunHadError = new Map<string, boolean>();
+let runtimeRunNotifyObserved = new Map<string, boolean>();
+let syntheticRuntimeNotifyCounter = 0;
 
 function recordDebugTrace(message: string): void {
 	const stamp = new Date().toISOString().slice(11, 23);
@@ -176,6 +214,178 @@ function uid(prefix = "id"): string {
 	return `${prefix}_${Math.random().toString(36).slice(2, 8)}_${Date.now().toString(36)}`;
 }
 
+function clampTerminalDockHeight(value: number): number {
+	return Math.min(TERMINAL_DOCK_MAX_HEIGHT, Math.max(TERMINAL_DOCK_MIN_HEIGHT, Math.round(value)));
+}
+
+function loadTerminalDockHeight(): number {
+	try {
+		const raw = localStorage.getItem(TERMINAL_DOCK_HEIGHT_KEY);
+		const parsed = raw ? Number(raw) : TERMINAL_DOCK_DEFAULT_HEIGHT;
+		if (!Number.isFinite(parsed)) return TERMINAL_DOCK_DEFAULT_HEIGHT;
+		return clampTerminalDockHeight(parsed);
+	} catch {
+		return TERMINAL_DOCK_DEFAULT_HEIGHT;
+	}
+}
+
+function persistTerminalDockHeight(): void {
+	try {
+		localStorage.setItem(TERMINAL_DOCK_HEIGHT_KEY, String(terminalDockHeightPx));
+	} catch {
+		// ignore
+	}
+}
+
+function setTerminalDockHeight(nextHeight: number, persist = false): void {
+	const clamped = clampTerminalDockHeight(nextHeight);
+	if (clamped === terminalDockHeightPx) return;
+	terminalDockHeightPx = clamped;
+	if (persist) persistTerminalDockHeight();
+	syncTerminalDockVisibility(getActiveWorkspace());
+}
+
+function resolveFileSplitMaxWidth(): number {
+	const layout = document.getElementById("chat-file-layout");
+	const availableWidth = layout?.getBoundingClientRect().width ?? window.innerWidth;
+	const maxWidth = Math.round(availableWidth - FILE_SPLIT_MIN_CHAT_WIDTH);
+	return Math.max(FILE_SPLIT_MIN_WIDTH, maxWidth);
+}
+
+function clampFileSplitWidth(value: number): number {
+	return Math.min(resolveFileSplitMaxWidth(), Math.max(FILE_SPLIT_MIN_WIDTH, Math.round(value)));
+}
+
+function loadFileSplitWidth(): number {
+	try {
+		const raw = localStorage.getItem(FILE_SPLIT_WIDTH_KEY);
+		const parsed = raw ? Number(raw) : FILE_SPLIT_DEFAULT_WIDTH;
+		if (!Number.isFinite(parsed)) return FILE_SPLIT_DEFAULT_WIDTH;
+		return Math.max(FILE_SPLIT_MIN_WIDTH, Math.round(parsed));
+	} catch {
+		return FILE_SPLIT_DEFAULT_WIDTH;
+	}
+}
+
+function persistFileSplitWidth(): void {
+	try {
+		localStorage.setItem(FILE_SPLIT_WIDTH_KEY, String(fileSplitWidthPx));
+	} catch {
+		// ignore
+	}
+}
+
+function resolveFileSplitComposerOverlap(layout: HTMLElement): number {
+	const handle = document.getElementById("file-split-resize-handle");
+	if (!handle || handle.classList.contains("hidden-pane")) return 0;
+	const composerPanel = layout.querySelector<HTMLElement>(".composer-panel");
+	if (!composerPanel || composerPanel.offsetParent === null) return 0;
+	const handleRect = handle.getBoundingClientRect();
+	const composerRect = composerPanel.getBoundingClientRect();
+	const dividerX = handleRect.left + handleRect.width / 2;
+	const minDividerX = composerRect.right + FILE_SPLIT_MIN_COMPOSER_GAP;
+	return Math.max(0, Math.ceil(minDividerX - dividerX));
+}
+
+function applyFileSplitWidth(): void {
+	const layout = document.getElementById("chat-file-layout");
+	if (!layout) return;
+	const clamped = clampFileSplitWidth(fileSplitWidthPx);
+	if (clamped !== fileSplitWidthPx) {
+		fileSplitWidthPx = clamped;
+	}
+
+	layout.style.setProperty("--file-split-width", `${fileSplitWidthPx}px`);
+
+	for (let attempt = 0; attempt < 5; attempt += 1) {
+		const overlap = resolveFileSplitComposerOverlap(layout);
+		if (overlap <= 0) break;
+		const nextWidth = clampFileSplitWidth(fileSplitWidthPx - overlap);
+		if (nextWidth === fileSplitWidthPx) break;
+		fileSplitWidthPx = nextWidth;
+		layout.style.setProperty("--file-split-width", `${fileSplitWidthPx}px`);
+	}
+}
+
+function setFileSplitWidth(nextWidth: number, persist = false): void {
+	const clamped = clampFileSplitWidth(nextWidth);
+	if (clamped !== fileSplitWidthPx) {
+		fileSplitWidthPx = clamped;
+	}
+	applyFileSplitWidth();
+	if (persist) persistFileSplitWidth();
+}
+
+function setupFileSplitResize(): void {
+	removeFileSplitResizeHandlers?.();
+	removeFileSplitResizeHandlers = null;
+
+	const handle = document.getElementById("file-split-resize-handle");
+	if (!handle) return;
+
+	const onPointerDown = (event: PointerEvent) => {
+		if (handle.classList.contains("hidden-pane")) return;
+		event.preventDefault();
+		const startX = event.clientX;
+		const startWidth = fileSplitWidthPx;
+		handle.classList.add("dragging");
+		document.body.classList.add("file-split-resizing");
+
+		const onMove = (moveEvent: PointerEvent) => {
+			const delta = startX - moveEvent.clientX;
+			setFileSplitWidth(startWidth + delta, false);
+		};
+
+		const onUp = () => {
+			handle.classList.remove("dragging");
+			document.body.classList.remove("file-split-resizing");
+			window.removeEventListener("pointermove", onMove);
+			window.removeEventListener("pointerup", onUp);
+			persistFileSplitWidth();
+		};
+
+		window.addEventListener("pointermove", onMove);
+		window.addEventListener("pointerup", onUp);
+	};
+
+	const onWindowResize = () => {
+		applyFileSplitWidth();
+	};
+
+	handle.addEventListener("pointerdown", onPointerDown);
+	window.addEventListener("resize", onWindowResize);
+	removeFileSplitResizeHandlers = () => {
+		handle.removeEventListener("pointerdown", onPointerDown);
+		window.removeEventListener("resize", onWindowResize);
+	};
+}
+
+function setupTerminalDockResize(terminalPane: HTMLElement): void {
+	removeTerminalDockResizeHandlers?.();
+	const onPointerDown = (event: PointerEvent) => {
+		const target = event.target instanceof Element ? event.target.closest(".terminal-resize-handle") : null;
+		if (!target) return;
+		event.preventDefault();
+		const startY = event.clientY;
+		const startHeight = terminalDockHeightPx;
+		const onPointerMove = (moveEvent: PointerEvent) => {
+			const deltaY = startY - moveEvent.clientY;
+			setTerminalDockHeight(startHeight + deltaY, false);
+		};
+		const onPointerUp = () => {
+			window.removeEventListener("pointermove", onPointerMove);
+			window.removeEventListener("pointerup", onPointerUp);
+			persistTerminalDockHeight();
+		};
+		window.addEventListener("pointermove", onPointerMove);
+		window.addEventListener("pointerup", onPointerUp);
+	};
+	terminalPane.addEventListener("pointerdown", onPointerDown);
+	removeTerminalDockResizeHandlers = () => {
+		terminalPane.removeEventListener("pointerdown", onPointerDown);
+	};
+}
+
 function pickSessionAttentionMessage(current?: string | null): string {
 	const options = SESSION_ATTENTION_MESSAGES as readonly string[];
 	for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -199,18 +409,45 @@ function isCliMissingError(message: string | null | undefined): boolean {
 	if (text.includes("could not find the pi cli") || text.includes("npm install -g @mariozechner/pi-coding-agent")) {
 		return true;
 	}
+
+	const referencesPiBinary = /\bpi(?:\.cmd|\.exe|\.bat)?\b/.test(text) || text.includes("pi process");
 	if (text.includes("'pi' is not recognized as an internal or external command")) {
 		return true;
 	}
-	return text.includes("enoent") && text.includes("pi");
+	if (referencesPiBinary && text.includes("enoent")) {
+		return true;
+	}
+	if (referencesPiBinary && (text.includes("createprocess") || text.includes("os error 2") || text.includes("os error 3"))) {
+		return true;
+	}
+	if (referencesPiBinary && text.includes("the system cannot find the file specified")) {
+		return true;
+	}
+	if (text.includes("failed to spawn pi process") && text.includes("cannot find")) {
+		return true;
+	}
+	return false;
+}
+
+function isLikelyWindowsHost(): boolean {
+	const platform = `${navigator.platform || ""} ${navigator.userAgent || ""}`.toLowerCase();
+	return platform.includes("win32") || platform.includes("win64") || platform.includes("windows");
+}
+
+async function copyCommandToClipboard(command: string): Promise<void> {
+	try {
+		await navigator.clipboard.writeText(command);
+	} catch {
+		window.prompt("Copy and run this command in Terminal", command);
+	}
 }
 
 async function copyCliInstallCommand(): Promise<void> {
-	try {
-		await navigator.clipboard.writeText(CLI_INSTALL_COMMAND);
-	} catch {
-		window.prompt("Copy and run this command in Terminal", CLI_INSTALL_COMMAND);
-	}
+	await copyCommandToClipboard(CLI_INSTALL_COMMAND);
+}
+
+async function copyWindowsNodeInstallCommand(): Promise<void> {
+	await copyCommandToClipboard(WINDOWS_NODE_INSTALL_COMMAND);
 }
 
 function readLastUpdateNoticeAt(storageKey: string): number {
@@ -265,6 +502,12 @@ function baseName(path: string): string {
 function normalizeSessionPath(path: string | null | undefined): string {
 	if (!path) return "";
 	return path.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+}
+
+function joinFsPath(base: string, child: string): string {
+	const normalizedBase = base.replace(/\\/g, "/").replace(/\/+$/, "");
+	const normalizedChild = child.replace(/\\/g, "/").replace(/^\/+/, "");
+	return normalizedBase ? `${normalizedBase}/${normalizedChild}` : normalizedChild;
 }
 
 function sessionRuntimeKey(workspaceId: string, tabId: string): string {
@@ -322,15 +565,92 @@ function resolveRuntimeNotifyTarget(runtime: SessionRuntime): {
 	workspaceId?: string;
 	tabId?: string;
 	sessionPath?: string;
+	workspaceLabel?: string;
+	sessionLabel?: string;
 } {
 	const workspace = workspaces.find((entry) => entry.id === runtime.workspaceId) ?? null;
 	const tab = workspace ? workspace.sessionTabs.find((entry) => entry.id === runtime.tabId) ?? null : null;
 	const sessionPath = runtime.lastKnownSessionPath ?? tab?.sessionPath ?? undefined;
+	const workspaceLabel = workspace?.title?.trim() || undefined;
+	const sessionLabel = tab?.title?.trim() || (sessionPath ? baseName(sessionPath) : undefined);
 	return {
 		workspaceId: runtime.workspaceId || workspace?.id || undefined,
 		tabId: runtime.tabId || tab?.id || undefined,
 		sessionPath: sessionPath ?? undefined,
+		workspaceLabel,
+		sessionLabel,
 	};
+}
+
+function markRuntimeRunStarted(runtimeKey: string): void {
+	runtimeRunHadError.set(runtimeKey, false);
+	runtimeRunNotifyObserved.set(runtimeKey, false);
+}
+
+function markRuntimeRunErrored(runtimeKey: string): void {
+	runtimeRunHadError.set(runtimeKey, true);
+}
+
+function markRuntimeRunNotifyObserved(runtimeKey: string): void {
+	runtimeRunNotifyObserved.set(runtimeKey, true);
+}
+
+function consumeRuntimeRunState(runtimeKey: string): { hadError: boolean; hadNotify: boolean } {
+	const hadError = runtimeRunHadError.get(runtimeKey) === true;
+	const hadNotify = runtimeRunNotifyObserved.get(runtimeKey) === true;
+	runtimeRunHadError.delete(runtimeKey);
+	runtimeRunNotifyObserved.delete(runtimeKey);
+	return { hadError, hadNotify };
+}
+
+function clearRuntimeRunState(runtimeKey: string): void {
+	runtimeRunHadError.delete(runtimeKey);
+	runtimeRunNotifyObserved.delete(runtimeKey);
+}
+
+function nextSyntheticRuntimeNotifyRequestId(runtimeKey: string): string {
+	syntheticRuntimeNotifyCounter = syntheticRuntimeNotifyCounter >= 2_100_000_000 ? 1 : syntheticRuntimeNotifyCounter + 1;
+	const normalizedRuntimeKey = runtimeKey.replace(/[^a-zA-Z0-9_-]/g, "_");
+	return `desktop_notify_${normalizedRuntimeKey}_${Date.now()}_${syntheticRuntimeNotifyCounter}`;
+}
+
+function attachNotifyTargetToRequest(
+	request: Record<string, unknown>,
+	target: ReturnType<typeof resolveRuntimeNotifyTarget>,
+	source: "active" | "background",
+	runtime: SessionRuntime,
+): void {
+	if (!target.workspaceId && !target.tabId && !target.sessionPath) return;
+	request.notifyTargetWorkspaceId = target.workspaceId;
+	request.notifyTargetTabId = target.tabId;
+	request.notifyTargetSessionPath = target.sessionPath;
+	request.notifyTargetWorkspaceLabel = target.workspaceLabel;
+	request.notifyTargetSessionLabel = target.sessionLabel;
+	recordDebugTrace(
+		`notify-target workspace=${target.workspaceId ?? "-"} tab=${target.tabId ?? "-"} session=${target.sessionPath ?? "-"} source=${source} runtime=${runtime.instanceId}`,
+	);
+	markSessionAttentionTarget(target);
+}
+
+function dispatchSyntheticRunEndNotify(runtime: SessionRuntime, source: "active" | "background"): void {
+	const state = consumeRuntimeRunState(runtime.key);
+	if (state.hadNotify) return;
+
+	const request: Record<string, unknown> = {
+		id: nextSyntheticRuntimeNotifyRequestId(runtime.key),
+		method: "notify",
+		notifyType: state.hadError ? "error" : "info",
+		title: state.hadError ? "Run ended with an error" : "Task finished",
+		message: state.hadError ? "Agent run ended with an error." : "Agent finished its current task.",
+	};
+	const target = resolveRuntimeNotifyTarget(runtime);
+	attachNotifyTargetToRequest(request, target, source, runtime);
+	recordDebugTrace(
+		`notify:synthetic-run-end type=${state.hadError ? "error" : "info"} source=${source} runtime=${runtime.instanceId}`,
+	);
+	const normalizedRequest = normalizeExtensionUiRequest(request);
+	if (!normalizedRequest) return;
+	void extensionUiHandler?.handleRequest(normalizedRequest);
 }
 
 function handleBackgroundRuntimeNotifyEvent(runtimeKey: string, event: Record<string, unknown>): void {
@@ -339,9 +659,24 @@ function handleBackgroundRuntimeNotifyEvent(runtimeKey: string, event: Record<st
 	if (runtime.key === activeSessionRuntimeKey) return;
 
 	const type = typeof event.type === "string" ? event.type : "unknown";
+	if (type === "agent_start") {
+		markRuntimeRunStarted(runtime.key);
+		return;
+	}
+	if (type === "error") {
+		markRuntimeRunErrored(runtime.key);
+		return;
+	}
+	if (type === "agent_end") {
+		setTimeout(() => {
+			dispatchSyntheticRunEndNotify(runtime, "background");
+		}, 0);
+		return;
+	}
 	if (type !== "extension_ui_request") return;
 	const method = typeof event.method === "string" ? event.method : "unknown";
 	if (method !== "notify") return;
+	markRuntimeRunNotifyObserved(runtime.key);
 
 	const message = typeof event.message === "string" ? event.message : "";
 	recordDebugTrace(`rpc:event type=${type} source=background runtime=${runtime.instanceId}`);
@@ -349,15 +684,7 @@ function handleBackgroundRuntimeNotifyEvent(runtimeKey: string, event: Record<st
 
 	const request = { ...(event as Record<string, unknown>) };
 	const target = resolveRuntimeNotifyTarget(runtime);
-	if (target.workspaceId || target.tabId || target.sessionPath) {
-		request.notifyTargetWorkspaceId = target.workspaceId;
-		request.notifyTargetTabId = target.tabId;
-		request.notifyTargetSessionPath = target.sessionPath;
-		recordDebugTrace(
-			`notify-target workspace=${target.workspaceId ?? "-"} tab=${target.tabId ?? "-"} session=${target.sessionPath ?? "-"} source=background`,
-		);
-		markSessionAttentionTarget(target);
-	}
+	attachNotifyTargetToRequest(request, target, "background", runtime);
 
 	const normalizedRequest = normalizeExtensionUiRequest(request);
 	if (!normalizedRequest) {
@@ -482,6 +809,7 @@ function removeRuntimeByKey(runtimeKey: string): void {
 	runtime.eventUnlisten?.();
 	runtime.eventUnlisten = null;
 	sessionRuntimes.delete(runtimeKey);
+	clearRuntimeRunState(runtimeKey);
 	if (activeSessionRuntimeKey === runtimeKey) {
 		setActiveRuntime(null);
 	}
@@ -673,6 +1001,12 @@ function ensureWorkspaceContentState(workspace: WorkspaceState): void {
 		workspace.activeFileTabId = workspace.fileTabs[0]?.id ?? null;
 	}
 
+	if (workspace.fileTabs.length > 1) {
+		const activeFileTab = workspace.fileTabs.find((tab) => tab.id === workspace.activeFileTabId) ?? workspace.fileTabs[0] ?? null;
+		workspace.fileTabs = activeFileTab ? [activeFileTab] : [];
+		workspace.activeFileTabId = activeFileTab?.id ?? null;
+	}
+
 	const activeSession = workspace.sessionTabs.find((tab) => tab.id === workspace.activeSessionTabId) ?? workspace.sessionTabs[0] ?? null;
 	const activeFile = workspace.fileTabs.find((tab) => tab.id === workspace.activeFileTabId) ?? null;
 
@@ -699,6 +1033,16 @@ function ensureWorkspaceContentState(workspace: WorkspaceState): void {
 function getActiveSessionTab(workspace: WorkspaceState): WorkspaceSessionTab {
 	ensureWorkspaceContentState(workspace);
 	return workspace.sessionTabs.find((tab) => tab.id === workspace.activeSessionTabId) ?? workspace.sessionTabs[0];
+}
+
+function isSessionTabRuntimeRunning(workspaceId: string, tabId: string): boolean {
+	const runtime = getRuntimeForTab(workspaceId, tabId);
+	if (!runtime) return false;
+	if (runtime.running) return true;
+	if (runtime.phase === "starting" || runtime.phase === "switching_session" || runtime.phase === "creating_session") {
+		return true;
+	}
+	return false;
 }
 
 function clearSessionAttention(tab: WorkspaceSessionTab | null | undefined): boolean {
@@ -797,26 +1141,59 @@ function openOrActivateSessionTab(
 	projectId: string | null,
 	projectPath: string | null,
 	preferredTitle?: string,
+	options: { allowCreateTab?: boolean; preferredTabId?: string | null } = {},
 ): WorkspaceSessionTab {
 	ensureWorkspaceContentState(workspace);
 	const normalized = normalizeSessionPath(sessionPath);
+	const allowCreateTab = options.allowCreateTab ?? false;
 	let tab = workspace.sessionTabs.find((entry) => normalizeSessionPath(entry.sessionPath) === normalized);
 	const nextTitle = (preferredTitle || baseName(sessionPath)).trim() || "Chat";
 	if (!tab) {
-		const activeDraft = workspace.sessionTabs.find((entry) => entry.id === workspace.activeSessionTabId && isDraftSessionTab(entry));
-		const anyDraft = workspace.sessionTabs.find((entry) => isDraftSessionTab(entry));
+		const activeTab = workspace.sessionTabs.find((entry) => entry.id === workspace.activeSessionTabId) ?? null;
+		const preferredTab = options.preferredTabId
+			? workspace.sessionTabs.find((entry) => entry.id === options.preferredTabId) ?? null
+			: null;
 		const onlyTab = workspace.sessionTabs.length === 1 ? workspace.sessionTabs[0] : null;
 		const onlyTabLooksLikeSeed =
 			Boolean(onlyTab) &&
 			["chat", "new session", ""].includes(((onlyTab?.title || "").trim().toLowerCase()));
-		const reusableTab = activeDraft ?? anyDraft ?? (onlyTabLooksLikeSeed ? onlyTab : null);
+		const reusableCandidates: WorkspaceSessionTab[] = [];
+		const pushReusableCandidate = (candidate: WorkspaceSessionTab | null | undefined) => {
+			if (!candidate) return;
+			if (reusableCandidates.some((entry) => entry.id === candidate.id)) return;
+			reusableCandidates.push(candidate);
+		};
+		pushReusableCandidate(preferredTab);
+		pushReusableCandidate(onlyTabLooksLikeSeed ? onlyTab : null);
+		for (const candidate of workspace.sessionTabs) {
+			if (candidate.id === activeTab?.id) continue;
+			pushReusableCandidate(candidate);
+		}
+		pushReusableCandidate(activeTab);
+		const reusableTab = allowCreateTab
+			? null
+			: reusableCandidates.find((candidate) => !isSessionTabRuntimeRunning(workspace.id, candidate.id)) ?? null;
+		if (!allowCreateTab && !reusableTab && reusableCandidates.length > 0) {
+			recordDebugTrace(
+				`openOrActivateSessionTab:create-new avoid-running workspace=${workspace.id} target=${sessionPath}`,
+			);
+		}
 		if (reusableTab) {
+			const previousPath = reusableTab.sessionPath;
+			const shouldDiscardPreviousEphemeral =
+				Boolean(previousPath) &&
+				isEphemeralSessionTab(reusableTab) &&
+				(reusableTab.messageCount ?? 0) <= 0 &&
+				normalizeSessionPath(previousPath) !== normalized;
 			reusableTab.sessionPath = sessionPath;
 			reusableTab.title = nextTitle;
 			reusableTab.messageCount = null;
 			reusableTab.ephemeral = false;
 			setSessionTabProject(reusableTab, projectId, projectPath);
 			tab = reusableTab;
+			if (shouldDiscardPreviousEphemeral && previousPath) {
+				scheduleDiscardEphemeralSessionPaths([previousPath]);
+			}
 		} else {
 			tab = createSessionTab(nextTitle, sessionPath, projectId, projectPath);
 			workspace.sessionTabs.push(tab);
@@ -842,21 +1219,37 @@ function openOrActivateFileTab(
 	filePath: string,
 	projectId: string | null,
 	projectPath: string | null,
+	options: { allowCreateTab?: boolean; preferredTabId?: string | null } = {},
 ): WorkspaceFileTab {
 	ensureWorkspaceContentState(workspace);
 	const normalized = normalizeProjectPath(filePath);
+	const allowCreateTab = options.allowCreateTab ?? false;
 	let tab = workspace.fileTabs.find((entry) => normalizeProjectPath(entry.path) === normalized);
 	if (!tab) {
-		tab = {
-			id: uid("filetab"),
-			projectId: normalizeStoredId(projectId),
-			projectPath: normalizeStoredPath(projectPath),
-			path: filePath,
-			title: baseName(filePath),
-			draftDirectoryPath: null,
-			draftAnchorPath: null,
-		};
-		workspace.fileTabs.push(tab);
+		const preferredTab = options.preferredTabId
+			? workspace.fileTabs.find((entry) => entry.id === options.preferredTabId) ?? null
+			: null;
+		const activeTab = workspace.fileTabs.find((entry) => entry.id === workspace.activeFileTabId) ?? null;
+		const reusableTab = allowCreateTab ? null : preferredTab ?? activeTab ?? workspace.fileTabs[0] ?? null;
+		if (reusableTab) {
+			reusableTab.path = filePath;
+			reusableTab.title = baseName(filePath);
+			setFileTabProject(reusableTab, projectId, projectPath);
+			reusableTab.draftDirectoryPath = null;
+			reusableTab.draftAnchorPath = null;
+			tab = reusableTab;
+		} else {
+			tab = {
+				id: uid("filetab"),
+				projectId: normalizeStoredId(projectId),
+				projectPath: normalizeStoredPath(projectPath),
+				path: filePath,
+				title: baseName(filePath),
+				draftDirectoryPath: null,
+				draftAnchorPath: null,
+			};
+			workspace.fileTabs.push(tab);
+		}
 	} else {
 		setFileTabProject(tab, projectId, projectPath);
 		tab.draftDirectoryPath = null;
@@ -864,8 +1257,7 @@ function openOrActivateFileTab(
 	}
 	workspace.activeFileTabId = tab.id;
 	workspace.filePath = tab.path;
-	setWorkspaceActiveProject(workspace, { id: tab.projectId, path: tab.projectPath });
-	workspace.pane = "file";
+	workspace.pane = "chat";
 	return tab;
 }
 
@@ -876,21 +1268,23 @@ function createAndActivateEmptyFileTab(
 	projectPath: string | null = workspace.activeProjectPath,
 	draftDirectoryPath: string | null = projectPath,
 	draftAnchorPath: string | null = null,
+	options: { forceNewTab?: boolean } = {},
 ): WorkspaceFileTab {
 	ensureWorkspaceContentState(workspace);
+	const forceNewTab = options.forceNewTab ?? false;
 	const normalizedDraftDirectoryPath = normalizeStoredPath(draftDirectoryPath) ?? normalizeStoredPath(projectPath);
 	const normalizedDraftAnchorPath = normalizeStoredPath(draftAnchorPath);
-	const activeDraft = workspace.fileTabs.find((entry) => entry.id === workspace.activeFileTabId && isDraftFileTab(entry));
-	if (activeDraft) {
-		activeDraft.title = title.trim() || NEW_FILE_TAB_TITLE;
-		setFileTabProject(activeDraft, projectId, projectPath);
-		activeDraft.draftDirectoryPath = normalizedDraftDirectoryPath;
-		activeDraft.draftAnchorPath = normalizedDraftAnchorPath;
-		workspace.activeFileTabId = activeDraft.id;
+	const activeFileTab = workspace.fileTabs.find((entry) => entry.id === workspace.activeFileTabId) ?? workspace.fileTabs[0] ?? null;
+	if (activeFileTab && !forceNewTab) {
+		activeFileTab.path = null;
+		activeFileTab.title = title.trim() || NEW_FILE_TAB_TITLE;
+		setFileTabProject(activeFileTab, projectId, projectPath);
+		activeFileTab.draftDirectoryPath = normalizedDraftDirectoryPath;
+		activeFileTab.draftAnchorPath = normalizedDraftAnchorPath;
+		workspace.activeFileTabId = activeFileTab.id;
 		workspace.filePath = null;
-		setWorkspaceActiveProject(workspace, { id: activeDraft.projectId, path: activeDraft.projectPath });
-		workspace.pane = "file";
-		return activeDraft;
+		workspace.pane = "chat";
+		return activeFileTab;
 	}
 	const tab: WorkspaceFileTab = {
 		id: uid("filetab"),
@@ -904,8 +1298,7 @@ function createAndActivateEmptyFileTab(
 	workspace.fileTabs.push(tab);
 	workspace.activeFileTabId = tab.id;
 	workspace.filePath = null;
-	setWorkspaceActiveProject(workspace, { id: tab.projectId, path: tab.projectPath });
-	workspace.pane = "file";
+	workspace.pane = "chat";
 	return tab;
 }
 
@@ -918,6 +1311,7 @@ function resetWorkspaceContentTabs(
 	workspace: WorkspaceState,
 	project: { id?: string | null; path?: string | null } | null = { id: workspace.activeProjectId, path: workspace.activeProjectPath },
 ): void {
+	const previousPane = workspace.pane;
 	setWorkspaceActiveProject(workspace, project);
 	workspace.sessionTabs = [createSessionTab(NEW_SESSION_TAB_TITLE, null, workspace.activeProjectId, workspace.activeProjectPath)];
 	workspace.activeSessionTabId = workspace.sessionTabs[0].id;
@@ -925,7 +1319,7 @@ function resetWorkspaceContentTabs(
 	workspace.activeFileTabId = null;
 	workspace.filePath = null;
 	workspace.sessionTitle = NEW_SESSION_TAB_TITLE;
-	workspace.pane = "chat";
+	workspace.pane = previousPane === "settings" || previousPane === "packages" ? previousPane : "chat";
 }
 
 function createAndActivateEmptySessionTab(
@@ -933,20 +1327,26 @@ function createAndActivateEmptySessionTab(
 	title = NEW_SESSION_TAB_TITLE,
 	projectId: string | null = workspace.activeProjectId,
 	projectPath: string | null = workspace.activeProjectPath,
+	options: { forceNewTab?: boolean } = {},
 ): WorkspaceSessionTab {
 	ensureWorkspaceContentState(workspace);
-	if (workspace.sessionTabs.length === 1 && isDraftSessionTab(workspace.sessionTabs[0])) {
-		const seed = workspace.sessionTabs[0];
-		seed.title = title.trim() || NEW_SESSION_TAB_TITLE;
-		seed.messageCount = 0;
-		seed.ephemeral = true;
-		clearSessionAttention(seed);
-		setSessionTabProject(seed, projectId, projectPath);
-		workspace.activeSessionTabId = seed.id;
-		workspace.sessionTitle = seed.title;
-		setWorkspaceActiveProject(workspace, { id: seed.projectId, path: seed.projectPath });
+	const forceNewTab = options.forceNewTab ?? false;
+	const activeSessionTab = workspace.sessionTabs.find((entry) => entry.id === workspace.activeSessionTabId) ?? workspace.sessionTabs[0] ?? null;
+	if (activeSessionTab && !forceNewTab && !isSessionTabRuntimeRunning(workspace.id, activeSessionTab.id)) {
+		if (isEphemeralSessionTab(activeSessionTab) && activeSessionTab.sessionPath && (activeSessionTab.messageCount ?? 0) <= 0) {
+			scheduleDiscardEphemeralSessionPaths([activeSessionTab.sessionPath]);
+		}
+		activeSessionTab.sessionPath = null;
+		activeSessionTab.title = title.trim() || NEW_SESSION_TAB_TITLE;
+		activeSessionTab.messageCount = 0;
+		activeSessionTab.ephemeral = true;
+		clearSessionAttention(activeSessionTab);
+		setSessionTabProject(activeSessionTab, projectId, projectPath);
+		workspace.activeSessionTabId = activeSessionTab.id;
+		workspace.sessionTitle = activeSessionTab.title;
+		setWorkspaceActiveProject(workspace, { id: activeSessionTab.projectId, path: activeSessionTab.projectPath });
 		workspace.pane = "chat";
-		return seed;
+		return activeSessionTab;
 	}
 	const tab = createSessionTab(title, null, projectId, projectPath);
 	tab.messageCount = 0;
@@ -988,17 +1388,25 @@ async function discardEphemeralSessionPaths(sessionPaths: string[]): Promise<voi
 	scheduleSidebarSessionsRefresh(0);
 }
 
-function scheduleDiscardEphemeralSessionTabs(tabs: Array<WorkspaceSessionTab | null | undefined>): void {
-	const sessionPaths = collectEphemeralSessionPaths(tabs);
+function scheduleDiscardEphemeralSessionPaths(sessionPaths: string[]): void {
 	if (sessionPaths.length === 0) return;
 	void discardEphemeralSessionPaths(sessionPaths);
+}
+
+function scheduleDiscardEphemeralSessionTabs(tabs: Array<WorkspaceSessionTab | null | undefined>): void {
+	const sessionPaths = collectEphemeralSessionPaths(tabs);
+	scheduleDiscardEphemeralSessionPaths(sessionPaths);
 }
 
 function pruneInactiveEphemeralSessionTabs(workspace: WorkspaceState, keepTabIds: string[] = []): boolean {
 	ensureWorkspaceContentState(workspace);
 	const keep = new Set(keepTabIds);
 	const removedTabs = workspace.sessionTabs.filter(
-		(tab) => isEphemeralSessionTab(tab) && (tab.messageCount ?? 0) <= 0 && !keep.has(tab.id),
+		(tab) =>
+			isEphemeralSessionTab(tab) &&
+			(tab.messageCount ?? 0) <= 0 &&
+			!keep.has(tab.id) &&
+			!isSessionTabRuntimeRunning(workspace.id, tab.id),
 	);
 	if (removedTabs.length === 0) return false;
 
@@ -1150,6 +1558,120 @@ async function withRpcRetry<T>(label: string, run: () => Promise<T>, attempts = 
 	throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
+async function renameSessionFromWorkspace(projectId: string, sessionPath: string, nextName: string): Promise<boolean> {
+	const workspace = getActiveWorkspace();
+	const project = sidebar?.getProjectById(projectId);
+	const trimmedName = nextName.trim();
+	if (!workspace || !project || !trimmedName) return false;
+
+	ensureWorkspaceContentState(workspace);
+	const targetTab = workspace.sessionTabs.find((tab) => normalizeSessionPath(tab.sessionPath) === normalizeSessionPath(sessionPath));
+	if (targetTab) {
+		setSessionTabProject(targetTab, project.id, project.path);
+		targetTab.title = trimmedName;
+		if (workspace.activeSessionTabId === targetTab.id) {
+			workspace.sessionTitle = trimmedName;
+		}
+		persistWorkspaces();
+		syncContentTabsBar(workspace);
+	}
+
+	let failed = false;
+	await queueProjectTask(
+		async () => {
+			const normalizedTarget = normalizeSessionPath(sessionPath);
+			const openTargetTab = workspace.sessionTabs.find((tab) => normalizeSessionPath(tab.sessionPath) === normalizedTarget) ?? null;
+			const activeTarget = Boolean(openTargetTab && workspace.activeSessionTabId === openTargetTab.id);
+
+			if (openTargetTab) {
+				const targetRuntime = await ensureRuntimeForSessionTab(workspace, openTargetTab, project.path, activeTarget);
+				await targetRuntime.bridge.setSessionName(trimmedName);
+				if (activeTarget) {
+					await chatView?.refreshFromBackend({ throwOnError: true });
+				}
+			} else {
+				const maintenanceBridge = new RpcBridge(uid("rename_rpc"));
+				try {
+					await maintenanceBridge.start({ cliPath: findCliPath(), cwd: project.path });
+					const switched = await maintenanceBridge.switchSession(sessionPath);
+					if (switched.cancelled) return;
+					await maintenanceBridge.setSessionName(trimmedName);
+				} finally {
+					await maintenanceBridge.stop().catch(() => {
+						/* ignore */
+					});
+					await maintenanceBridge.teardownListeners().catch(() => {
+						/* ignore */
+					});
+				}
+			}
+
+			scheduleSidebarSessionsRefresh(0);
+			syncContentTabsBar(workspace);
+			await applyWorkspacePane(workspace);
+		},
+		(err) => {
+			failed = true;
+			console.error("Failed to rename session:", err);
+			chatView?.notify("Failed to rename session", "error");
+		},
+		{ label: "sidebar-session-rename" },
+	);
+
+	return !failed;
+}
+
+async function reloadActiveWorkspaceRuntime(): Promise<boolean> {
+	const workspace = getActiveWorkspace();
+	if (!workspace) return false;
+
+	ensureWorkspaceContentState(workspace);
+	const activeSession = getActiveSessionTab(workspace);
+	if (!activeSession) return false;
+	const projectPath = getSessionTabProjectPath(activeSession) ?? getWorkspaceActiveProjectPath(workspace);
+	if (!projectPath) return false;
+
+	syncActiveChatRuntimeBinding(workspace, { forceReset: true, statusText: "Reloading runtime…" });
+
+	let failed = false;
+	await queueProjectTask(
+		async (version) => {
+			assertProjectTaskCurrent(version);
+			const runtime = getRuntimeForTab(workspace.id, activeSession.id);
+			if (runtime?.bridge.isConnected) {
+				runtime.phase = "starting";
+				await runtime.bridge.stop().catch(() => {
+					/* ignore */
+				});
+				runtime.draftInitialized = false;
+				runtime.lastKnownSessionPath = null;
+				setRuntimeRunning(runtime, false, { suppressNotify: true });
+			}
+
+			assertProjectTaskCurrent(version);
+			await ensureRuntimeForSessionTab(workspace, activeSession, projectPath, true, version);
+			assertProjectTaskCurrent(version);
+			await chatView?.refreshFromBackend({ throwOnError: true });
+			assertProjectTaskCurrent(version);
+			await chatView?.refreshModels();
+			await packagesView?.refreshPackages(true).catch(() => {
+				/* ignore package refresh errors during reload */
+			});
+			scheduleSidebarSessionsRefresh(0);
+			syncContentTabsBar(workspace);
+			await applyWorkspacePane(workspace);
+		},
+		(err) => {
+			failed = true;
+			console.error("Failed to reload runtime:", err);
+			chatView?.notify("Failed to reload runtime", "error");
+		},
+		{ label: "slash-reload-runtime" },
+	);
+
+	return !failed;
+}
+
 function scheduleSidebarSessionsRefresh(delayMs = 180): void {
 	if (sidebarSessionsRefreshTimer) {
 		clearTimeout(sidebarSessionsRefreshTimer);
@@ -1158,6 +1680,194 @@ function scheduleSidebarSessionsRefresh(delayMs = 180): void {
 		sidebarSessionsRefreshTimer = null;
 		sidebar?.refreshActiveProjectSessions();
 	}, delayMs);
+}
+
+function scheduleTerminalCommandRefresh(delayMs = 260): void {
+	if (terminalCommandRefreshTimer) {
+		clearTimeout(terminalCommandRefreshTimer);
+	}
+	terminalCommandRefreshTimer = setTimeout(() => {
+		terminalCommandRefreshTimer = null;
+		void (async () => {
+			try {
+				await chatView?.refreshModels();
+			} catch {
+				// ignore refresh model failures from terminal-triggered updates
+			}
+			try {
+				await chatView?.refreshFromBackend();
+			} catch {
+				// ignore refresh failures from terminal-triggered updates
+			}
+			if (packagesView) {
+				void packagesView.refreshPackages(false).catch(() => {
+					// ignore package refresh failures here
+				});
+			}
+			scheduleSidebarSessionsRefresh(0);
+		})();
+	}, delayMs);
+}
+
+async function refreshDesktopStateAfterAuthChangeWithoutProject(): Promise<void> {
+	try {
+		await chatView?.refreshModels();
+	} catch {
+		// ignore auth-change model refresh failures without active project runtime
+	}
+	try {
+		await chatView?.refreshFromBackend();
+	} catch {
+		// ignore auth-change backend refresh failures without active project runtime
+	}
+	if (packagesView) {
+		void packagesView.refreshPackages(false).catch(() => {
+			// ignore package refresh failures here
+		});
+	}
+	scheduleSidebarSessionsRefresh(0);
+}
+
+function isActiveRuntimeStreamingForAuthReload(): boolean {
+	if (getActiveRuntime()?.running) return true;
+	return Boolean(chatView?.getState()?.isStreaming);
+}
+
+function queueAuthConfigDrivenReload(trigger: string, delayMs = AUTH_CONFIG_RELOAD_DEBOUNCE_MS): void {
+	if (authConfigReloadDebounceTimer) {
+		clearTimeout(authConfigReloadDebounceTimer);
+	}
+	authConfigReloadDebounceTimer = setTimeout(() => {
+		authConfigReloadDebounceTimer = null;
+		void runAuthConfigDrivenReload(trigger);
+	}, delayMs);
+}
+
+async function runAuthConfigDrivenReload(trigger: string): Promise<void> {
+	if (authConfigReloadInFlight) {
+		authConfigReloadQueued = true;
+		recordDebugTrace(`auth-reload queued trigger=${trigger}`);
+		return;
+	}
+	if (isActiveRuntimeStreamingForAuthReload()) {
+		authConfigReloadPendingUntilIdle = true;
+		recordDebugTrace(`auth-reload deferred trigger=${trigger} reason=streaming`);
+		return;
+	}
+
+	authConfigReloadInFlight = true;
+	authConfigReloadPendingUntilIdle = false;
+	recordDebugTrace(`auth-reload start trigger=${trigger}`);
+	try {
+		const workspace = getActiveWorkspace();
+		const projectPath = workspace ? getWorkspaceActiveProjectPath(workspace) : null;
+		if (workspace && projectPath) {
+			const reloaded = await reloadActiveWorkspaceRuntime();
+			if (!reloaded) {
+				await refreshDesktopStateAfterAuthChangeWithoutProject();
+			}
+			return;
+		}
+		await refreshDesktopStateAfterAuthChangeWithoutProject();
+	} catch (err) {
+		console.error("Failed to apply auth-driven runtime reload:", err);
+	} finally {
+		authConfigReloadInFlight = false;
+		if (authConfigReloadQueued) {
+			authConfigReloadQueued = false;
+			queueAuthConfigDrivenReload("queued", 120);
+		}
+	}
+}
+
+function flushPendingAuthConfigReload(): void {
+	if (!authConfigReloadPendingUntilIdle) return;
+	authConfigReloadPendingUntilIdle = false;
+	queueAuthConfigDrivenReload("run-idle", 120);
+}
+
+async function resolvePiAuthConfigPath(): Promise<string | null> {
+	const { homeDir } = await import("@tauri-apps/api/path");
+	const home = (await homeDir()).replace(/\\/g, "/").replace(/\/+$/, "");
+	if (!home) return null;
+	return joinFsPath(joinFsPath(joinFsPath(home, ".pi"), "agent"), "auth.json");
+}
+
+async function readAuthConfigSnapshot(path: string): Promise<string> {
+	try {
+		const { exists, readTextFile } = await import("@tauri-apps/plugin-fs");
+		if (!(await exists(path))) {
+			return AUTH_CONFIG_SNAPSHOT_MISSING;
+		}
+		return await readTextFile(path);
+	} catch {
+		return AUTH_CONFIG_SNAPSHOT_ERROR;
+	}
+}
+
+async function probeAuthConfigChanges(trigger: string): Promise<void> {
+	const path = authConfigPath;
+	if (!path) return;
+	const nextSnapshot = await readAuthConfigSnapshot(path);
+	if (authConfigPath !== path) return;
+	if (nextSnapshot === authConfigSnapshot) return;
+	authConfigSnapshot = nextSnapshot;
+	recordDebugTrace(`auth-config changed trigger=${trigger}`);
+	queueAuthConfigDrivenReload(trigger);
+}
+
+function stopAuthConfigChangeMonitor(): void {
+	if (authConfigWatchUnlisten) {
+		try {
+			authConfigWatchUnlisten();
+		} catch {
+			// ignore unwatch errors
+		}
+		authConfigWatchUnlisten = null;
+	}
+	if (authConfigPollTimer) {
+		clearInterval(authConfigPollTimer);
+		authConfigPollTimer = null;
+	}
+	if (authConfigReloadDebounceTimer) {
+		clearTimeout(authConfigReloadDebounceTimer);
+		authConfigReloadDebounceTimer = null;
+	}
+	authConfigPath = null;
+	authConfigSnapshot = "";
+	authConfigReloadQueued = false;
+	authConfigReloadPendingUntilIdle = false;
+}
+
+async function startAuthConfigChangeMonitor(): Promise<void> {
+	stopAuthConfigChangeMonitor();
+	const path = await resolvePiAuthConfigPath().catch(() => null);
+	if (!path) return;
+	authConfigPath = path;
+	authConfigSnapshot = await readAuthConfigSnapshot(path);
+
+	let startedWatch = false;
+	try {
+		const { watch } = await import("@tauri-apps/plugin-fs");
+		authConfigWatchUnlisten = await watch(
+			path,
+			() => {
+				void probeAuthConfigChanges("watch");
+			},
+			{ recursive: false, delayMs: 220 },
+		);
+		startedWatch = true;
+		recordDebugTrace(`auth-watch started path=${path}`);
+	} catch (err) {
+		console.warn("Failed to watch auth.json; falling back to polling:", err);
+		recordDebugTrace(`auth-watch fallback=poll reason=${err instanceof Error ? err.message : String(err)}`);
+	}
+
+	if (!startedWatch) {
+		authConfigPollTimer = setInterval(() => {
+			void probeAuthConfigChanges("poll");
+		}, AUTH_CONFIG_FALLBACK_POLL_MS);
+	}
 }
 
 function stopSidebarSessionsWarmRefresh(): void {
@@ -1460,11 +2170,11 @@ function loadWorkspaces(): void {
 						emoji: typeof w.emoji === "string" && w.emoji.trim().length > 0 ? w.emoji.trim() : null,
 						pinned: false,
 						leftMode: w.leftMode === "files" ? "files" : "projects",
-						pane: w.pane === "file" || w.pane === "packages" || w.pane === "settings" || w.pane === "terminal" ? w.pane : "chat",
+						pane: w.pane === "packages" || w.pane === "settings" ? w.pane : "chat",
 						activeProjectId: normalizeStoredId(w.activeProjectId),
 						activeProjectPath: normalizeStoredPath(w.activeProjectPath),
 						filePath: typeof w.filePath === "string" ? w.filePath : null,
-						terminalOpen: Boolean(w.terminalOpen),
+						terminalOpen: Boolean(w.terminalOpen || w.pane === "terminal"),
 						sessionTitle: fallbackSessionTitle,
 						sessionTabs,
 						activeSessionTabId:
@@ -1529,10 +2239,31 @@ function syncWorkspaceTabsBar(): void {
 	sidebar?.setWorkspaces(workspaceItems, activeWorkspaceId);
 }
 
+function syncSidebarSettingsNavigation(): void {
+	if (!sidebar) return;
+	if (!settingsPanel) {
+		sidebar.setSettingsNavigation([], null);
+		return;
+	}
+	const navigation = settingsPanel.getNavigationState();
+	sidebar.setSettingsNavigation(
+		navigation.items.map((item) => ({
+			id: item.id,
+			label: item.label,
+			description: item.description,
+			disabled: item.disabled,
+		})),
+		navigation.activeSection,
+	);
+}
+
 function syncWorkspaceContextChrome(workspace: WorkspaceState | null = getActiveWorkspace()): void {
 	const packagesOpen = workspace?.pane === "packages";
+	const settingsOpen = workspace?.pane === "settings";
 	workspaceTabsBar?.setPackagesToolbarVisible(packagesOpen);
 	sidebar?.setPackagesOpen(packagesOpen);
+	sidebar?.setSettingsShellActive(Boolean(settingsOpen));
+	if (settingsOpen) syncSidebarSettingsNavigation();
 }
 
 function syncCliUpdateUiHint(): void {
@@ -1600,7 +2331,10 @@ function ensureDebugOverlayPolling(): void {
 }
 
 function syncSidebarSelectionFromWorkspace(workspace: WorkspaceState | null = getActiveWorkspace()): void {
-	if (!sidebar) return;
+	if (!sidebar) {
+		chatView?.setWelcomeProjects([], workspace?.activeProjectId ?? null);
+		return;
+	}
 	if (!workspace) {
 		sidebar.clearActiveProject();
 		sidebar.setActiveSessionPath(null);
@@ -1608,6 +2342,7 @@ function syncSidebarSelectionFromWorkspace(workspace: WorkspaceState | null = ge
 		sidebar.setSuppressedSessionPaths([]);
 		sidebar.setAttentionSessions([]);
 		sidebar.setTransientSessionDraft(null);
+		chatView?.setWelcomeProjects(sidebar.listProjects(), null);
 		return;
 	}
 
@@ -1623,6 +2358,7 @@ function syncSidebarSelectionFromWorkspace(workspace: WorkspaceState | null = ge
 	} else {
 		sidebar.clearActiveProject();
 	}
+	chatView?.setWelcomeProjects(sidebar.listProjects(), getWorkspaceActiveProjectId(workspace));
 
 	const suppressedDraftSessionPaths = workspace.sessionTabs
 		.filter((tab) => isEphemeralSessionTab(tab) && Boolean(tab.sessionPath))
@@ -1633,14 +2369,13 @@ function syncSidebarSelectionFromWorkspace(workspace: WorkspaceState | null = ge
 		.map((tab) => ({ path: tab.sessionPath as string, message: tab.attentionMessage }));
 	sidebar.setAttentionSessions(attentionEntries);
 
-	if (workspace.pane === "file") {
+	sidebar.setActiveFilePath(getActiveFileTab(workspace)?.path ?? null);
+	if (workspace.pane !== "chat") {
 		sidebar.setActiveSessionPath(null);
-		sidebar.setActiveFilePath(getActiveFileTab(workspace)?.path ?? null);
 		sidebar.setTransientSessionDraft(null);
 		return;
 	}
 
-	sidebar.setActiveFilePath(null);
 	const activeSession = getActiveSessionTab(workspace) ?? null;
 	sidebar.setActiveSessionPath(activeSession?.sessionPath ?? null);
 	if (activeSession && isEphemeralSessionTab(activeSession)) {
@@ -1686,6 +2421,20 @@ function syncActiveChatRuntimeBinding(
 	}
 }
 
+function listVisibleSessionTabsForContentBar(workspace: WorkspaceState): WorkspaceSessionTab[] {
+	ensureWorkspaceContentState(workspace);
+	return workspace.sessionTabs.filter((tab) => {
+		if (!isEphemeralSessionTab(tab)) return true;
+		if (workspace.pane !== "chat") return false;
+		return tab.id === workspace.activeSessionTabId;
+	});
+}
+
+function getVisibleContentTabCount(workspace: WorkspaceState): number {
+	const visibleSessionTabs = listVisibleSessionTabsForContentBar(workspace);
+	return visibleSessionTabs.length;
+}
+
 function syncContentTabsBar(workspace: WorkspaceState | null = getActiveWorkspace()): void {
 	if (workspace) {
 		ensureWorkspaceContentState(workspace);
@@ -1704,65 +2453,75 @@ function syncContentTabsBar(workspace: WorkspaceState | null = getActiveWorkspac
 
 	ensureWorkspaceContentState(workspace);
 
-	const visibleSessionTabs = workspace.sessionTabs.filter((tab) => !isEphemeralSessionTab(tab) || tab.id === workspace.activeSessionTabId);
-	const tabs = [
-		...visibleSessionTabs.map((tab) => ({
-			id: tab.id,
-			type: "session" as const,
-			title: tab.title || NEW_SESSION_TAB_TITLE,
-			needsAttention: Boolean(tab.needsAttention),
-			attentionLabel: tab.attentionMessage ?? undefined,
-			closable: visibleSessionTabs.length > 1 || Boolean(tab.sessionPath),
-		})),
-		...workspace.fileTabs.map((tab) => ({
-			id: tab.id,
-			type: "file" as const,
-			title: tab.title || (tab.path ? baseName(tab.path) : NEW_FILE_TAB_TITLE),
-			path: tab.path ?? undefined,
-			closable: true,
-		})),
-		...(workspace.terminalOpen
-			? [
-				{
-					id: "terminal",
-					type: "terminal" as const,
-					title: "Terminal",
-					closable: true,
-				},
-			]
-			: []),
-	];
+	const visibleSessionTabs = listVisibleSessionTabsForContentBar(workspace);
+	const tabs = visibleSessionTabs.map((tab) => ({
+		id: tab.id,
+		type: "session" as const,
+		title: tab.title || NEW_SESSION_TAB_TITLE,
+		needsAttention: Boolean(tab.needsAttention),
+		attentionLabel: tab.attentionMessage ?? undefined,
+		closable: visibleSessionTabs.length > 1 || Boolean(tab.sessionPath),
+	}));
 
-	const activeTabId =
-		workspace.pane === "file" && workspace.activeFileTabId
-			? workspace.activeFileTabId
-			: workspace.pane === "terminal" && workspace.terminalOpen
-				? "terminal"
-				: workspace.activeSessionTabId;
+	const activeTabId = workspace.activeSessionTabId;
 
-	contentTabsBar.setTerminalActive(workspace.pane === "terminal");
+	contentTabsBar.setTerminalActive(workspace.pane === "chat" && workspace.terminalOpen);
 	contentTabsBar.setTabs(tabs, activeTabId);
 }
 
-function setPaneVisibility(pane: WorkspaceState["pane"]): void {
+function setPaneVisibility(
+	pane: WorkspaceState["pane"],
+	options: { showFileSplit?: boolean } = {},
+): void {
+	const chatFileLayout = document.getElementById("chat-file-layout");
 	const sessionPane = document.getElementById("session-pane");
+	const fileSplitResizeHandle = document.getElementById("file-split-resize-handle");
 	const filePane = document.getElementById("file-pane");
 	const terminalPane = document.getElementById("terminal-pane");
 	const packagesPane = document.getElementById("packages-pane");
 	const settingsPane = document.getElementById("settings-pane");
-	if (!sessionPane || !filePane || !terminalPane || !packagesPane || !settingsPane) return;
+	if (!chatFileLayout || !sessionPane || !fileSplitResizeHandle || !filePane || !packagesPane || !settingsPane) return;
 
-	sessionPane.classList.toggle("hidden-pane", pane !== "chat");
-	filePane.classList.toggle("hidden-pane", pane !== "file");
-	terminalPane.classList.toggle("hidden-pane", pane !== "terminal");
+	const showChatLayout = pane === "chat" || pane === "file";
+	const showFileSplit = showChatLayout && Boolean(options.showFileSplit);
+	chatFileLayout.classList.toggle("hidden-pane", !showChatLayout);
+	sessionPane.classList.toggle("hidden-pane", !showChatLayout);
+	fileSplitResizeHandle.classList.toggle("hidden-pane", !showFileSplit);
+	filePane.classList.toggle("hidden-pane", !showFileSplit);
+	if (showFileSplit) applyFileSplitWidth();
 	packagesPane.classList.toggle("hidden-pane", pane !== "packages");
 	settingsPane.classList.toggle("hidden-pane", pane !== "settings");
+	if (!showChatLayout) {
+		terminalPane?.classList.add("hidden-pane");
+		terminalPane?.classList.remove("terminal-dock-visible");
+	}
+}
+
+function syncTerminalDockVisibility(workspace: WorkspaceState | null = getActiveWorkspace()): void {
+	const terminalPane = document.getElementById("terminal-pane");
+	if (!terminalPane) return;
+	terminalPane.style.setProperty("--terminal-dock-height", `${terminalDockHeightPx}px`);
+	const shouldShow = Boolean(workspace && workspace.pane === "chat" && workspace.terminalOpen);
+	terminalPane.classList.toggle("hidden-pane", !shouldShow);
+	terminalPane.classList.toggle("terminal-dock-visible", shouldShow);
+	if (shouldShow && workspace) {
+		terminalPanel?.setProjectPath(getWorkspaceActiveProjectPath(workspace));
+	}
+}
+
+function resolveSettingsRuntimeProjectPath(workspace: WorkspaceState | null): string | null {
+	if (!workspace) return null;
+	return getWorkspaceActiveProjectPath(workspace);
 }
 
 async function applyWorkspacePane(workspace: WorkspaceState | null = getActiveWorkspace()): Promise<void> {
+	const applyVersion = ++workspacePaneApplyVersion;
+	const isStale = (): boolean => applyVersion !== workspacePaneApplyVersion;
+
 	syncWorkspaceContextChrome(workspace);
 	syncSidebarSelectionFromWorkspace(workspace);
 	syncContentTabsBar(workspace);
+	if (isStale()) return;
 
 	if (!workspace) {
 		const resolved = getResolvedDesktopTheme();
@@ -1770,77 +2529,105 @@ async function applyWorkspacePane(workspace: WorkspaceState | null = getActiveWo
 		void syncDesktopThemeWithPiTheme(null).finally(() => {
 			applyDesktopAppearanceProfileToRoot(resolved, profiles);
 		});
-		settingsPanel?.close(false);
+		if (isStale()) return;
+		settingsPanel?.hideWithoutClearing();
 		syncRunningSessionIndicators();
 		setPaneVisibility("chat");
+		syncTerminalDockVisibility(null);
 		return;
 	}
 
 	ensureWorkspaceContentState(workspace);
+	if (workspace.pane === "terminal") {
+		workspace.pane = "chat";
+		workspace.terminalOpen = true;
+		persistWorkspaces();
+		syncWorkspaceTabsBar();
+	}
 	const workspaceProjectPath = getWorkspaceActiveProjectPath(workspace);
 	const resolved = getResolvedDesktopTheme();
 	const profiles = loadDesktopAppearanceProfiles();
 	void syncDesktopThemeWithPiTheme(workspaceProjectPath).finally(() => {
 		applyDesktopAppearanceProfileToRoot(resolved, profiles);
 	});
+	if (isStale()) return;
+
 	chatView?.setProjectPath(workspaceProjectPath);
 	packagesView?.setProjectPath(workspaceProjectPath);
 	terminalPanel?.setProjectPath(workspaceProjectPath);
-	if (workspace.pane !== "settings") {
-		settingsPanel?.close(false);
+	if (workspace.pane === "file") {
+		workspace.pane = "chat";
+		persistWorkspaces();
+		syncWorkspaceTabsBar();
 	}
-	if (workspace.pane !== "file") {
+	if (workspace.pane !== "settings") {
+		settingsPanel?.hideWithoutClearing();
+	}
+	syncTerminalDockVisibility(workspace);
+	if (isStale()) return;
+
+	const activeFileTab = workspace.pane === "chat" ? getActiveFileTab(workspace) : null;
+	const showFileSplit = workspace.pane === "chat" && Boolean(activeFileTab);
+	if (showFileSplit && activeFileTab) {
+		const draftBasePath = isDraftFileTab(activeFileTab) ? normalizeStoredPath(activeFileTab.draftDirectoryPath) : null;
+		fileViewer?.setProjectPath(draftBasePath ?? getFileTabProjectPath(activeFileTab) ?? workspaceProjectPath);
+		if (activeFileTab.path) {
+			await fileViewer?.openFile(activeFileTab.path);
+			if (isStale()) return;
+		} else {
+			const draftId = activeFileTab.id;
+			const draftTitle = activeFileTab.title || NEW_FILE_TAB_TITLE;
+			fileViewer?.openDraft(draftId, draftTitle);
+		}
+	} else {
 		fileViewer?.setProjectPath(workspaceProjectPath);
 	}
 
-	if (workspace.pane === "file") {
-		const activeFileTab = getActiveFileTab(workspace);
-		const draftBasePath = activeFileTab && isDraftFileTab(activeFileTab) ? normalizeStoredPath(activeFileTab.draftDirectoryPath) : null;
-		fileViewer?.setProjectPath(draftBasePath ?? getFileTabProjectPath(activeFileTab) ?? getWorkspaceActiveProjectPath(workspace));
-		setPaneVisibility("file");
-		if (activeFileTab?.path) {
-			await fileViewer?.openFile(activeFileTab.path);
-		} else {
-			const draftId = activeFileTab?.id ?? "draft";
-			const draftTitle = activeFileTab?.title || NEW_FILE_TAB_TITLE;
-			fileViewer?.openDraft(draftId, draftTitle);
-		}
-		return;
-	}
-
-	if (workspace.pane === "terminal" && workspace.terminalOpen) {
-		terminalPanel?.setProjectPath(getWorkspaceActiveProjectPath(workspace));
-		setPaneVisibility("terminal");
-		terminalPanel?.focusInput();
-		return;
-	}
-
 	if (workspace.pane === "packages") {
-		settingsPanel?.close(false);
+		syncTerminalDockVisibility({ ...workspace, terminalOpen: false, pane: "packages" });
+		settingsPanel?.hideWithoutClearing();
 		packagesView?.setProjectPath(getWorkspaceActiveProjectPath(workspace));
+		if (isStale()) return;
 		setPaneVisibility("packages");
 		await packagesView?.open();
+		if (isStale()) return;
 		workspaceTabsBar?.setPackagesSearchQuery(packagesView?.getQuery() ?? "");
 		syncDebugOverlay();
 		return;
 	}
 
 	if (workspace.pane === "settings") {
+		syncTerminalDockVisibility({ ...workspace, terminalOpen: false, pane: "settings" });
+		if (isStale()) return;
 		setPaneVisibility("settings");
-		const panel = mountSettingsPanel();
-		if (!panel.isVisible()) {
+		try {
+			const panel = mountSettingsPanel();
+			panel.setRuntimeProjectPath(resolveSettingsRuntimeProjectPath(workspace));
 			await panel.open();
-		} else {
-			panel.render();
+			if (isStale()) return;
+		} catch (err) {
+			console.error("Failed to render settings pane:", err);
+			settingsPanel = null;
+			const panel = mountSettingsPanel();
+			panel.setRuntimeProjectPath(resolveSettingsRuntimeProjectPath(workspace));
+			await panel.open();
+			if (isStale()) return;
 		}
+		scheduleSettingsPaneRecovery("apply-settings");
 		syncDebugOverlay();
 		return;
 	}
 
-	settingsPanel?.close(false);
+	if (isStale()) return;
+	settingsPanel?.hideWithoutClearing();
 	syncActiveChatRuntimeBinding(workspace);
-	setPaneVisibility("chat");
-	chatView?.focusInput();
+	setPaneVisibility("chat", { showFileSplit });
+	syncTerminalDockVisibility(workspace);
+	if (workspace.terminalOpen) {
+		terminalPanel?.focusInput();
+	} else {
+		chatView?.focusInput();
+	}
 	syncDebugOverlay();
 }
 
@@ -2053,12 +2840,14 @@ async function focusNotificationTarget(target: NotificationActionTarget, taskVer
 	const workspace = workspaces.find((entry) => entry.id === targetWorkspace.id) ?? targetWorkspace;
 	ensureWorkspaceContentState(workspace);
 
+	let resolution = target.tabId ? "tab-id" : "none";
 	let focusedTab = target.tabId ? setActiveSessionTab(workspace, target.tabId) : null;
 	if (!focusedTab && target.sessionPath) {
 		const normalizedSessionPath = normalizeSessionPath(target.sessionPath);
 		const existingTab = workspace.sessionTabs.find((tab) => normalizeSessionPath(tab.sessionPath) === normalizedSessionPath) ?? null;
 		if (existingTab) {
 			focusedTab = setActiveSessionTab(workspace, existingTab.id);
+			resolution = "session-path-existing";
 		}
 	}
 
@@ -2069,10 +2858,16 @@ async function focusNotificationTarget(target: NotificationActionTarget, taskVer
 			workspace.activeProjectId,
 			workspace.activeProjectPath,
 		);
+		resolution = "session-path-open";
+	}
+
+	if (!focusedTab) {
+		focusedTab = getActiveSessionTab(workspace);
+		resolution = "active-tab-fallback";
 	}
 
 	recordDebugTrace(
-		`notify-action:focus workspace=${workspace.id} tab=${focusedTab?.id ?? "-"} session=${focusedTab?.sessionPath ?? target.sessionPath ?? "-"}`,
+		`notify-action:focus workspace=${workspace.id} tab=${focusedTab?.id ?? "-"} session=${focusedTab?.sessionPath ?? target.sessionPath ?? "-"} via=${resolution}`,
 	);
 
 	persistWorkspaces();
@@ -2218,6 +3013,7 @@ function startDesktopUpdatePolling(): void {
 }
 
 async function initialize(): Promise<void> {
+	stopAuthConfigChangeMonitor();
 	chatView?.disconnect();
 	chatView = null;
 	if (debugOverlayInterval) {
@@ -2242,6 +3038,18 @@ async function initialize(): Promise<void> {
 	loadSidebarWidth();
 	applySidebarWidth();
 	await ensureBundledThemesInstalled();
+	const compatInstall = await ensureDesktopSdkCompatExtensionInstalled();
+	if (compatInstall.error && !compatInstall.skipped) {
+		console.warn("Failed to install desktop compatibility extension:", compatInstall.error);
+	}
+	const notifyBridgeInstall = await ensureDesktopNotifyBridgeExtensionInstalled();
+	if (notifyBridgeInstall.error && !notifyBridgeInstall.skipped) {
+		console.warn("Failed to install desktop notify bridge extension:", notifyBridgeInstall.error);
+	}
+	const smartVoiceNotifyHostMode = await ensureSmartVoiceNotifyDesktopHostMode();
+	if (smartVoiceNotifyHostMode.error && !smartVoiceNotifyHostMode.skipped) {
+		console.warn("Failed to enforce smart voice notify desktop host mode:", smartVoiceNotifyHostMode.error);
+	}
 
 	try {
 		connectionError = null;
@@ -2321,20 +3129,23 @@ async function initialize(): Promise<void> {
 				scheduleSidebarSessionsRefresh();
 			}
 		});
-		chatView.setOnOpenTerminal(() => {
-			const workspace = getActiveWorkspace();
-			if (!workspace) return;
-			workspace.terminalOpen = true;
-			workspace.pane = "terminal";
-			persistWorkspaces();
-			syncWorkspaceTabsBar();
-			void applyWorkspacePane(workspace);
+		chatView.setOnOpenTerminal(async (commandText) => {
+			const command = (commandText ?? "").trim();
+			if (command) {
+				toggleTerminalDock(true);
+				requestAnimationFrame(() => {
+					void terminalPanel?.runCommand(command);
+				});
+				return;
+			}
+			toggleTerminalDock();
+			terminalPanel?.focusInput();
 		});
 		chatView.setOnAddProject(() => {
 			void sidebar?.openFolder();
 		});
-		chatView.setOnOpenSettings(() => {
-			requestOpenSettingsPanel();
+		chatView.setOnOpenSettings((sectionId) => {
+			requestOpenSettingsPanel(sectionId);
 		});
 		chatView.setOnOpenPackages(() => {
 			const workspace = getActiveWorkspace();
@@ -2344,7 +3155,99 @@ async function initialize(): Promise<void> {
 			syncWorkspaceTabsBar();
 			void applyWorkspacePane(workspace);
 		});
+		chatView.setOnOpenExtensionConfig(async (commandName, args) => {
+			const normalizedName = normalizeExtensionCommandName(commandName);
+			if (!isExtensionConfigIntent(normalizedName, args)) return false;
+			openPackagesPane();
+			if (!packagesView) return false;
+			await packagesView.refreshPackages(false);
+			return await packagesView.openExtensionConfigByCommand(normalizedName, args);
+		});
+		chatView.setOnOpenProviderConfig(async (provider) => {
+			const normalizedProvider = provider.trim().toLowerCase().replace(/^\/+/, "");
+			if (!normalizedProvider) return false;
+			openPackagesPane();
+			if (!packagesView) return false;
+			await packagesView.refreshPackages(false);
+			return await packagesView.openExtensionConfigByProvider(normalizedProvider);
+		});
+		chatView.setOnBeginRenameCurrentSession(() => {
+			const workspace = getActiveWorkspace();
+			if (!workspace) return false;
+			const activeSession = getActiveSessionTab(workspace);
+			const projectId = getSessionTabProjectId(activeSession) ?? getWorkspaceActiveProjectId(workspace);
+			const sessionPath = normalizeSessionPath(chatView?.getState()?.sessionFile ?? activeSession.sessionPath ?? "");
+			if (!projectId || !sessionPath) return false;
+			return sidebar?.beginSessionRename(projectId, sessionPath) ?? false;
+		});
+		chatView.setOnRenameCurrentSession(async (nextName) => {
+			const workspace = getActiveWorkspace();
+			if (!workspace) return false;
+			const activeSession = getActiveSessionTab(workspace);
+			const projectId = getSessionTabProjectId(activeSession) ?? getWorkspaceActiveProjectId(workspace);
+			const sessionPath = normalizeSessionPath(chatView?.getState()?.sessionFile ?? activeSession.sessionPath ?? "");
+			if (projectId && sessionPath) {
+				return await renameSessionFromWorkspace(projectId, sessionPath, nextName);
+			}
+			try {
+				await rpcBridge.setSessionName(nextName);
+				activeSession.title = nextName;
+				if (workspace.activeSessionTabId === activeSession.id) {
+					workspace.sessionTitle = nextName;
+				}
+				persistWorkspaces();
+				syncContentTabsBar(workspace);
+				await chatView?.refreshFromBackend({ throwOnError: true });
+				return true;
+			} catch (err) {
+				console.error("Failed to rename current session:", err);
+				chatView?.notify("Failed to rename session", "error");
+				return false;
+			}
+		});
+		chatView.setOnCreateFreshSession(async () => {
+			const workspace = getActiveWorkspace();
+			if (!workspace) return false;
+			if (!getWorkspaceActiveProjectPath(workspace)) {
+				chatView?.notify("Add/select a project before creating a new session", "info");
+				return false;
+			}
+			await startFreshSessionTab();
+			return true;
+		});
+		chatView.setOnReloadRuntime(async () => {
+			const workspace = getActiveWorkspace();
+			if (!workspace || !getWorkspaceActiveProjectPath(workspace)) {
+				chatView?.notify("Add/select a project before reloading runtime", "info");
+				return false;
+			}
+			return await reloadActiveWorkspaceRuntime();
+		});
+		chatView.setOnOpenSessionBrowser((query) => {
+			void sessionBrowser?.open({ query });
+		});
+		chatView.setOnOpenShortcuts(() => {
+			shortcutsPanel?.open();
+		});
+		chatView.setOnQuitApp(() => {
+			void (async () => {
+				try {
+					const { getCurrentWindow } = await import("@tauri-apps/api/window");
+					await getCurrentWindow().close();
+				} catch {
+					window.close();
+				}
+			})();
+		});
+		chatView.setOnSelectWelcomeProject((projectId) => {
+			sidebar?.setActiveProject(projectId, true);
+		});
 		chatView.setOnPromptSubmitted(() => {
+			const runtime = getActiveRuntime();
+			if (runtime) {
+				markRuntimeRunStarted(runtime.key);
+				setRuntimeRunning(runtime, true);
+			}
 			startSidebarSessionsWarmRefresh();
 		});
 		chatView.setOnRunStateChange((running) => {
@@ -2361,6 +3264,7 @@ async function initialize(): Promise<void> {
 			} else {
 				stopSidebarSessionsWarmRefresh();
 				scheduleSidebarSessionsRefresh(0);
+				flushPendingAuthConfigReload();
 			}
 		});
 		chatView.render();
@@ -2369,6 +3273,10 @@ async function initialize(): Promise<void> {
 
 		extensionUiHandler?.setEditorTextHandler((text) => chatView?.setInputText(text));
 		wireCommandPaletteBuiltins();
+		commandPalette?.setOnRunSlashCommand(async (commandText) => {
+			if (!chatView) return false;
+			return await chatView.runSlashCommandText(commandText);
+		});
 
 		const startupWorkspace = getActiveWorkspace();
 		if (startupWorkspace) {
@@ -2395,6 +3303,7 @@ async function initialize(): Promise<void> {
 		await refreshDesktopUpdateStatus();
 		startCliUpdatePolling();
 		startDesktopUpdatePolling();
+		void startAuthConfigChangeMonitor();
 	} catch (err) {
 		connectionError = err instanceof Error ? err.message : String(err);
 		recordDebugTrace(`initialize-fatal: ${connectionError}`);
@@ -2403,10 +3312,14 @@ async function initialize(): Promise<void> {
 }
 
 function mountSettingsPanel(): SettingsPanel {
-	if (settingsPanel) return settingsPanel;
 	const settingsContainer = document.getElementById("settings-pane");
 	if (!settingsContainer) {
 		throw new Error("Settings pane container not found");
+	}
+	if (settingsPanel) {
+		settingsPanel.setContainer(settingsContainer);
+		syncSidebarSettingsNavigation();
+		return settingsPanel;
 	}
 	const panel = new SettingsPanel(settingsContainer);
 	panel.setOnDesktopStatusChange((status) => {
@@ -2425,7 +3338,14 @@ function mountSettingsPanel(): SettingsPanel {
 		syncWorkspaceTabsBar();
 		void applyWorkspacePane(workspace);
 	});
+	panel.setOnRequestAddProject(() => {
+		void sidebar?.openFolder();
+	});
+	panel.setOnNavigationStateChange(() => {
+		syncSidebarSettingsNavigation();
+	});
 	settingsPanel = panel;
+	syncSidebarSettingsNavigation();
 	return panel;
 }
 
@@ -2481,6 +3401,20 @@ function initializeComponents(): void {
 		if (type === "agent_start" || type === "agent_end" || type === "error" || type === "extension_ui_request") {
 			recordDebugTrace(`rpc:event type=${type}`);
 		}
+
+		const runtime = getActiveRuntime();
+		if (runtime) {
+			if (type === "agent_start") {
+				markRuntimeRunStarted(runtime.key);
+			} else if (type === "error") {
+				markRuntimeRunErrored(runtime.key);
+			} else if (type === "agent_end") {
+				setTimeout(() => {
+					dispatchSyntheticRunEndNotify(runtime, "active");
+				}, 0);
+			}
+		}
+
 		if (type === "extension_ui_request") {
 			const method = typeof event.method === "string" ? event.method : "unknown";
 			const message = typeof event.message === "string" ? event.message : "";
@@ -2488,25 +3422,33 @@ function initializeComponents(): void {
 
 			const request = { ...(event as Record<string, unknown>) } as Record<string, unknown>;
 			if (method === "notify") {
-				const runtime = getActiveRuntime();
-				const workspace = runtime ? workspaces.find((entry) => entry.id === runtime.workspaceId) ?? null : getActiveWorkspace();
-				const activeTab = workspace ? getActiveSessionTab(workspace) : null;
-				const targetWorkspaceId = runtime?.workspaceId ?? workspace?.id ?? undefined;
-				const targetTabId = runtime?.tabId ?? activeTab?.id ?? undefined;
-				const targetSessionPath = runtime?.lastKnownSessionPath ?? activeTab?.sessionPath ?? undefined;
-
-				if (targetWorkspaceId || targetTabId || targetSessionPath) {
-					request.notifyTargetWorkspaceId = targetWorkspaceId;
-					request.notifyTargetTabId = targetTabId;
-					request.notifyTargetSessionPath = targetSessionPath;
-					recordDebugTrace(
-						`notify-target workspace=${targetWorkspaceId ?? "-"} tab=${targetTabId ?? "-"} session=${targetSessionPath ?? "-"}`,
-					);
-					markSessionAttentionTarget({
-						workspaceId: targetWorkspaceId,
-						tabId: targetTabId,
-						sessionPath: targetSessionPath,
-					});
+				if (runtime) {
+					markRuntimeRunNotifyObserved(runtime.key);
+					const target = resolveRuntimeNotifyTarget(runtime);
+					attachNotifyTargetToRequest(request, target, "active", runtime);
+				} else {
+					const workspace = getActiveWorkspace();
+					const activeTab = workspace ? getActiveSessionTab(workspace) : null;
+					const targetWorkspaceId = workspace?.id ?? undefined;
+					const targetTabId = activeTab?.id ?? undefined;
+					const targetSessionPath = activeTab?.sessionPath ?? undefined;
+					const targetWorkspaceLabel = workspace?.title?.trim() || undefined;
+					const targetSessionLabel = activeTab?.title?.trim() || (targetSessionPath ? baseName(targetSessionPath) : undefined);
+					if (targetWorkspaceId || targetTabId || targetSessionPath) {
+						request.notifyTargetWorkspaceId = targetWorkspaceId;
+						request.notifyTargetTabId = targetTabId;
+						request.notifyTargetSessionPath = targetSessionPath;
+						request.notifyTargetWorkspaceLabel = targetWorkspaceLabel;
+						request.notifyTargetSessionLabel = targetSessionLabel;
+						recordDebugTrace(
+							`notify-target workspace=${targetWorkspaceId ?? "-"} tab=${targetTabId ?? "-"} session=${targetSessionPath ?? "-"} source=active runtime=-`,
+						);
+						markSessionAttentionTarget({
+							workspaceId: targetWorkspaceId,
+							tabId: targetTabId,
+							sessionPath: targetSessionPath,
+						});
+					}
 				}
 			}
 
@@ -2544,7 +3486,18 @@ function openPackagesPane(): void {
 	void applyWorkspacePane(workspace);
 }
 
-async function startFreshSessionTab(): Promise<void> {
+function toggleTerminalDock(forceOpen?: boolean): void {
+	const workspace = getActiveWorkspace();
+	if (!workspace) return;
+	const shouldOpen = typeof forceOpen === "boolean" ? forceOpen : workspace.pane !== "chat" ? true : !workspace.terminalOpen;
+	workspace.terminalOpen = shouldOpen;
+	workspace.pane = "chat";
+	persistWorkspaces();
+	syncWorkspaceTabsBar();
+	void applyWorkspacePane(workspace);
+}
+
+async function startFreshSessionTab(options: { forceNewTab?: boolean; title?: string } = {}): Promise<void> {
 	const workspace = getActiveWorkspace();
 	if (!workspace) return;
 	ensureWorkspaceContentState(workspace);
@@ -2552,7 +3505,15 @@ async function startFreshSessionTab(): Promise<void> {
 	if (!projectPath) return;
 
 	pruneInactiveEphemeralSessionTabs(workspace);
-	createAndActivateEmptySessionTab(workspace, NEW_SESSION_TAB_TITLE, getWorkspaceActiveProjectId(workspace), projectPath);
+	createAndActivateEmptySessionTab(
+		workspace,
+		options.title?.trim() || NEW_SESSION_TAB_TITLE,
+		getWorkspaceActiveProjectId(workspace),
+		projectPath,
+		{
+			forceNewTab: options.forceNewTab ?? false,
+		},
+	);
 	persistWorkspaces();
 	syncWorkspaceTabsBar();
 	syncContentTabsBar(workspace);
@@ -2571,7 +3532,7 @@ async function startFreshSessionTab(): Promise<void> {
 			console.error("Failed to create session tab:", err);
 			chatView?.notify("Failed to create new session", "error");
 		},
-		{ label: "fresh-session-tab" },
+		{ label: options.forceNewTab ? "fresh-session-tab-explicit" : "fresh-session-tab" },
 	);
 }
 
@@ -2598,6 +3559,11 @@ function wireCommandPaletteBuiltins(): void {
 			action: async () => openPackagesPane(),
 		},
 		{
+			name: "terminal",
+			description: "Toggle docked terminal",
+			action: async () => toggleTerminalDock(),
+		},
+		{
 			name: "fork",
 			description: "Fork from previous message",
 			action: async () => chatView?.openHistoryViewerForFork({ loading: false, sessionName: null }),
@@ -2610,19 +3576,87 @@ function wireCommandPaletteBuiltins(): void {
 		{
 			name: "compact",
 			description: "Compact current session context",
-			action: async () => chatView?.compactNow(),
+			action: async () => {
+				await chatView?.compactNow();
+			},
 		},
 	]);
 }
 
-function requestOpenSettingsPanel(): void {
+function scheduleSettingsPaneRecovery(reason: string, delayMs = 80): void {
+	if (settingsPaneRecoveryTimer) {
+		clearTimeout(settingsPaneRecoveryTimer);
+	}
+	settingsPaneRecoveryTimer = setTimeout(() => {
+		settingsPaneRecoveryTimer = null;
+		void recoverSettingsPaneIfBlank(reason);
+	}, delayMs);
+}
+
+async function recoverSettingsPaneIfBlank(reason: string): Promise<void> {
+	const workspace = getActiveWorkspace();
+	if (!workspace || workspace.pane !== "settings") return;
+	const settingsContainer = document.getElementById("settings-pane");
+	if (!settingsContainer) return;
+	if (settingsContainer.childElementCount > 0 && settingsPanel?.isVisible()) return;
+	recordDebugTrace(`settings-recover reason=${reason}`);
+	try {
+		settingsPanel = null;
+		const panel = mountSettingsPanel();
+		panel.setRuntimeProjectPath(resolveSettingsRuntimeProjectPath(workspace));
+		await panel.open();
+	} catch (err) {
+		console.error("Settings pane blank recovery failed:", err);
+	}
+}
+
+function normalizeSettingsSectionId(sectionId: string | null | undefined): SettingsSectionId | null {
+	switch ((sectionId || "").trim().toLowerCase()) {
+		case "general":
+			return "general";
+		case "appearance":
+			return "appearance";
+		case "account":
+			return "account";
+		case "updates":
+			return "updates";
+		default:
+			return null;
+	}
+}
+
+function requestOpenSettingsPanel(sectionId?: string): void {
 	const workspace = getActiveWorkspace();
 	if (!workspace) return;
-	mountSettingsPanel();
+	const targetSection = normalizeSettingsSectionId(sectionId);
 	workspace.pane = "settings";
 	persistWorkspaces();
 	syncWorkspaceTabsBar();
-	void applyWorkspacePane(workspace);
+	setPaneVisibility("settings");
+	try {
+		const panel = mountSettingsPanel();
+		panel.setRuntimeProjectPath(resolveSettingsRuntimeProjectPath(workspace));
+		if (targetSection) panel.setActiveSection(targetSection);
+	} catch (mountErr) {
+		console.error("Failed to prepare settings panel before open:", mountErr);
+	}
+	void applyWorkspacePane(workspace)
+		.catch((err) => {
+			console.error("Failed to open settings pane:", err);
+			try {
+				settingsPanel = null;
+				setPaneVisibility("settings");
+				const panel = mountSettingsPanel();
+				panel.setRuntimeProjectPath(resolveSettingsRuntimeProjectPath(workspace));
+				if (targetSection) panel.setActiveSection(targetSection);
+				void panel.open();
+			} catch (innerErr) {
+				console.error("Settings pane recovery failed:", innerErr);
+			}
+		})
+		.finally(() => {
+			scheduleSettingsPaneRecovery("request-open");
+		});
 }
 
 function openSettings(): void {
@@ -2724,6 +3758,15 @@ function setupKeyboardShortcuts(): void {
 			return;
 		}
 
+		const terminalHotkey =
+			(isCtrlOrMeta && (e.code === "Backquote" || e.key === "`" || e.key === "Dead" || e.key === "´")) ||
+			(e.metaKey && e.altKey && e.key.toLowerCase() === "t");
+		if (terminalHotkey) {
+			e.preventDefault();
+			toggleTerminalDock();
+			return;
+		}
+
 		if (isCtrlOrMeta && isShift && e.key.toLowerCase() === "t") {
 			e.preventDefault();
 			toggleThemeQuickly();
@@ -2799,6 +3842,7 @@ function renderApp(): void {
 		removeSidebarResizeHandlers?.();
 		removeSidebarResizeHandlers = null;
 		const cliMissing = isCliMissingError(connectionError);
+		const windowsHost = isLikelyWindowsHost();
 		render(
 			html`
 				<div class="error-shell">
@@ -2811,14 +3855,32 @@ function renderApp(): void {
 									<div class="onboarding-command-label">Run this in Terminal</div>
 									<code>${CLI_INSTALL_COMMAND}</code>
 								</div>
+								${windowsHost
+									? html`
+										<div class="onboarding-command-block">
+											<div class="onboarding-command-label">If npm is missing, install Node.js first</div>
+											<code>${WINDOWS_NODE_INSTALL_COMMAND}</code>
+										</div>
+									`
+									: nothing}
 								<div class="onboarding-actions">
 									<button class="ghost-btn" @click=${() => void copyCliInstallCommand()}>Copy install command</button>
+									${windowsHost
+										? html`<button class="ghost-btn" @click=${() => void copyWindowsNodeInstallCommand()}>Copy Node.js command</button>`
+										: nothing}
 									<button @click=${() => {
 										connectionError = null;
 										void initialize();
 									}}>I installed it · Retry</button>
 								</div>
 								<p class="onboarding-footnote">Need npm first? Install Node.js, then run the command above.</p>
+								${windowsHost
+									? html`
+										<p class="onboarding-footnote">
+											Using WSL? Pi Desktop v1 starts a Windows-native agent. Install <code>pi</code> in Windows too (not only inside WSL).
+										</p>
+									`
+									: nothing}
 							`
 							: html`
 								<p>${connectionError}</p>
@@ -2858,9 +3920,14 @@ function renderApp(): void {
 							</svg>
 						</button>
 						<div id="content-tabs-container" data-tauri-drag-region></div>
-						<div id="session-pane"><div id="chat-container"></div></div>
-						<div id="file-pane" class="hidden-pane"></div>
-						<div id="terminal-pane" class="hidden-pane"></div>
+						<div id="chat-file-layout">
+							<div id="session-pane">
+								<div id="chat-container"></div>
+								<div id="terminal-pane" class="hidden-pane"></div>
+							</div>
+							<div id="file-split-resize-handle" class="hidden-pane" title="Resize file panel"></div>
+							<div id="file-pane" class="hidden-pane"></div>
+						</div>
 						<div id="packages-pane" class="hidden-pane"></div>
 						<div id="settings-pane" class="hidden-pane"></div>
 					</div>
@@ -2869,8 +3936,22 @@ function renderApp(): void {
 		`,
 		app,
 	);
+	const settingsPaneContainer = document.getElementById("settings-pane");
+	if (settingsPanel && settingsPaneContainer) {
+		settingsPanel.setContainer(settingsPaneContainer);
+		if (settingsPanel.isVisible() && !settingsPanel.hasRenderedContent()) {
+			settingsPanel.render();
+		}
+	}
+	const activeWorkspace = getActiveWorkspace();
+	if (activeWorkspace?.pane === "settings" && settingsPaneContainer && settingsPaneContainer.childElementCount === 0) {
+		scheduleSettingsPaneRecovery("render-app");
+	}
+
 	applySidebarWidth();
 	setupSidebarResize();
+	applyFileSplitWidth();
+	setupFileSplitResize();
 	syncSidebarCollapseToggleButton();
 
 	const contentTabsContainer = document.getElementById("content-tabs-container");
@@ -2883,7 +3964,7 @@ function renderApp(): void {
 
 			if (tabId === "terminal") {
 				workspace.terminalOpen = true;
-				workspace.pane = "terminal";
+				workspace.pane = "chat";
 				pruneEphemeralTabsWhenLeavingDraft(workspace);
 				persistWorkspaces();
 				syncWorkspaceTabsBar();
@@ -2891,18 +3972,6 @@ function renderApp(): void {
 				return;
 			}
 
-			const fileTab = workspace.fileTabs.find((tab) => tab.id === tabId);
-			if (fileTab) {
-				workspace.activeFileTabId = fileTab.id;
-				workspace.filePath = fileTab.path;
-				setWorkspaceActiveProject(workspace, { id: fileTab.projectId, path: fileTab.projectPath });
-				workspace.pane = "file";
-				pruneEphemeralTabsWhenLeavingDraft(workspace);
-				persistWorkspaces();
-				syncWorkspaceTabsBar();
-				void applyWorkspacePane(workspace);
-				return;
-			}
 
 			const candidateSessionTab = workspace.sessionTabs.find((tab) => tab.id === tabId) ?? null;
 			if (!candidateSessionTab) return;
@@ -2936,13 +4005,10 @@ function renderApp(): void {
 			);
 		});
 		contentTabsBar.setOnOpenTerminal(() => {
-			const workspace = getActiveWorkspace();
-			if (!workspace) return;
-			workspace.terminalOpen = true;
-			workspace.pane = "terminal";
-			persistWorkspaces();
-			syncWorkspaceTabsBar();
-			void applyWorkspacePane(workspace);
+			toggleTerminalDock();
+		});
+		contentTabsBar.setOnCreateTab(() => {
+			void startFreshSessionTab({ forceNewTab: true, title: NEW_GENERIC_TAB_TITLE });
 		});
 		contentTabsBar.setOnRename((tabId, nextTitle) => {
 			const workspace = getActiveWorkspace();
@@ -2950,18 +4016,6 @@ function renderApp(): void {
 			ensureWorkspaceContentState(workspace);
 			const title = nextTitle.trim();
 			if (!title) return;
-
-			const fileTab = workspace.fileTabs.find((tab) => tab.id === tabId);
-			if (fileTab) {
-				fileTab.title = title;
-				persistWorkspaces();
-				syncWorkspaceTabsBar();
-				syncContentTabsBar(workspace);
-				if (workspace.activeFileTabId === fileTab.id && workspace.pane === "file") {
-					void applyWorkspacePane(workspace);
-				}
-				return;
-			}
 
 			const sessionTab = workspace.sessionTabs.find((tab) => tab.id === tabId);
 			if (sessionTab) {
@@ -2982,29 +4036,13 @@ function renderApp(): void {
 
 			if (tabId === "terminal") {
 				workspace.terminalOpen = false;
-				if (workspace.pane === "terminal") workspace.pane = "chat";
+				workspace.pane = "chat";
 				persistWorkspaces();
 				syncWorkspaceTabsBar();
 				void applyWorkspacePane(workspace);
 				return;
 			}
 
-			const fileIndex = workspace.fileTabs.findIndex((tab) => tab.id === tabId);
-			if (fileIndex !== -1) {
-				const wasActive = workspace.activeFileTabId === tabId;
-				workspace.fileTabs.splice(fileIndex, 1);
-				if (wasActive) {
-					const nextFile = workspace.fileTabs[fileIndex] ?? workspace.fileTabs[fileIndex - 1] ?? null;
-					workspace.activeFileTabId = nextFile?.id ?? null;
-					workspace.filePath = nextFile?.path ?? null;
-					workspace.pane = nextFile ? "file" : "chat";
-				}
-				ensureWorkspaceContentState(workspace);
-				persistWorkspaces();
-				syncWorkspaceTabsBar();
-				void applyWorkspacePane(workspace);
-				return;
-			}
 
 			const sessionIndex = workspace.sessionTabs.findIndex((tab) => tab.id === tabId);
 			if (sessionIndex === -1) return;
@@ -3080,6 +4118,18 @@ function renderApp(): void {
 	if (filePane) {
 		fileViewer = new FileViewer(filePane);
 		fileViewer.setProjectPath(null);
+		fileViewer.setOnClose(() => {
+			const workspace = getActiveWorkspace();
+			if (!workspace) return;
+			ensureWorkspaceContentState(workspace);
+			workspace.fileTabs = [];
+			workspace.activeFileTabId = null;
+			workspace.filePath = null;
+			persistWorkspaces();
+			syncWorkspaceTabsBar();
+			syncSidebarSelectionFromWorkspace(workspace);
+			void applyWorkspacePane(workspace);
+		});
 		fileViewer.setOnDraftFileCreated((filePath) => {
 			const workspace = getActiveWorkspace();
 			if (!workspace) return;
@@ -3101,7 +4151,7 @@ function renderApp(): void {
 			}
 
 			workspace.filePath = filePath;
-			workspace.pane = "file";
+			workspace.pane = "chat";
 			ensureWorkspaceContentState(workspace);
 			persistWorkspaces();
 			syncWorkspaceTabsBar();
@@ -3114,8 +4164,29 @@ function renderApp(): void {
 
 	const terminalPane = document.getElementById("terminal-pane");
 	if (terminalPane) {
+		setupTerminalDockResize(terminalPane);
 		terminalPanel = new TerminalPanel(terminalPane);
 		terminalPanel.setProjectPath(null);
+		terminalPanel.setOnCommandComplete(({ command, result }) => {
+			const normalized = command.trim().toLowerCase();
+			if (!/^pi(?:\s|$)/.test(normalized)) return;
+			if (result && typeof result.code === "number" && result.code !== 0) return;
+			scheduleTerminalCommandRefresh();
+			if (/\b(?:login|logout)\b/.test(normalized)) {
+				setTimeout(() => {
+					void probeAuthConfigChanges("terminal-auth-command");
+				}, 120);
+			}
+		});
+		terminalPanel.setOnRequestClose(() => {
+			const workspace = getActiveWorkspace();
+			if (!workspace) return;
+			workspace.terminalOpen = false;
+			workspace.pane = "chat";
+			persistWorkspaces();
+			syncWorkspaceTabsBar();
+			void applyWorkspacePane(workspace);
+		});
 	}
 
 	const packagesPane = document.getElementById("packages-pane");
@@ -3145,6 +4216,7 @@ function renderApp(): void {
 	const sidebarContainer = document.getElementById("sidebar-container");
 	if (!sidebarContainer) return;
 	sidebar = new Sidebar(sidebarContainer);
+	packagesView?.setProjectOptionsProvider(() => sidebar?.listProjects() ?? []);
 	sidebar.setOnCollapsedChange(() => {
 		applyWorkspaceTopbarOffset();
 		syncSidebarCollapseToggleButton();
@@ -3237,6 +4309,12 @@ function renderApp(): void {
 		syncWorkspaceTabsBar();
 	});
 
+	sidebar.setOnSettingsNavSelect((sectionId) => {
+		if (!settingsPanel) return;
+		settingsPanel.setActiveSection(sectionId as SettingsSectionId);
+		syncSidebarSettingsNavigation();
+	});
+
 	sidebar.setOnProjectSelect((project) => {
 		const workspace = getActiveWorkspace();
 		if (!workspace) return;
@@ -3256,9 +4334,9 @@ function renderApp(): void {
 			return;
 		}
 
-		const oldRuntimeKeys = listRuntimeKeysForWorkspace(workspace.id);
-		const discardedSessionTabs = [...workspace.sessionTabs];
 		if (!project) {
+			const oldRuntimeKeys = listRuntimeKeysForWorkspace(workspace.id);
+			const discardedSessionTabs = [...workspace.sessionTabs];
 			scheduleDiscardEphemeralSessionTabs(discardedSessionTabs);
 			setWorkspaceActiveProject(workspace, null);
 			setActiveRuntime(null);
@@ -3286,12 +4364,14 @@ function renderApp(): void {
 		}
 
 		const preferredSession = sidebar?.getPreferredSessionForProject(project.id) ?? null;
+		const autoTabCountBefore = getVisibleContentTabCount(workspace);
+		const canAutoCreateTab = autoTabCountBefore < DEFAULT_AUTO_CONTENT_TAB_LIMIT;
 		setWorkspaceActiveProject(workspace, project);
-		scheduleDiscardEphemeralSessionTabs(discardedSessionTabs);
 
 		if (preferredSession) {
-			resetWorkspaceContentTabs(workspace, project);
-			const sessionTab = openOrActivateSessionTab(workspace, preferredSession.path, project.id, project.path, preferredSession.name);
+			const sessionTab = openOrActivateSessionTab(workspace, preferredSession.path, project.id, project.path, preferredSession.name, {
+				allowCreateTab: canAutoCreateTab,
+			});
 			pruneInactiveEphemeralSessionTabs(workspace, [sessionTab.id]);
 			persistWorkspaces();
 			syncWorkspaceTabsBar();
@@ -3307,7 +4387,6 @@ function renderApp(): void {
 					assertProjectTaskCurrent(version);
 					await chatView?.refreshModels();
 					assertProjectTaskCurrent(version);
-					removeRuntimeKeys(oldRuntimeKeys.filter((key) => key !== activeSessionRuntimeKey));
 					await applyWorkspacePane(workspace);
 				},
 				(err) => {
@@ -3319,7 +4398,9 @@ function renderApp(): void {
 			return;
 		}
 
-		resetWorkspaceContentTabs(workspace, project);
+		createAndActivateEmptySessionTab(workspace, NEW_SESSION_TAB_TITLE, project.id, project.path, {
+			forceNewTab: canAutoCreateTab,
+		});
 		persistWorkspaces();
 		syncWorkspaceTabsBar();
 		syncContentTabsBar(workspace);
@@ -3334,7 +4415,6 @@ function renderApp(): void {
 				assertProjectTaskCurrent(version);
 				await chatView?.refreshModels();
 				assertProjectTaskCurrent(version);
-				removeRuntimeKeys(oldRuntimeKeys.filter((key) => key !== activeSessionRuntimeKey));
 				await applyWorkspacePane(workspace);
 			},
 			(err) => {
@@ -3348,18 +4428,10 @@ function renderApp(): void {
 	sidebar.setOnNewSessionInProject((project) => {
 		const workspace = getActiveWorkspace();
 		if (!workspace) return;
-		const sameProject = normalizeProjectPath(getWorkspaceActiveProjectPath(workspace)) === normalizeProjectPath(project.path);
-		const oldRuntimeKeys = sameProject ? [] : listRuntimeKeysForWorkspace(workspace.id);
-		const discardedSessionTabs = sameProject ? [] : [...workspace.sessionTabs];
 
 		setWorkspaceActiveProject(workspace, project);
-		if (sameProject) {
-			pruneInactiveEphemeralSessionTabs(workspace);
-			createAndActivateEmptySessionTab(workspace, NEW_SESSION_TAB_TITLE, project.id, project.path);
-		} else {
-			scheduleDiscardEphemeralSessionTabs(discardedSessionTabs);
-			resetWorkspaceContentTabs(workspace, project);
-		}
+		pruneInactiveEphemeralSessionTabs(workspace);
+		createAndActivateEmptySessionTab(workspace, NEW_SESSION_TAB_TITLE, project.id, project.path, { forceNewTab: true });
 		persistWorkspaces();
 		syncWorkspaceTabsBar();
 		syncContentTabsBar(workspace);
@@ -3374,7 +4446,6 @@ function renderApp(): void {
 				assertProjectTaskCurrent(version);
 				await chatView?.refreshModels();
 				assertProjectTaskCurrent(version);
-				removeRuntimeKeys(oldRuntimeKeys.filter((key) => key !== activeSessionRuntimeKey));
 				await applyWorkspacePane(workspace);
 			},
 			(err) => {
@@ -3388,36 +4459,15 @@ function renderApp(): void {
 	sidebar.setOnNewFileInProject((project) => {
 		const workspace = getActiveWorkspace();
 		if (!workspace) return;
-		const switchingProject = normalizeProjectPath(getWorkspaceActiveProjectPath(workspace)) !== normalizeProjectPath(project.path);
-		const oldRuntimeKeys = switchingProject ? listRuntimeKeysForWorkspace(workspace.id) : [];
-		const discardedSessionTabs = switchingProject ? [...workspace.sessionTabs] : [];
 		const draftDirectoryPath = normalizeStoredPath(project.directoryPath) ?? normalizeStoredPath(project.path);
 		const draftAnchorPath = normalizeStoredPath(project.anchorPath);
 		setWorkspaceActiveProject(workspace, project);
-		if (switchingProject) {
-			scheduleDiscardEphemeralSessionTabs(discardedSessionTabs);
-			resetWorkspaceContentTabs(workspace, project);
-		}
 		createAndActivateEmptyFileTab(workspace, NEW_FILE_TAB_TITLE, project.id, project.path, draftDirectoryPath, draftAnchorPath);
 		fileViewer?.setProjectPath(draftDirectoryPath ?? project.path);
 		persistWorkspaces();
 		syncWorkspaceTabsBar();
 		syncContentTabsBar(workspace);
 		void applyWorkspacePane(workspace);
-
-		void queueProjectTask(
-			async (version) => {
-				await ensureRpcForProject(project.path, version);
-				assertProjectTaskCurrent(version);
-				removeRuntimeKeys(oldRuntimeKeys.filter((key) => key !== activeSessionRuntimeKey));
-				await applyWorkspacePane(workspace);
-			},
-			(err) => {
-				console.error("Failed to create draft file tab:", err);
-				chatView?.notify("Failed to create new file tab", "error");
-			},
-			{ label: "sidebar-new-file" },
-		);
 	});
 
 	const activateSidebarSession = (
@@ -3430,16 +4480,13 @@ function renderApp(): void {
 		const project = sidebar?.getProjectById(projectId);
 		if (!workspace || !project) return;
 
-		const switchingProject = normalizeProjectPath(getWorkspaceActiveProjectPath(workspace)) !== normalizeProjectPath(project.path);
-		const oldRuntimeKeys = switchingProject ? listRuntimeKeysForWorkspace(workspace.id) : [];
-		const discardedSessionTabs = switchingProject ? [...workspace.sessionTabs] : [];
+		const autoTabCountBefore = getVisibleContentTabCount(workspace);
+		const canAutoCreateTab = autoTabCountBefore < DEFAULT_AUTO_CONTENT_TAB_LIMIT;
 		setWorkspaceActiveProject(workspace, project);
-		if (switchingProject) {
-			scheduleDiscardEphemeralSessionTabs(discardedSessionTabs);
-			resetWorkspaceContentTabs(workspace, project);
-		}
 
-		const sessionTab = openOrActivateSessionTab(workspace, sessionPath, project.id, project.path, sessionName);
+		const sessionTab = openOrActivateSessionTab(workspace, sessionPath, project.id, project.path, sessionName, {
+			allowCreateTab: canAutoCreateTab,
+		});
 		pruneInactiveEphemeralSessionTabs(workspace, [sessionTab.id]);
 		persistWorkspaces();
 		syncWorkspaceTabsBar();
@@ -3455,7 +4502,6 @@ function renderApp(): void {
 				assertProjectTaskCurrent(version);
 				await chatView?.refreshModels();
 				assertProjectTaskCurrent(version);
-				removeRuntimeKeys(oldRuntimeKeys.filter((key) => key !== activeSessionRuntimeKey));
 				await applyWorkspacePane(workspace);
 				if (options?.onActivated) {
 					await options.onActivated();
@@ -3506,61 +4552,7 @@ function renderApp(): void {
 	});
 
 	sidebar.setOnSessionRename((projectId, sessionPath, _currentName, nextName) => {
-		const workspace = getActiveWorkspace();
-		const project = sidebar?.getProjectById(projectId);
-		if (!workspace || !project) return;
-
-		ensureWorkspaceContentState(workspace);
-		const targetTab = workspace.sessionTabs.find((tab) => normalizeSessionPath(tab.sessionPath) === normalizeSessionPath(sessionPath));
-		if (targetTab) {
-			setSessionTabProject(targetTab, project.id, project.path);
-			targetTab.title = nextName;
-			if (workspace.activeSessionTabId === targetTab.id) {
-				workspace.sessionTitle = nextName;
-			}
-			persistWorkspaces();
-			syncContentTabsBar(workspace);
-		}
-
-		void queueProjectTask(
-			async () => {
-				const normalizedTarget = normalizeSessionPath(sessionPath);
-				const openTargetTab =
-					workspace.sessionTabs.find((tab) => normalizeSessionPath(tab.sessionPath) === normalizedTarget) ?? null;
-				const activeTarget = Boolean(openTargetTab && workspace.activeSessionTabId === openTargetTab.id);
-
-				if (openTargetTab) {
-					const targetRuntime = await ensureRuntimeForSessionTab(workspace, openTargetTab, project.path, activeTarget);
-					await targetRuntime.bridge.setSessionName(nextName);
-					if (activeTarget) {
-						await chatView?.refreshFromBackend({ throwOnError: true });
-					}
-				} else {
-					const maintenanceBridge = new RpcBridge(uid("rename_rpc"));
-					try {
-						await maintenanceBridge.start({ cliPath: findCliPath(), cwd: project.path });
-						const switched = await maintenanceBridge.switchSession(sessionPath);
-						if (switched.cancelled) return;
-						await maintenanceBridge.setSessionName(nextName);
-					} finally {
-						await maintenanceBridge.stop().catch(() => {
-							/* ignore */
-						});
-						await maintenanceBridge.teardownListeners().catch(() => {
-							/* ignore */
-						});
-					}
-				}
-
-				scheduleSidebarSessionsRefresh(0);
-				syncContentTabsBar(workspace);
-				await applyWorkspacePane(workspace);
-			},
-			(err) => {
-				console.error("Failed to rename session:", err);
-				chatView?.notify("Failed to rename session", "error");
-			},
-		);
+		void renameSessionFromWorkspace(projectId, sessionPath, nextName);
 	});
 
 	sidebar.setOnSessionDelete((projectId, sessionPath) => {
@@ -3702,31 +4694,12 @@ function renderApp(): void {
 		const project = sidebar?.getProjectById(projectId);
 		if (!workspace || !project) return;
 
-		const switchingProject = normalizeProjectPath(getWorkspaceActiveProjectPath(workspace)) !== normalizeProjectPath(project.path);
-		const oldRuntimeKeys = switchingProject ? listRuntimeKeysForWorkspace(workspace.id) : [];
 		setWorkspaceActiveProject(workspace, project);
-		if (switchingProject) {
-			resetWorkspaceContentTabs(workspace, project);
-		}
-
-		openOrActivateFileTab(workspace, filePath, project.id, project.path);
+		openOrActivateFileTab(workspace, filePath, project.id, project.path, { allowCreateTab: false });
 		persistWorkspaces();
 		syncWorkspaceTabsBar();
 		syncContentTabsBar(workspace);
 		void applyWorkspacePane(workspace);
-
-		void queueProjectTask(
-			async (version) => {
-				await ensureRpcForProject(project.path, version);
-				assertProjectTaskCurrent(version);
-				removeRuntimeKeys(oldRuntimeKeys.filter((key) => key !== activeSessionRuntimeKey));
-				await applyWorkspacePane(workspace);
-			},
-			(err) => {
-				console.error("Failed to open file:", err);
-				chatView?.notify("Failed to open file", "error");
-			},
-		);
 	});
 
 	syncRunningSessionIndicators();

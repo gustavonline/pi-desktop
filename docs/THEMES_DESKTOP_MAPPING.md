@@ -19,6 +19,8 @@ These files are placed in:
 
 - `~/.pi/agent/themes`
 
+All bundled files are written in full Pi CLI theme schema format (all required `colors` tokens), so they are valid both in Desktop and in `pi` CLI.
+
 ## Theme package behavior
 
 In the Packages pane, **Pi Desktop Themes** behaves like a package:
@@ -29,6 +31,8 @@ In the Packages pane, **Pi Desktop Themes** behaves like a package:
 Only the bundled theme files are touched; user-created themes are not removed.
 
 Automatic bootstrap happens only once on first desktop startup. After explicit uninstall, themes stay uninstalled until you install the package again.
+
+Desktop also repairs legacy bundled theme files that were created with an older, incomplete schema (missing required tokens), so existing installations are cleaned up without manual edits.
 
 ## Theme variant detection (Light vs Dark)
 
