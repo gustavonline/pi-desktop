@@ -17,6 +17,8 @@ Pi Desktop uses GitHub Actions for CI and cross-platform release bundling.
 - `.github/workflows/release.yml`
   - Builds release artifacts for macOS, Windows, Linux
   - Publishes artifacts to a GitHub Release
+- `.github/workflows/release-smoke.yml`
+  - Manual post-release installer smoke checks on macOS/Windows/Linux for an existing tag
 
 ---
 
@@ -63,6 +65,8 @@ For unsigned builds, always include platform guidance:
 ## Manual workflow dispatch
 
 You can run `release.yml` manually from the Actions tab and provide a tag input.
+
+For post-release verification, run `release-smoke.yml` with the same tag (for example `v1.0.0`) to validate installer artifacts across macOS/Windows/Linux runners.
 
 ---
 
