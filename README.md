@@ -60,23 +60,55 @@ Pi Desktop gives you a stable desktop UX for Pi without hardcoding product logic
 
 ## Features
 
-- Workspace + project sidebar with pin/reorder semantics
-- Session-first tabs (chat-centered), with right-side file split panel
-- Docked xterm terminal panel in chat
-- Streaming chat UI with compact workflow/tool/thinking timeline
-- Composer slash palette with deterministic slash execution
-- Message actions (copy/resend, hover-revealed)
-- Context usage ring + session stats
-- Command palette + shortcuts panel
-- Package manager pane (`pi install/remove/update/list`)
-- Recommended package catalog
-- **Package settings modal** with Save/Apply UX driven by discovered package capabilities
-- Settings panel with simplified IA and no-project-safe behavior
-- Inline runtime/provider error visibility in chat timeline (CLI-like error surfacing)
-- Session context action to **Mark unread**
-- First-run CLI onboarding when `pi` is missing
-- In-app CLI update checks + update action
-- Native notifications via extension UI boundary (`ctx.ui.notify`)
+### Feature snapshot (short)
+
+- Multi-workspace, project-aware desktop shell for Pi
+- Session-first chat workflow with streaming, tools, and thinking timeline
+- Docked terminal, right-side file split, and command palette
+- Deterministic slash commands + runtime-discovered extension/skill/prompt commands
+- Package/resource management (`pi install/remove/update/list`) in-app
+- Model/provider picker with auth actions and diagnostics
+- Robust settings, updates, and no-project-safe UX
+
+### Built-in features (technical)
+
+- **Workspace/session architecture**
+  - Workspace + project sidebar with pin/reorder semantics
+  - Session-first tabs (chat-centered), session browser/history/fork flows
+  - Session context actions (including **Mark unread**)
+
+- **Chat + composer**
+  - Streaming chat UI with compact workflow/tool/thinking timeline
+  - Composer slash palette with deterministic slash execution
+  - Full input history (`ArrowUp` / `ArrowDown`), queued follow-ups, and message actions
+
+- **Commands + shortcuts**
+  - Built-in slash commands for settings/model/import/export/share/tree/fork/resume/compact/reload/quit
+  - Command palette + shortcuts panel
+
+- **Model/provider/auth**
+  - Model picker with provider grouping + login/logout actions
+  - Account diagnostics + auth status visibility
+  - Auto-refresh of auth state when `~/.pi/agent/auth.json` changes
+
+- **Terminal + files**
+  - Docked xterm terminal panel in chat
+  - Right-side file split panel with resize
+  - Drag/drop attachments and file reference pills in composer
+
+- **Packages/resources/themes**
+  - Package manager pane (`pi install/remove/update/list`)
+  - Recommended package + skill catalogs
+  - Package settings modal with capability-driven Save/Apply UX
+  - Bundled desktop themes + CLI-schema-compatible theme handling
+
+- **Settings + updates + reliability**
+  - Simplified Settings IA with no-project-safe behavior
+  - **Manual CLI binary path override** in Settings (all OS) for environments where PATH discovery is unreliable
+  - First-run CLI onboarding when `pi` is missing
+  - In-app desktop + CLI update checks/actions
+  - Inline runtime/provider error visibility in chat timeline
+  - Native notifications via extension UI boundary (`ctx.ui.notify`)
 
 Detailed capability map: [`FEATURE_MAPPING.md`](./FEATURE_MAPPING.md)
 

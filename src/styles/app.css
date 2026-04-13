@@ -8129,6 +8129,10 @@ body.file-split-resizing #file-split-resize-handle::after {
 	margin-bottom: 0;
 }
 
+.settings-row-top {
+	align-items: flex-start;
+}
+
 .settings-label {
 	font-size: 13px;
 	font-weight: 600;
@@ -8171,6 +8175,17 @@ body.file-split-resizing #file-split-resize-handle::after {
 .settings-select {
 	height: 32px;
 	padding: 0 8px;
+	border-radius: 9px;
+	border: 1px solid var(--border);
+	background: var(--bg-muted);
+	color: var(--text);
+	font-size: 12px;
+}
+
+.settings-path-input {
+	width: 100%;
+	height: 34px;
+	padding: 0 10px;
 	border-radius: 9px;
 	border: 1px solid var(--border);
 	background: var(--bg-muted);

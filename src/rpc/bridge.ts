@@ -11,6 +11,7 @@ export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhi
 
 export interface RpcStartOptions {
 	cliPath: string | null;
+	piPath?: string | null;
 	cwd: string;
 	provider?: string;
 	model?: string;
@@ -251,6 +252,7 @@ export class RpcBridge {
 	private pendingGeneration: number | null = null;
 	private lastStartOptions: RpcStartOptions | null = null;
 	private lastDiscoveryInfo: string | null = null;
+	private preferredPiPath: string | null = null;
 	private parseFailureCount = 0;
 
 	constructor(instanceId = "default") {
@@ -269,19 +271,41 @@ export class RpcBridge {
 		return this.lastDiscoveryInfo;
 	}
 
+	setPreferredPiPath(path: string | null): void {
+		this.preferredPiPath = this.normalizePathOverride(path);
+	}
+
+	getPreferredPiPath(): string | null {
+		return this.preferredPiPath;
+	}
+
+	private normalizePathOverride(value: string | null | undefined): string | null {
+		const trimmed = typeof value === "string" ? value.trim() : "";
+		return trimmed.length > 0 ? trimmed : null;
+	}
+
 	async start(options: RpcStartOptions): Promise<string> {
 		await this.ensureListeners();
 		this.pendingGeneration = (this.currentGeneration ?? 0) + 1;
 
+		const effectiveCliPath = this.normalizePathOverride(options.cliPath);
+		const effectivePiPath = this.normalizePathOverride(options.piPath) ?? this.preferredPiPath;
+		const startOptions: RpcStartOptions = {
+			...options,
+			cliPath: effectiveCliPath,
+			piPath: effectivePiPath,
+		};
+
 		try {
-			traceBridge(`start instance=${this.instanceId} cwd=${options.cwd}`);
+			traceBridge(`start instance=${this.instanceId} cwd=${startOptions.cwd}`);
 			const result = await invoke<RpcStartResult>("rpc_start", {
 				options: {
-					cli_path: options.cliPath ?? null,
-					cwd: options.cwd,
-					provider: options.provider || null,
-					model: options.model || null,
-					env: options.env || null,
+					cli_path: startOptions.cliPath ?? null,
+					pi_path: startOptions.piPath ?? null,
+					cwd: startOptions.cwd,
+					provider: startOptions.provider || null,
+					model: startOptions.model || null,
+					env: startOptions.env || null,
 				},
 				instanceId: this.instanceId,
 			});
@@ -291,7 +315,7 @@ export class RpcBridge {
 				? result.generation
 				: this.pendingGeneration;
 			this.pendingGeneration = null;
-			this.lastStartOptions = { ...options };
+			this.lastStartOptions = { ...startOptions };
 			this.lastDiscoveryInfo = result.discovery;
 			traceBridge(`started instance=${this.instanceId} generation=${this.currentGeneration ?? -1} discovery=${result.discovery}`);
 			this.emitToListeners({ type: "rpc_connected", discovery: result.discovery });
@@ -484,9 +508,16 @@ export class RpcBridge {
 
 	async runPiCliCommand(
 		args: string[],
-		options: { cwd?: string; env?: Record<string, string>; cliPath?: string | null } = {},
+		options: { cwd?: string; env?: Record<string, string>; cliPath?: string | null; piPath?: string | null } = {},
 	): Promise<PiCliCommandResult> {
-		const cliPath = typeof options.cliPath !== "undefined" ? options.cliPath : (this.lastStartOptions?.cliPath ?? null);
+		const cliPath = this.normalizePathOverride(
+			typeof options.cliPath !== "undefined" ? options.cliPath : (this.lastStartOptions?.cliPath ?? null),
+		);
+		const piPath = this.normalizePathOverride(
+			typeof options.piPath !== "undefined"
+				? options.piPath
+				: (this.preferredPiPath ?? this.lastStartOptions?.piPath ?? null),
+		);
 
 		return invoke<PiCliCommandResult>("run_pi_cli_command", {
 			options: {
@@ -494,6 +525,7 @@ export class RpcBridge {
 				cwd: options.cwd ?? null,
 				env: options.env ?? null,
 				cli_path: cliPath,
+				pi_path: piPath,
 			},
 		});
 	}
@@ -530,7 +562,8 @@ export class RpcBridge {
 	async getCliUpdateStatus(): Promise<CliUpdateStatus> {
 		return invoke<CliUpdateStatus>("get_cli_update_status", {
 			options: {
-				cli_path: this.lastStartOptions?.cliPath ?? null,
+				cli_path: this.normalizePathOverride(this.lastStartOptions?.cliPath ?? null),
+				pi_path: this.normalizePathOverride(this.preferredPiPath ?? this.lastStartOptions?.piPath ?? null),
 				cwd: this.lastStartOptions?.cwd ?? null,
 				env: this.lastStartOptions?.env ?? null,
 			},
@@ -540,7 +573,8 @@ export class RpcBridge {
 	async getPiChangelog(): Promise<PiChangelogResult> {
 		return invoke<PiChangelogResult>("get_pi_changelog", {
 			options: {
-				cli_path: this.lastStartOptions?.cliPath ?? null,
+				cli_path: this.normalizePathOverride(this.lastStartOptions?.cliPath ?? null),
+				pi_path: this.normalizePathOverride(this.preferredPiPath ?? this.lastStartOptions?.piPath ?? null),
 				cwd: this.lastStartOptions?.cwd ?? null,
 				env: this.lastStartOptions?.env ?? null,
 			},
@@ -797,12 +831,14 @@ class ActiveRpcBridgeProxy {
 
 	setActiveBridge(bridge: RpcBridge): void {
 		if (this.activeBridge === bridge) return;
+		const preferredPiPath = this.activeBridge.getPreferredPiPath();
 		const listeners = [...this.listenerUnsubscribers.keys()];
 		for (const unlisten of this.listenerUnsubscribers.values()) {
 			unlisten();
 		}
 		this.listenerUnsubscribers.clear();
 		this.activeBridge = bridge;
+		this.activeBridge.setPreferredPiPath(preferredPiPath);
 		for (const listener of listeners) {
 			this.listenerUnsubscribers.set(listener, this.activeBridge.onEvent(listener));
 		}
@@ -818,6 +854,14 @@ class ActiveRpcBridgeProxy {
 
 	get discoveryInfo(): string | null {
 		return this.activeBridge.discoveryInfo;
+	}
+
+	setPreferredPiPath(path: string | null): void {
+		this.activeBridge.setPreferredPiPath(path);
+	}
+
+	getPreferredPiPath(): string | null {
+		return this.activeBridge.getPreferredPiPath();
 	}
 
 	getInstanceId(): string {
@@ -973,7 +1017,7 @@ class ActiveRpcBridgeProxy {
 
 	async runPiCliCommand(
 		args: string[],
-		options: { cwd?: string; env?: Record<string, string>; cliPath?: string | null } = {},
+		options: { cwd?: string; env?: Record<string, string>; cliPath?: string | null; piPath?: string | null } = {},
 	): Promise<PiCliCommandResult> {
 		return this.activeBridge.runPiCliCommand(args, options);
 	}
