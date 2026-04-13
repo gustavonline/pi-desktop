@@ -1,5 +1,18 @@
 # TODO — V1/V1.1 release cleanup plan
 
+## Session update (2026-04-13) — v1.0.0 hotfix re-release
+
+Status: **Released (re-release)**
+
+- [x] Merged hotfix PR `#111` (`hotfix/manual-pi-binary-path`) into `main` at `5e971ef`.
+- [x] Added manual **Settings → Pi binary path (optional)** override (browse/save/clear) and wired it through runtime startup + command execution.
+- [x] Expanded Linux/macOS CLI fallback discovery paths and path normalization for explicit overrides.
+- [x] Re-cut `v1.0.0` tag to `5e971ef` and reran Release workflow successfully across macOS/Windows/Linux (`24364218274`).
+- [x] Updated GitHub release notes with hotfix section + preserved unsigned-build install guidance.
+- [x] Executed post-release smoke workflow for `v1.0.0` (`24365014122`) with macOS/Windows/Linux jobs green.
+- [x] Re-verified all published `v1.0.0` asset URLs return HTTP `200`.
+- [x] Synced `dev` to `main` after hotfix release (`5e971ef`).
+
 ## Session update (2026-04-13) — v1.0.0 release completion
 
 Status: **Released**
