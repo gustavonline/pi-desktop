@@ -843,6 +843,18 @@ export class ChatView {
 		this.syncComposerTextareaDeferred(commandText, { maxHeight: 200, focus: true });
 	}
 
+	private normalizeSkillSlashCommandText(commandText: string): string {
+		return commandText.trim().replace(/^\/+skill:/i, "/skill:");
+	}
+
+	private stageSkillSlashCommand(commandText: string): boolean {
+		const normalizedCommand = this.normalizeSkillSlashCommandText(commandText);
+		const draft = this.parseComposerSkillDraftFromCommand(normalizedCommand);
+		if (!draft) return false;
+		this.stageComposerCommand(draft.commandText);
+		return true;
+	}
+
 	private parseComposerSkillDraftFromCommand(commandText: string): ComposerSkillDraft | null {
 		const trimmed = commandText.trim();
 		const match = trimmed.match(/^\/skill:([a-zA-Z0-9._-]+)\b([\s\S]*)$/);
@@ -1216,6 +1228,10 @@ export class ChatView {
 		const slashQuery = this.slashQueryFromInput();
 		const parsed = this.parseSlashInput(this.inputText);
 		if (!parsed && slashQuery === null) return;
+		if (parsed && parsed.commandName.startsWith("skill:")) {
+			const skillCommandText = `/${parsed.commandName}${parsed.args ? ` ${parsed.args}` : ""}`;
+			if (this.stageSkillSlashCommand(skillCommandText)) return;
+		}
 		if (this.pendingImages.length > 0 || this.pendingFileReferences.length > 0) {
 			this.pushNotice("Slash commands cannot be sent with pending attachments", "info");
 			return;
@@ -1225,6 +1241,7 @@ export class ChatView {
 		if (parsed) {
 			const exact = this.findSlashPaletteItemByName(parsed.commandName);
 			if (exact) {
+				if (exact.source === "skill" && this.stageSkillSlashCommand(parsed.commandText)) return;
 				await this.runSlashCommand(parsed.commandText, exact, parsed.args);
 				return;
 			}
@@ -1233,6 +1250,7 @@ export class ChatView {
 			const picked = liveItems[Math.max(0, Math.min(this.slashPaletteIndex, liveItems.length - 1))];
 			const pickedArgs = parsed && parsed.commandName === picked.commandName ? parsed.args : "";
 			const commandText = `/${picked.commandName}${pickedArgs ? ` ${pickedArgs}` : ""}`;
+			if (picked.source === "skill" && this.stageSkillSlashCommand(commandText)) return;
 			await this.runSlashCommand(commandText, picked, pickedArgs);
 			return;
 		}
@@ -1445,6 +1463,7 @@ export class ChatView {
 		const parsed = this.parseSlashInput(this.inputText);
 		const args = parsed && parsed.commandName === item.commandName ? parsed.args : "";
 		const commandText = `/${item.commandName}${args ? ` ${args}` : ""}`;
+		if (item.source === "skill" && this.stageSkillSlashCommand(commandText)) return;
 		void this.runSlashCommand(commandText, item, args);
 	}
 

@@ -113,6 +113,10 @@ const DEBUG_OVERLAY_STORAGE_KEY = "pi-desktop.debug-overlay.v1";
 const CLI_UPDATE_NOTICE_STORAGE_KEY = "pi-desktop.cli-update-notice-at.v1";
 const DESKTOP_UPDATE_NOTICE_STORAGE_KEY = "pi-desktop.desktop-update-notice-at.v1";
 const UPDATE_NOTICE_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const AUTH_CONFIG_RELOAD_DEBOUNCE_MS = 550;
+const AUTH_CONFIG_FALLBACK_POLL_MS = 2_500;
+const AUTH_CONFIG_SNAPSHOT_MISSING = "__pi-desktop-auth-missing__";
+const AUTH_CONFIG_SNAPSHOT_ERROR = "__pi-desktop-auth-read-error__";
 const CLI_INSTALL_COMMAND = "npm install -g @mariozechner/pi-coding-agent";
 const WINDOWS_NODE_INSTALL_COMMAND = "winget install --id OpenJS.NodeJS.LTS";
 const SESSION_ATTENTION_MESSAGES = [
@@ -149,6 +153,14 @@ let projectSwitchVersion = 0;
 let workspacePaneApplyVersion = 0;
 let settingsPaneRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
 let terminalCommandRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+let authConfigWatchUnlisten: (() => void) | null = null;
+let authConfigPollTimer: ReturnType<typeof setInterval> | null = null;
+let authConfigReloadDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+let authConfigPath: string | null = null;
+let authConfigSnapshot = "";
+let authConfigReloadInFlight = false;
+let authConfigReloadQueued = false;
+let authConfigReloadPendingUntilIdle = false;
 
 class StaleProjectTaskError extends Error {
 	constructor() {
@@ -490,6 +502,12 @@ function baseName(path: string): string {
 function normalizeSessionPath(path: string | null | undefined): string {
 	if (!path) return "";
 	return path.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+}
+
+function joinFsPath(base: string, child: string): string {
+	const normalizedBase = base.replace(/\\/g, "/").replace(/\/+$/, "");
+	const normalizedChild = child.replace(/\\/g, "/").replace(/^\/+/, "");
+	return normalizedBase ? `${normalizedBase}/${normalizedChild}` : normalizedChild;
 }
 
 function sessionRuntimeKey(workspaceId: string, tabId: string): string {
@@ -1691,6 +1709,167 @@ function scheduleTerminalCommandRefresh(delayMs = 260): void {
 	}, delayMs);
 }
 
+async function refreshDesktopStateAfterAuthChangeWithoutProject(): Promise<void> {
+	try {
+		await chatView?.refreshModels();
+	} catch {
+		// ignore auth-change model refresh failures without active project runtime
+	}
+	try {
+		await chatView?.refreshFromBackend();
+	} catch {
+		// ignore auth-change backend refresh failures without active project runtime
+	}
+	if (packagesView) {
+		void packagesView.refreshPackages(false).catch(() => {
+			// ignore package refresh failures here
+		});
+	}
+	scheduleSidebarSessionsRefresh(0);
+}
+
+function isActiveRuntimeStreamingForAuthReload(): boolean {
+	if (getActiveRuntime()?.running) return true;
+	return Boolean(chatView?.getState()?.isStreaming);
+}
+
+function queueAuthConfigDrivenReload(trigger: string, delayMs = AUTH_CONFIG_RELOAD_DEBOUNCE_MS): void {
+	if (authConfigReloadDebounceTimer) {
+		clearTimeout(authConfigReloadDebounceTimer);
+	}
+	authConfigReloadDebounceTimer = setTimeout(() => {
+		authConfigReloadDebounceTimer = null;
+		void runAuthConfigDrivenReload(trigger);
+	}, delayMs);
+}
+
+async function runAuthConfigDrivenReload(trigger: string): Promise<void> {
+	if (authConfigReloadInFlight) {
+		authConfigReloadQueued = true;
+		recordDebugTrace(`auth-reload queued trigger=${trigger}`);
+		return;
+	}
+	if (isActiveRuntimeStreamingForAuthReload()) {
+		authConfigReloadPendingUntilIdle = true;
+		recordDebugTrace(`auth-reload deferred trigger=${trigger} reason=streaming`);
+		return;
+	}
+
+	authConfigReloadInFlight = true;
+	authConfigReloadPendingUntilIdle = false;
+	recordDebugTrace(`auth-reload start trigger=${trigger}`);
+	try {
+		const workspace = getActiveWorkspace();
+		const projectPath = workspace ? getWorkspaceActiveProjectPath(workspace) : null;
+		if (workspace && projectPath) {
+			const reloaded = await reloadActiveWorkspaceRuntime();
+			if (!reloaded) {
+				await refreshDesktopStateAfterAuthChangeWithoutProject();
+			}
+			return;
+		}
+		await refreshDesktopStateAfterAuthChangeWithoutProject();
+	} catch (err) {
+		console.error("Failed to apply auth-driven runtime reload:", err);
+	} finally {
+		authConfigReloadInFlight = false;
+		if (authConfigReloadQueued) {
+			authConfigReloadQueued = false;
+			queueAuthConfigDrivenReload("queued", 120);
+		}
+	}
+}
+
+function flushPendingAuthConfigReload(): void {
+	if (!authConfigReloadPendingUntilIdle) return;
+	authConfigReloadPendingUntilIdle = false;
+	queueAuthConfigDrivenReload("run-idle", 120);
+}
+
+async function resolvePiAuthConfigPath(): Promise<string | null> {
+	const { homeDir } = await import("@tauri-apps/api/path");
+	const home = (await homeDir()).replace(/\\/g, "/").replace(/\/+$/, "");
+	if (!home) return null;
+	return joinFsPath(joinFsPath(joinFsPath(home, ".pi"), "agent"), "auth.json");
+}
+
+async function readAuthConfigSnapshot(path: string): Promise<string> {
+	try {
+		const { exists, readTextFile } = await import("@tauri-apps/plugin-fs");
+		if (!(await exists(path))) {
+			return AUTH_CONFIG_SNAPSHOT_MISSING;
+		}
+		return await readTextFile(path);
+	} catch {
+		return AUTH_CONFIG_SNAPSHOT_ERROR;
+	}
+}
+
+async function probeAuthConfigChanges(trigger: string): Promise<void> {
+	const path = authConfigPath;
+	if (!path) return;
+	const nextSnapshot = await readAuthConfigSnapshot(path);
+	if (authConfigPath !== path) return;
+	if (nextSnapshot === authConfigSnapshot) return;
+	authConfigSnapshot = nextSnapshot;
+	recordDebugTrace(`auth-config changed trigger=${trigger}`);
+	queueAuthConfigDrivenReload(trigger);
+}
+
+function stopAuthConfigChangeMonitor(): void {
+	if (authConfigWatchUnlisten) {
+		try {
+			authConfigWatchUnlisten();
+		} catch {
+			// ignore unwatch errors
+		}
+		authConfigWatchUnlisten = null;
+	}
+	if (authConfigPollTimer) {
+		clearInterval(authConfigPollTimer);
+		authConfigPollTimer = null;
+	}
+	if (authConfigReloadDebounceTimer) {
+		clearTimeout(authConfigReloadDebounceTimer);
+		authConfigReloadDebounceTimer = null;
+	}
+	authConfigPath = null;
+	authConfigSnapshot = "";
+	authConfigReloadQueued = false;
+	authConfigReloadPendingUntilIdle = false;
+}
+
+async function startAuthConfigChangeMonitor(): Promise<void> {
+	stopAuthConfigChangeMonitor();
+	const path = await resolvePiAuthConfigPath().catch(() => null);
+	if (!path) return;
+	authConfigPath = path;
+	authConfigSnapshot = await readAuthConfigSnapshot(path);
+
+	let startedWatch = false;
+	try {
+		const { watch } = await import("@tauri-apps/plugin-fs");
+		authConfigWatchUnlisten = await watch(
+			path,
+			() => {
+				void probeAuthConfigChanges("watch");
+			},
+			{ recursive: false, delayMs: 220 },
+		);
+		startedWatch = true;
+		recordDebugTrace(`auth-watch started path=${path}`);
+	} catch (err) {
+		console.warn("Failed to watch auth.json; falling back to polling:", err);
+		recordDebugTrace(`auth-watch fallback=poll reason=${err instanceof Error ? err.message : String(err)}`);
+	}
+
+	if (!startedWatch) {
+		authConfigPollTimer = setInterval(() => {
+			void probeAuthConfigChanges("poll");
+		}, AUTH_CONFIG_FALLBACK_POLL_MS);
+	}
+}
+
 function stopSidebarSessionsWarmRefresh(): void {
 	if (sidebarSessionsWarmInterval) {
 		clearInterval(sidebarSessionsWarmInterval);
@@ -2834,6 +3013,7 @@ function startDesktopUpdatePolling(): void {
 }
 
 async function initialize(): Promise<void> {
+	stopAuthConfigChangeMonitor();
 	chatView?.disconnect();
 	chatView = null;
 	if (debugOverlayInterval) {
@@ -3084,6 +3264,7 @@ async function initialize(): Promise<void> {
 			} else {
 				stopSidebarSessionsWarmRefresh();
 				scheduleSidebarSessionsRefresh(0);
+				flushPendingAuthConfigReload();
 			}
 		});
 		chatView.render();
@@ -3122,6 +3303,7 @@ async function initialize(): Promise<void> {
 		await refreshDesktopUpdateStatus();
 		startCliUpdatePolling();
 		startDesktopUpdatePolling();
+		void startAuthConfigChangeMonitor();
 	} catch (err) {
 		connectionError = err instanceof Error ? err.message : String(err);
 		recordDebugTrace(`initialize-fatal: ${connectionError}`);
@@ -3990,6 +4172,11 @@ function renderApp(): void {
 			if (!/^pi(?:\s|$)/.test(normalized)) return;
 			if (result && typeof result.code === "number" && result.code !== 0) return;
 			scheduleTerminalCommandRefresh();
+			if (/\b(?:login|logout)\b/.test(normalized)) {
+				setTimeout(() => {
+					void probeAuthConfigChanges("terminal-auth-command");
+				}, 120);
+			}
 		});
 		terminalPanel.setOnRequestClose(() => {
 			const workspace = getActiveWorkspace();

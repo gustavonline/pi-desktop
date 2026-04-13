@@ -22,14 +22,14 @@ Pi Desktop uses GitHub Actions for CI and cross-platform release bundling.
 
 ## 2) Pick version
 
-Example: `v0.1.0`
+Example: `v1.0.0`
 
 ## 3) Tag and push
 
 ```bash
 git checkout main
 git pull --ff-only
-git tag v0.1.0
+git tag v1.0.0
 git push origin main --tags
 ```
 
