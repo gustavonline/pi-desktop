@@ -42,17 +42,17 @@
 		"linux": {
 			"appimage": {
 				"files": {
-					"linux/com.pi.desktop.metainfo.xml": "usr/share/metainfo/com.pi.desktop.metainfo.xml"
+					"usr/share/metainfo/com.pi.desktop.metainfo.xml": "linux/com.pi.desktop.metainfo.xml"
 				}
 			},
 			"deb": {
 				"files": {
-					"linux/com.pi.desktop.metainfo.xml": "usr/share/metainfo/com.pi.desktop.metainfo.xml"
+					"usr/share/metainfo/com.pi.desktop.metainfo.xml": "linux/com.pi.desktop.metainfo.xml"
 				}
 			},
 			"rpm": {
 				"files": {
-					"linux/com.pi.desktop.metainfo.xml": "usr/share/metainfo/com.pi.desktop.metainfo.xml"
+					"usr/share/metainfo/com.pi.desktop.metainfo.xml": "linux/com.pi.desktop.metainfo.xml"
 				}
 			}
 		}

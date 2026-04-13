@@ -1685,8 +1685,8 @@ fn discover_gh_path() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     {
         if let Ok(app_data) = std::env::var("APPDATA") {
-            candidates.push(PathBuf::from(app_data).join("GitHub CLI").join("gh.exe"));
-            candidates.push(PathBuf::from(app_data).join("npm").join("gh.cmd"));
+            candidates.push(PathBuf::from(&app_data).join("GitHub CLI").join("gh.exe"));
+            candidates.push(PathBuf::from(&app_data).join("npm").join("gh.cmd"));
         }
         if let Ok(program_files) = std::env::var("ProgramFiles") {
             candidates.push(PathBuf::from(program_files).join("GitHub CLI").join("gh.exe"));
