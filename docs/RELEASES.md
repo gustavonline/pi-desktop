@@ -2,6 +2,13 @@
 
 Pi Desktop uses GitHub Actions for CI and cross-platform release bundling.
 
+## Latest stable release
+
+- **Version:** `v1.0.0`
+- **Published:** 2026-04-13
+- **Artifacts:** macOS (`.dmg`, `.app.tar.gz`), Windows (`.exe`, `.msi`), Linux (`.AppImage`, `.deb`)
+- **Release page:** https://github.com/gustavonline/pi-desktop/releases/tag/v1.0.0
+
 ## Workflows
 
 - `.github/workflows/ci.yml`
@@ -29,7 +36,7 @@ Example: `v1.0.0`
 ```bash
 git checkout main
 git pull --ff-only
-git tag v1.0.0
+git tag -a v1.0.0 -m "Pi Desktop v1.0.0"
 git push origin main --tags
 ```
 
@@ -44,7 +51,12 @@ Open GitHub Releases and verify artifacts for:
 
 ## 5) Edit release notes
 
-Use Highlights / Fixes / Known limitations format.
+Use **Highlights / Improvements / Fixes / Install notes** format.
+
+For unsigned builds, always include platform guidance:
+- macOS Gatekeeper (`xattr -cr ...` + **Open Anyway** path)
+- Windows SmartScreen (**More info → Run anyway**)
+- Linux AppImage executable bit (`chmod +x ...`)
 
 ---
 

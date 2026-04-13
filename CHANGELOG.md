@@ -85,6 +85,8 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 ### Fixed
 - Modal/backdrop layers now preserve window corner clipping (rounded dim/blur overlay) so opening dialogs no longer introduces square edge artifacts around the app window.
 - Bundled default Pi Desktop themes now emit full Pi CLI-compatible theme schema (all required color tokens) instead of a partial Desktop-only color set.
+- Fixed Linux release bundle file mapping for AppStream metainfo embedding so GitHub Actions Linux bundles publish correctly.
+- Fixed Windows release-path handling for GitHub CLI discovery candidates under `APPDATA`.
 - Fixed bundled-themes first-run install marker handling by migrating to a non-hidden marker filename and making marker reads/writes best-effort, preventing `forbidden path` install failures.
 - Added bundled-theme package expansion with `pi-desktop-default-dark` and `pi-desktop-default-light`, and updated package metadata/counts accordingly.
 - Fixed bundled-theme install-state resilience so “Pi Desktop Themes” is treated as preinstalled when bundled resources are already present on disk.

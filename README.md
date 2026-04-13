@@ -46,29 +46,32 @@ Pi Desktop gives you a stable desktop UX for Pi without hardcoding product logic
 - **Hardcoding rule:** avoid embedding project-specific automation/policy logic in app core.
 - **Architecture intent:** Pi Desktop is a capability host for extensions, not a monolithic workflow engine.
 
-### Recent highlights (post-0.1.7)
+### Recent highlights (v1.0.0)
 
-- Package-specific config moved out of global Settings and into a **Packages modal settings flow** (capability-driven, package-agnostic).
-- Provider/runtime failures are now shown **inline in chat timeline** (CLI parity), including `stopReason: "error"` assistant failures.
-- Windows missing-CLI onboarding/path discovery was expanded for common install paths and spawn error patterns.
-- Session context menu now supports **Mark unread**.
-- Native traffic-light controls now reveal `× / − / +` glyphs on hover/focus.
-- Full icon set is now rebranded to the new **Pi DESK** mark (Pi monogram + pixel DESK wordmark), regenerated across all desktop/mobile bundle targets.
+- Codex-inspired UI polish across chat timeline, composer, and no-project welcome/dashboard flows.
+- Composer slash behavior is deterministic, and `/skill:<name>` now stages a skill pill before send.
+- Settings UX is more resilient (including no-project mode) with sidebar-integrated navigation while Settings is open.
+- Terminal now runs as a docked bottom panel in chat, with reduced timeline noise.
+- Desktop auto-refreshes runtime auth state when `~/.pi/agent/auth.json` changes after login/logout.
+- Bundled/default themes now conform to full Pi CLI theme schema, with legacy-theme auto-repair.
+- Cross-platform `v1.0.0` artifacts are published for macOS, Windows, and Linux.
 
 ---
 
 ## Features
 
 - Workspace + project sidebar with pin/reorder semantics
-- Session tabs + file/terminal/packages tabs
-- Streaming chat UI with tool blocks and thinking blocks
+- Session-first tabs (chat-centered), with right-side file split panel
+- Docked xterm terminal panel in chat
+- Streaming chat UI with compact workflow/tool/thinking timeline
+- Composer slash palette with deterministic slash execution
 - Message actions (copy/resend, hover-revealed)
 - Context usage ring + session stats
 - Command palette + shortcuts panel
 - Package manager pane (`pi install/remove/update/list`)
 - Recommended package catalog
 - **Package settings modal** with Save/Apply UX driven by discovered package capabilities
-- Settings panel with simplified IA and diagnostics
+- Settings panel with simplified IA and no-project-safe behavior
 - Inline runtime/provider error visibility in chat timeline (CLI-like error surfacing)
 - Session context action to **Mark unread**
 - First-run CLI onboarding when `pi` is missing
@@ -86,19 +89,39 @@ Go to **[Releases](https://github.com/gustavonline/pi-desktop/releases)** and do
 - Windows: `.exe` (NSIS installer) and/or `.msi`
 - Linux: `.AppImage` and `.deb`
 
+Latest stable release: **[`v1.0.0`](https://github.com/gustavonline/pi-desktop/releases/tag/v1.0.0)** (2026-04-13).
+
 If no release is available yet, follow **Build from source** below.
 
-### macOS Gatekeeper note (unsigned builds)
+### Unsigned build notes
 
+#### macOS (Gatekeeper)
 Until notarized signing is configured, macOS may block downloaded builds with messages like “app is damaged”.
 
-Workaround:
+Use one of these options:
+
+1. Terminal workaround:
 
 ```bash
 xattr -cr /Applications/Pi\ Desktop.app
 ```
 
-Then launch again (or right-click → Open).
+2. System Settings workaround:
+   - Open **System Settings → Privacy & Security**
+   - Find the blocked Pi Desktop warning
+   - Click **Open Anyway** and confirm
+
+#### Windows (SmartScreen)
+If SmartScreen appears:
+- Click **More info**
+- Click **Run anyway**
+
+#### Linux (AppImage)
+If needed:
+
+```bash
+chmod +x Pi.Desktop_<version>_amd64.AppImage
+```
 
 ---
 

@@ -1,5 +1,16 @@
 # TODO — V1/V1.1 release cleanup plan
 
+## Session update (2026-04-13) — v1.0.0 release completion
+
+Status: **Released**
+
+- [x] `v1.0.0` tag published and release workflow rerun successfully across macOS/Windows/Linux.
+- [x] GitHub Release published with all expected artifacts (`.dmg`, `.app.tar.gz`, `.exe`, `.msi`, `.AppImage`, `.deb`).
+- [x] Release notes updated with Highlights / Improvements / Fixes + unsigned-build install guidance.
+- [x] Release docs updated (`README.md`, `docs/RELEASES.md`, `CHANGELOG.md`).
+- [ ] Post-release: update GitHub Actions to Node 24-compatible action versions before Node 20 runner sunset.
+- [ ] Post-release: run one final clean-machine smoke pass per OS installer path.
+
 ## Session update (2026-04-10) — Terminal architecture reset (#48 auth/login follow-up)
 
 Status: **In progress (stabilization first, architecture decision next)**
