@@ -10,7 +10,7 @@ Status: **Released**
 - [x] Release docs updated (`README.md`, `docs/RELEASES.md`, `CHANGELOG.md`).
 - [x] Verified all published `v1.0.0` release asset download URLs return HTTP 200.
 - [x] Post-release: update GitHub Actions to Node 24-compatible action versions before Node 20 runner sunset (`actions/checkout@v5`, `actions/setup-node@v5`).
-- [ ] Post-release: run one final clean-machine smoke pass per OS installer path.
+- [x] Post-release: run one final clean-machine smoke pass per OS installer path (GitHub Actions `Release Smoke` run `24361485967`, tag `v1.0.0`, macOS/Windows/Linux all green).
 
 ## Session update (2026-04-10) — Terminal architecture reset (#48 auth/login follow-up)
 
