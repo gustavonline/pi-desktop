@@ -8,7 +8,7 @@ Status: **Released**
 - [x] GitHub Release published with all expected artifacts (`.dmg`, `.app.tar.gz`, `.exe`, `.msi`, `.AppImage`, `.deb`).
 - [x] Release notes updated with Highlights / Improvements / Fixes + unsigned-build install guidance.
 - [x] Release docs updated (`README.md`, `docs/RELEASES.md`, `CHANGELOG.md`).
-- [ ] Post-release: update GitHub Actions to Node 24-compatible action versions before Node 20 runner sunset.
+- [x] Post-release: update GitHub Actions to Node 24-compatible action versions before Node 20 runner sunset (`actions/checkout@v5`, `actions/setup-node@v5`).
 - [ ] Post-release: run one final clean-machine smoke pass per OS installer path.
 
 ## Session update (2026-04-10) — Terminal architecture reset (#48 auth/login follow-up)
