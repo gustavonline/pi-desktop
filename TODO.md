@@ -8,6 +8,7 @@ Status: **Released**
 - [x] GitHub Release published with all expected artifacts (`.dmg`, `.app.tar.gz`, `.exe`, `.msi`, `.AppImage`, `.deb`).
 - [x] Release notes updated with Highlights / Improvements / Fixes + unsigned-build install guidance.
 - [x] Release docs updated (`README.md`, `docs/RELEASES.md`, `CHANGELOG.md`).
+- [x] Verified all published `v1.0.0` release asset download URLs return HTTP 200.
 - [x] Post-release: update GitHub Actions to Node 24-compatible action versions before Node 20 runner sunset (`actions/checkout@v5`, `actions/setup-node@v5`).
 - [ ] Post-release: run one final clean-machine smoke pass per OS installer path.
 
